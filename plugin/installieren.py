@@ -1,5 +1,5 @@
 """Trove-Plugin in Hermes installieren (Kopie aus dem Repo nach %HERMES_HOME%\\plugins\\trove, Eintrag in config.yaml plugins.enabled).
-Idempotent. Quelle der Wahrheit bleibt C:\\Projects\\trove\\plugin. Aufruf: python plugin\\installieren.py
+Idempotent. Quelle der Wahrheit bleibt der Ordner plugin\\ im Repo. Aufruf: python plugin\\installieren.py
 """
 import os, shutil, sys, time, json
 HOME = os.environ.get("HERMES_HOME") or os.path.join(os.environ["LOCALAPPDATA"], "hermes")

@@ -1,4 +1,4 @@
-"""Trove: verifizierter Empfang eines tar-Streams (Push von zarmina oder einer anderen Quelle) auf den Server.
+"""Trove: verifizierter Empfang eines tar-Streams (Push von einer Quellmaschine) auf den Server.
 
 Regeln (Plan §1.2/§6, Review 18.10.):
 - Nichts wird ueberschrieben. Liegt am Ziel eine Datei mit ANDEREM Inhalt, wird nicht geschrieben, sondern ein

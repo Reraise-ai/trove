@@ -3,11 +3,11 @@
 Richtung 1 (wir senden): aus einer DocuSeal-Vorlage einen Vorgang anlegen (Unterzeichner, optional Mail durch DocuSeal), Link
   ins Belegprotokoll ("versendet", Bezug zum Beleg ueber sha256 des Originals).
 Richtung 2 (wir empfangen): Stand aller Vorgaenge abfragen; fertige Vorgaenge: unterschriebene PDFs + Audit-Log holen nach
-  C:\\datenlager\\trove\\<mandant>\\unterschrieben\\<vorgang>\\, Pruefsumme, Ereignis "unterschrieben" (rueckwaerts bis zum Original).
+  <TROVE_DATEN>\\<mandant>\\unterschrieben\\<vorgang>\\, Pruefsumme, Ereignis "unterschrieben" (rueckwaerts bis zum Original).
 Grenze der freien Edition (gemessen 18.10.2026): Vorlagen/Dokumente per API hochladen = Pro. Vorlagen entstehen deshalb in der
   DocuSeal-Web-UI (Mensch); alles Weitere laeuft per API. API-Schluessel: Zeile "api-key:" in
-  C:\\datenlager\\platform\\docuseal\\ADMIN-ERSTANMELDUNG.txt (nur Pfad, nie Inhalt im Repo).
-Stand je Mandant: C:\\datenlager\\trove\\<mandant>\\docuseal.json (Vorgang -> Beleg-sha, Status, abgeholt).
+  <TROVE_DATEN>\\_geheim\\docuseal_erstanmeldung.txt (nur Pfad, nie Inhalt im Repo).
+Stand je Mandant: <TROVE_DATEN>\\<mandant>\\docuseal.json (Vorgang -> Beleg-sha, Status, abgeholt).
 """
 import argparse, hashlib, json, os, re, sys, urllib.request
 
@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import belegprotokoll as bp
 
 DOCUSEAL = os.environ.get("TROVE_DOCUSEAL", "http://127.0.0.1:8091")
-SCHLUESSEL_DATEI = os.environ.get("TROVE_DOCUSEAL_SCHLUESSEL", r"C:\datenlager\platform\docuseal\ADMIN-ERSTANMELDUNG.txt")
+SCHLUESSEL_DATEI = os.environ.get("TROVE_DOCUSEAL_SCHLUESSEL", os.path.join(bp.WURZEL, "_geheim", "docuseal_erstanmeldung.txt"))
 
 
 def _schluessel():

@@ -1,7 +1,7 @@
 """Trove F3 — Messung der Texterkennung an echten Belegen (A-06): Kandidaten gegeneinander, gezaehlt werden
 Sekunden je Seite, gefundene Felder und bestandene Verprobung (F4). Ergebnis: CSV + HTML-Bericht in doku\\ und
 Zusammenfassung als Notiz im Belegprotokoll. Nichts an den Belegen wird veraendert (nur gelesen).
-Aufruf: python messung_f3.py --max-seiten 2 --kandidaten rapidocr,docling,granite-vision
+Aufruf: python messung_f3.py --quelle "<ordner>|20|Belege" --max-seiten 2 --kandidaten rapidocr,docling,granite-vision
 """
 import argparse, csv, json, os, statistics, sys, time
 
@@ -10,11 +10,7 @@ import belegprotokoll as bp
 import lese_treppe as lt
 import verprobung as vp
 
-QUELLEN = [
-    (r"C:\datenlager\_eingang\zarmina-rettung-2026-10-17\home\zarmina\nextcloud_2026_05\Eingangsrechnungen", 20, "AR Eingangsrechnungen"),
-    (r"C:\Projects\2025\_belege", 15, "DE Belege 2025"),
-    (r"C:\Projects\2025\_scan", 15, "DE Scans 2025"),
-]
+QUELLEN = []  # (Ordner, Anzahl, Gruppe); per --quelle "ordner|anzahl|gruppe" (mehrfach) gesetzt
 
 
 def stichprobe():
@@ -36,9 +32,13 @@ def main():
     ap.add_argument("--mandant", default="haus")
     ap.add_argument("--max-seiten", type=int, default=2)
     ap.add_argument("--kandidaten", default="rapidocr,docling,granite-vision")
-    ap.add_argument("--ausgabe", default=r"C:\datenlager\trove\haus\messung_f3")
-    ap.add_argument("--doku", default=r"C:\Projects\trove\doku")
+    ap.add_argument("--quelle", action="append", required=True, help="Ordner|Anzahl|Gruppe (mehrfach)")
+    ap.add_argument("--ausgabe", default=os.path.join(bp.WURZEL, "haus", "messung_f3"))
+    ap.add_argument("--doku", default="doku")
     a = ap.parse_args()
+    for q in a.quelle:
+        ordner, n, gruppe = q.rsplit("|", 2)
+        QUELLEN.append((ordner, int(n), gruppe))
     os.makedirs(a.ausgabe, exist_ok=True)
     kandidaten = [k for k in a.kandidaten.split(",") if k]
     probe = stichprobe()

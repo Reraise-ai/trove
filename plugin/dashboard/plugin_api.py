@@ -21,9 +21,9 @@ import time
 
 from fastapi import APIRouter, HTTPException
 
-TROVE_REPO = os.environ.get("TROVE_REPO", r"C:\Projects\trove")
-TROVE_DATEN = os.environ.get("TROVE_DATEN", r"C:\datenlager\trove")
-REGISTER_ALT = os.environ.get("TROVE_REGISTER_DB", r"C:\datenlager\_eingang\datei-zentrale\reg_z_2026-10-17.db")
+TROVE_REPO = os.environ.get("TROVE_REPO") or os.path.join(os.path.expanduser("~"), "trove")
+TROVE_DATEN = os.environ.get("TROVE_DATEN") or os.path.join(os.path.expanduser("~"), "trove-daten")
+REGISTER_ALT = os.environ.get("TROVE_REGISTER_DB") or os.path.join(TROVE_DATEN, "_altindex", "register.db")
 RCLONE = os.environ.get("TROVE_RCLONE", os.path.join(os.environ.get("LOCALAPPDATA", ""), r"Microsoft\WinGet\Links\rclone.exe"))
 if TROVE_REPO not in sys.path:
     sys.path.insert(0, TROVE_REPO)

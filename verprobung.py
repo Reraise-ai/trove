@@ -8,7 +8,7 @@ Keine KI. Regeln:
   R6 USt-IdNr Form (DE + 9 Ziffern) — nur wenn gefunden
   R7 zwei Auslesungen stimmen beim Brutto ueberein — nur wenn zwei Lesungen vorliegen
 Bestanden = R1 und R2 erfuellt, R3 erfuellt oder nicht pruefbar, keine Pruefziffer falsch, R7 nicht widerspruechlich.
-Jedes Ergebnis: Zeile in C:\\datenlager\\trove\\<mandant>\\pruefliste.jsonl (append) und Ereignis "verprobt" im Belegprotokoll.
+Jedes Ergebnis: Zeile in <TROVE_DATEN>\\<mandant>\\pruefliste.jsonl (append) und Ereignis "verprobt" im Belegprotokoll.
 """
 import argparse, datetime, json, os, sys
 

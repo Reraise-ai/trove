@@ -2,7 +2,7 @@
 
 Stufen (Plan §5): 1 E-Rechnung (eingebettetes XML, ZUGFeRD/Factur-X) → 2 Textlayer (PDF-Text) → 3 OCR (lokal, kein bezahlter Token).
 OCR-Kandidaten (A-06, per Messung gewaehlt): rapidocr (ONNX, CPU) · docling (ibm/granite-docling ueber Ollama)
-· granite-vision (granite3.2-vision ueber Ollama). Ergebnis je Beleg: Zwilling-JSON unter C:\\datenlager\\trove\\<mandant>\\zwillinge\\<sha>.json
+· granite-vision (granite3.2-vision ueber Ollama). Ergebnis je Beleg: Zwilling-JSON unter <TROVE_DATEN>\\<mandant>\\zwillinge\\<sha>.json
 (Text, Methode, Dauer, ausgelesene Felder). Die Verprobung (F4) steht in verprobung.py; sie entscheidet, nicht die KI.
 """
 import argparse, base64, hashlib, io, json, os, re, sys, time, urllib.request

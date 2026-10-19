@@ -1,6 +1,6 @@
 """Trove F8 — Belegprotokoll: jede Bewegung eines Belegs, nur anfuegend, rueckwaerts verfolgbar.
 
-Eine JSONL-Datei je Mandant: C:\\datenlager\\trove\\<mandant>\\belegprotokoll.jsonl
+Eine JSONL-Datei je Mandant: <TROVE_DATEN>\\<mandant>\\belegprotokoll.jsonl
 Jede Zeile: ein Ereignis. Felder:
   zeit       ISO-Zeit mit Zone (Schreibzeitpunkt)
   ereignis   gesehen | kopiert | verifiziert | verschoben | umbenannt | fehler | notiz
@@ -10,7 +10,7 @@ Jede Zeile: ein Ereignis. Felder:
   bytes      Groesse
   werkzeug   wer geschrieben hat (kopieren.py, register.py, ...)
   mandant    Mandantenname
-  lauf       Kennung des Laufs (z. B. zarmina-rettung-2026-10-17)
+  lauf       Kennung des Laufs (z. B. rettung-2026-10-17)
   meldung    Freitext (Fehler, Erklaerung)
   nr         laufende Nummer in dieser Datei (1..n)
   kette      sha256(kette der Vorzeile + diese Zeile ohne kette) — Luecken/Aenderungen in der Mitte sind nachweisbar
@@ -18,7 +18,7 @@ Nie ueberschreiben, nie loeschen. Nur anfuegen.
 
 Grenzen (Review 18.10.2026): Die Kette allein erkennt kein Abschneiden am Ende und schuetzt nicht gegen
 Neurechnen aller Folgehashes. Dafuer gibt es den ANKER: nach jedem Lauf wird (nr, kette) in eine zweite
-Datei ausserhalb des Mandantenordners geschrieben (C:\\datenlager\\trove\\_anker\\<mandant>.jsonl);
+Datei ausserhalb des Mandantenordners geschrieben (<TROVE_DATEN>\\_anker\\<mandant>.jsonl);
 `pruefen` vergleicht gegen den letzten Anker. Der Anker gehoert zusaetzlich auf ein zweites Medium.
 
 Schreibschutz: ein Protokoll-Objekt haelt waehrend seiner Lebensdauer einen Exklusiv-Lock (<pfad>.lock);
@@ -26,7 +26,7 @@ ein zweiter Schreiber scheitert sofort, statt die Kette zu gabeln.
 """
 import argparse, ctypes, hashlib, json, os, sys, time, unicodedata
 
-WURZEL = r"C:\datenlager\trove"
+WURZEL = os.environ.get("TROVE_DATEN") or os.path.join(os.path.expanduser("~"), "trove-daten")  # Datenordner; per Umgebungsvariable TROVE_DATEN aenderbar
 EREIGNISSE = ("gesehen", "kopiert", "verifiziert", "verschoben", "umbenannt", "fehler", "notiz", "gelesen", "verprobt", "zerlegt", "versendet", "unterschrieben")
 ENC = dict(encoding="utf-8", errors="surrogatepass")
 

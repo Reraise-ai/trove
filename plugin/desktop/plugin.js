@@ -1,4 +1,4 @@
-// Trove — Hermes-Desktop-Tab (Disk-Plugin, kein Build). Quelle: C:\Projects\trove\plugin\desktop\plugin.js
+// Trove — Hermes-Desktop-Tab (Disk-Plugin, kein Build). Quelle: plugin/desktop/plugin.js im Repo
 // Zwei Seiten (links Quelle, rechts Ziel), Vorschau auf beiden Seiten, Aktionen laufen ueber das Belegprotokoll (F8).
 // Je Datei: Lesen (F3 Treppe + F4 Verprobung), Zerlegen (F6 Stapel), Historie (F11 ERPNext-Spiegel), Unterschrift (F7 DocuSeal).
 // Kopf: Suche ueber beide Welten (F15), Mail abholen (F5), ERPNext-Spiegel (F11), Unterschriften holen (F7).
@@ -37,7 +37,7 @@ function QuelleAnlegen({ remotes, onFertig }) {
     ] }),
     jsx(Input, { placeholder: 'Anzeigename (optional)', value: name, onChange: (e) => setName(e.target.value) }),
     art === 'ordner'
-      ? jsx(Input, { placeholder: 'Ordnerpfad, z. B. C:\\datenlager\\_eingang', value: pfad, onChange: (e) => setPfad(e.target.value) })
+      ? jsx(Input, { placeholder: 'Ordnerpfad, z. B. C:\\Daten\\Eingang', value: pfad, onChange: (e) => setPfad(e.target.value) })
       : jsxs('div', { className: 'flex gap-2', children: [
           jsx('select', { className: 'rounded border border-(--ui-stroke-secondary) bg-transparent px-2 py-1', value: remote, onChange: (e) => setRemote(e.target.value), children: remotes.map((r) => jsx('option', { value: r, children: r + ':' }, r)) }),
           jsx(Input, { placeholder: 'Unterordner im Drive (optional)', value: pfad, onChange: (e) => setPfad(e.target.value) })

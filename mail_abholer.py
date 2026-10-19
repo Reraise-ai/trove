@@ -1,11 +1,11 @@
 """Trove F5 — E-Mail-Archiv: Postfaecher abholen, Mail als .eml ablegen, Anhaenge einzeln mit Pruefsumme ins Belegprotokoll (Mail <-> Beleg).
 
-Postfaecher je Mandant: C:\\datenlager\\trove\\<mandant>\\postfaecher.json, Liste von
-  {"id": "caprey", "art": "gmail", "token_datei": "C:\\Users\\Kane\\AppData\\Local\\hermes\\google_token.json"}
+Postfaecher je Mandant: <TROVE_DATEN>\\<mandant>\\postfaecher.json, Liste von
+  {"id": "privat", "art": "gmail", "token_datei": "<Ordner>\\google_token.json"}
   {"id": "info",   "art": "imap",  "host": "imap.example.com", "user": "...", "passwort_datei": "C:\\...\\geheim.txt", "ordner": ["INBOX"]}
 Nie Passwoerter/Token in dieser Datei oder im Repo — nur Pfade. Das Gmail-Token wird gelesen, nie zurueckgeschrieben (Hermes bleibt Eigentuemer).
 
-Ablage: C:\\datenlager\\trove\\<mandant>\\mail\\<postfach>\\<JJJJ>\\<kennung>\\mail.eml + anhaenge\\<name>; kennung = sha256(Message-ID)[:16].
+Ablage: <TROVE_DATEN>\\<mandant>\\mail\\<postfach>\\<JJJJ>\\<kennung>\\mail.eml + anhaenge\\<name>; kennung = sha256(Message-ID)[:16].
 Protokoll (F8): "gesehen" je Mail (quelle mail:<postfach>/<message-id>, ziel .eml, sha256 der .eml, meldung Betreff/Absender/Datum),
                  "kopiert" je Anhang (quelle mail:<postfach>/<message-id>/<name>, ziel Datei, sha256 nach Rueckleseprobe).
 Stand je Postfach: <mandant>\\mail\\<postfach>\\stand.json (gmail: letzte internalDate; imap: letzte UID je Ordner). Idempotent.

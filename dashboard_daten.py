@@ -1,5 +1,6 @@
 import json, sys, collections
 prot = sys.argv[1]
+prefix = sys.argv[2] if len(sys.argv) > 2 else ""
 final = {}  # quelle -> letzter Eintrag (finaler Status gewinnt)
 for line in open(prot, encoding="utf-8"):
     e = json.loads(line); final[e["quelle"]] = e
@@ -11,5 +12,5 @@ for q, e in final.items():
     tot["n"] += 1; tot["bytes"] += e.get("bytes") or 0; tot["st"][e["status"]] += 1
 top = sorted(blocks.items(), key=lambda kv: -kv[1]["bytes"])[:14]
 out = {"total": {"n": tot["n"], "gb": round(tot["bytes"]/1e9, 2), "st": dict(tot["st"])},
-       "blocks": [{"k": k.replace("home/zarmina/", ""), "n": v["n"], "gb": round(v["bytes"]/1e9, 3), "st": dict(v["st"])} for k, v in top]}
+       "blocks": [{"k": k.replace(prefix, "") if prefix else k, "n": v["n"], "gb": round(v["bytes"]/1e9, 3), "st": dict(v["st"])} for k, v in top]}
 print(json.dumps(out, ensure_ascii=False))

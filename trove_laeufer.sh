@@ -1,24 +1,33 @@
 #!/bin/bash
-# Trove Komplett-Laeufer (laeuft auf zarmina): pusht alle indexierten zarmina-Dateien
+# Trove Komplett-Laeufer (laeuft auf der Quellmaschine): pusht alle indexierten Dateien der Quelle
 # blockweise verifiziert zum Server. Selbstueberwachend (Heartbeat, Block-Retry). Idempotent.
-# NUR lesen auf zarmina; nichts hier aendern/loeschen.
+# NUR lesen auf der Quellmaschine; nichts hier aendern/loeschen.
 set -u
-SRV="Kane@100.86.124.18"
-KEY="$HOME/.ssh/id_ed25519_winserver"
+# Konfiguration per Umgebungsvariablen (alle ohne Standardwert ausser dem Schluessel):
+#   TROVE_SERVER        user@host des Zielservers (Windows)
+#   TROVE_SCHLUESSEL    SSH-Schluessel (Standard ~/.ssh/id_ed25519)
+#   TROVE_REGISTER_WIN  Registerdatei auf dem Server (Windows-Pfad)
+#   TROVE_ZIEL_WIN      Zielordner auf dem Server (Windows-Pfad)
+#   TROVE_REPO_WIN      Trove-Repo auf dem Server (Windows-Pfad)
+#   TROVE_QUELLORT      Wert der Spalte ort im Register (Standard quelle)
+SRV="${TROVE_SERVER:?TROVE_SERVER fehlt}"
+KEY="${TROVE_SCHLUESSEL:-$HOME/.ssh/id_ed25519}"
+ORT="${TROVE_QUELLORT:-quelle}"
 SSHO=(-i "$KEY" -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=20 -o ServerAliveCountMax=5)
-DBWIN='C:\datenlager\_eingang\datei-zentrale\reg_z_2026-10-17.db'
-ZIEL='C:\datenlager\_eingang\zarmina-rettung-2026-10-17'
+DBWIN="${TROVE_REGISTER_WIN:?TROVE_REGISTER_WIN fehlt}"
+ZIEL="${TROVE_ZIEL_WIN:?TROVE_ZIEL_WIN fehlt}"
+REPOWIN="${TROVE_REPO_WIN:?TROVE_REPO_WIN fehlt}"
 PROT="$ZIEL\\belegprotokoll.jsonl"
 LOG=/tmp/trove_lauf.log; HB=/tmp/trove_heartbeat; BD=/tmp/trove_blocks
 exec >>"$LOG" 2>&1
 echo "=== TROVE LAUF start $(date -Is) ==="
 date -Is > "$HB"
 DBL=/tmp/reg_z.db
-[ -f "$DBL" ] || { echo "FEHLER: Index $DBL fehlt auf zarmina"; exit 1; }
-python3 - "$DBL" "$BD" <<'PY'
+[ -f "$DBL" ] || { echo "FEHLER: Index $DBL fehlt auf der Quellmaschine"; exit 1; }
+python3 - "$DBL" "$BD" "$ORT" <<'PY'
 import sqlite3, sys, os, collections
-db, bd = sys.argv[1], sys.argv[2]
-rows = [r[0] for r in sqlite3.connect(db).execute("select pfad from datei where ort='zarmina'")]
+db, bd, ort = sys.argv[1], sys.argv[2], sys.argv[3]
+rows = [r[0] for r in sqlite3.connect(db).execute("select pfad from datei where ort=?", (ort,))]
 blk = collections.defaultdict(list)
 for p in rows:
     blk['/'.join(p.strip('/').split('/')[:4])].append(p)
@@ -35,7 +44,7 @@ while IFS=$'\t' read -r fn n k; do
   ok=0
   for try in 1 2 3; do
     date -Is > "$HB"
-    if tar -cf - -T "$fn" 2>/dev/null | ssh "${SSHO[@]}" "$SRV" "python C:\\Projects\\trove\\kopieren.py --db $DBWIN --quell-prefix / --ziel $ZIEL --protokoll $PROT"; then
+    if tar -cf - -T "$fn" 2>/dev/null | ssh "${SSHO[@]}" "$SRV" "python $REPOWIN\\kopieren.py --db $DBWIN --quell-prefix / --ziel $ZIEL --protokoll $PROT"; then
       echo "block $k OK (try $try) $(date -Is)"; ok=1; break
     else
       echo "block $k FEHLER try $try $(date -Is)"; sleep 5

@@ -1,6 +1,6 @@
 name: trove
 version: "0.1.0"
-description: "Trove (Datei-Zentrale) — Tab in Hermes Desktop: Belegprotokoll, Register, Quellen. Baustein von Private Executive."
+description: "Trove (Datei-Zentrale) — Tab in Hermes Desktop: Belegprotokoll, Register, Quellen."
 author: Caprey SAS
 kind: standalone
 requires_hermes: ">=0.19"

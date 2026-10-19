@@ -1,6 +1,7 @@
-import json, sqlite3, sys
+import json, os, sqlite3, sys
 db, prot = sys.argv[1], sys.argv[2]
-idx = set(r[0] for r in sqlite3.connect(db).execute("select pfad from datei where ort='zarmina'"))
+ort = os.environ.get("TROVE_QUELLORT", "quelle")
+idx = set(r[0] for r in sqlite3.connect(db).execute("select pfad from datei where ort=?", (ort,)))
 kopiert, erklaert, err = set(), set(), set()
 for line in open(prot, encoding="utf-8"):
     e = json.loads(line); s = e["status"]; q = e["quelle"]

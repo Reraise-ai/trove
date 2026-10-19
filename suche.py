@@ -1,11 +1,11 @@
 """Trove F15 — eine Suche ueber beide Welten: "liegt bei dir unter ..." / "liegt bei uns unter ...".
 
 Quellen (alle lokal, kein Modell):
-  register    C:\\datenlager\\trove\\<mandant>\\register.db (Tabelle datei: ort, pfad, name, sha256) — Welt A + B, was F1/F2 aufgenommen hat
-  altindex    C:\\datenlager\\_eingang\\datei-zentrale\\reg_z_2026-10-17.db (zarmina-Index, 62.368 Dateien)
+  register    <TROVE_DATEN>\\<mandant>\\register.db (Tabelle datei: ort, pfad, name, sha256) — Welt A + B, was F1/F2 aufgenommen hat
+  altindex    <TROVE_DATEN>\\_altindex\\register.db (Index einer frueheren Quelle, per TROVE_REGISTER_DB)
   protokoll   Belegprotokoll (Pfade, sha256, Meldungen — darunter Mail-Betreffe, Lese-Ergebnisse, Unterschriften)
   erpnext     Trove Beleg (Dateiname, Rechnungsnummer, Aussteller, letzter Ort) + Kundenakten (Customer, Supplier, Purchase/Sales Invoice)
-  paperless   Welt-A-Archiv (A-11): /api/documents/?query=  — Token C:\\datenlager\\platform\\paperless\\api_token.txt (nur Pfad)
+  paperless   Welt-A-Archiv (A-11): /api/documents/?query=  — Token-Datei per TROVE_PAPERLESS_TOKEN (nur Pfad)
 "bei uns" = auf dem Server (C:\\...), Paperless, ERPNext, DocuSeal; "im Postfach" = mail:...; "bei dir" = fremde Maschine oder Remote (/home/..., UNC, rclone).
 """
 import argparse, json, os, re, sqlite3, sys, urllib.parse, urllib.request
@@ -13,9 +13,9 @@ import argparse, json, os, re, sqlite3, sys, urllib.parse, urllib.request
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import belegprotokoll as bp
 
-ALTINDEX = os.environ.get("TROVE_REGISTER_DB", r"C:\datenlager\_eingang\datei-zentrale\reg_z_2026-10-17.db")
+ALTINDEX = os.environ.get("TROVE_REGISTER_DB", os.path.join(bp.WURZEL, "_altindex", "register.db"))
 PAPERLESS = os.environ.get("TROVE_PAPERLESS", "http://127.0.0.1:8010")
-PAPERLESS_TOKEN = os.environ.get("TROVE_PAPERLESS_TOKEN", r"C:\datenlager\platform\paperless\api_token.txt")
+PAPERLESS_TOKEN = os.environ.get("TROVE_PAPERLESS_TOKEN", os.path.join(bp.WURZEL, "_geheim", "paperless_api_token.txt"))
 
 
 def wo(pfad):
