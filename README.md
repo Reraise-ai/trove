@@ -29,4 +29,14 @@ Trove has no fixed paths. Everything is set by environment variables (defaults i
 
 Before a release, `bash tools/spuren-pruefen.sh` checks that no trace of a private installation (host names, internal addresses, fixed drive paths, personal names) is left in tracked files.
 
+## Install (Hermes desktop plugin)
+
+Requires Hermes Desktop >= 0.19.
+
+1. `git clone https://github.com/Reraise-ai/trove.git`
+2. `python plugin/installieren.py`
+3. Reload Hermes (or restart it) — the "Trove" tab appears.
+
+The installer locates the Hermes home automatically on Windows, macOS and Linux. If it cannot find it, set `HERMES_HOME` to your Hermes data folder and run step 2 again. It creates `config.yaml` if missing and enables the plugin idempotently (an existing `config.yaml` is backed up before any change).
+
 License: Apache-2.0
