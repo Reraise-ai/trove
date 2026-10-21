@@ -1,6 +1,6 @@
 """Trove F8 — Belegprotokoll: jede Bewegung eines Belegs, nur anfuegend, rueckwaerts verfolgbar.
 
-Eine JSONL-Datei je Mandant: <TROVE_DATEN>\\<mandant>\\belegprotokoll.jsonl
+Eine JSONL-Datei je Mandant: <datenwurzel>\\<mandant>\\belegprotokoll.jsonl
 Jede Zeile: ein Ereignis. Felder:
   zeit       ISO-Zeit mit Zone (Schreibzeitpunkt)
   ereignis   gesehen | kopiert | verifiziert | verschoben | umbenannt | fehler | notiz
@@ -10,7 +10,7 @@ Jede Zeile: ein Ereignis. Felder:
   bytes      Groesse
   werkzeug   wer geschrieben hat (kopieren.py, register.py, ...)
   mandant    Mandantenname
-  lauf       Kennung des Laufs (z. B. rettung-2026-10-17)
+  lauf       Kennung des Laufs (z. B. rettung-2026-01)
   meldung    Freitext (Fehler, Erklaerung)
   nr         laufende Nummer in dieser Datei (1..n)
   kette      sha256(kette der Vorzeile + diese Zeile ohne kette) — Luecken/Aenderungen in der Mitte sind nachweisbar
@@ -18,15 +18,19 @@ Nie ueberschreiben, nie loeschen. Nur anfuegen.
 
 Grenzen (Review 18.10.2026): Die Kette allein erkennt kein Abschneiden am Ende und schuetzt nicht gegen
 Neurechnen aller Folgehashes. Dafuer gibt es den ANKER: nach jedem Lauf wird (nr, kette) in eine zweite
-Datei ausserhalb des Mandantenordners geschrieben (<TROVE_DATEN>\\_anker\\<mandant>.jsonl);
+Datei ausserhalb des Mandantenordners geschrieben (<datenwurzel>\\_anker\\<mandant>.jsonl);
 `pruefen` vergleicht gegen den letzten Anker. Der Anker gehoert zusaetzlich auf ein zweites Medium.
 
-Schreibschutz: ein Protokoll-Objekt haelt waehrend seiner Lebensdauer einen Exklusiv-Lock (<pfad>.lock);
-ein zweiter Schreiber scheitert sofort, statt die Kette zu gabeln.
+Schreibschutz: ein Protokoll-Objekt haelt waehrend seiner Lebensdauer einen Exklusiv-Lock (<pfad>.lock, Klasse Sperre —
+dieselbe Klasse dient anderen Werkzeugen als Laufsperre, art="lauf" -> LaufLaeuft); ein zweiter Schreiber scheitert sofort,
+statt die Kette zu gabeln. Datenwurzel: Umgebungsvariable TROVE_DATEN (Standard <Benutzerverzeichnis>/Trove, oder trove.json), fuer alle Werkzeuge.
 """
-import argparse, ctypes, hashlib, json, os, sys, time, unicodedata
+import argparse, hashlib, json, os, sys, time, unicodedata
 
-WURZEL = os.environ.get("TROVE_DATEN") or os.path.join(os.path.expanduser("~"), "trove-daten")  # Datenordner; per Umgebungsvariable TROVE_DATEN aenderbar
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import konfig  # noqa: E402  (setzt TROVE_* aus trove.json vor)
+
+WURZEL = konfig.datenwurzel()
 EREIGNISSE = ("gesehen", "kopiert", "verifiziert", "verschoben", "umbenannt", "fehler", "notiz", "gelesen", "verprobt", "zerlegt", "versendet", "unterschrieben")
 ENC = dict(encoding="utf-8", errors="surrogatepass")
 
@@ -39,6 +43,10 @@ class ProtokollGesperrt(Exception):
     """Ein anderer Prozess schreibt gerade in dieses Protokoll."""
 
 
+class LaufLaeuft(ProtokollGesperrt):
+    """Laufsperre belegt: ein anderer Lauf desselben Werkzeugs laeuft (Unterklasse, damit Aufrufer weiter funktionieren)."""
+
+
 def pfad_fuer(mandant):
     return os.path.join(WURZEL, mandant, "belegprotokoll.jsonl")
 
@@ -47,8 +55,11 @@ def anker_pfad_fuer(mandant):
     return os.path.join(WURZEL, "_anker", mandant + ".jsonl")
 
 
-def _jetzt():
+def jetzt():
     return time.strftime("%Y-%m-%dT%H:%M:%S%z")
+
+
+_jetzt = jetzt  # alter Name (docuseal.py u. a.)
 
 
 def _norm(p):
@@ -105,94 +116,131 @@ def _letzte_zeile(pfad):
         raise ProtokollDefekt("letzte Zeile von %s nicht lesbar (%s): %r" % (pfad, ex, letzte[:120]))
 
 
-def _pid_lebt(pid):
-    if os.name != "nt":
+def _pid_aus(pfad):
+    try:
+        with open(pfad) as fh:
+            return int(fh.read().strip() or "0")
+    except (OSError, ValueError):
+        return 0
+
+
+class Sperre:
+    """Exklusiv-Sperre auf einer Datei, Handle OFFEN bis entsperren (Kontextmanager); die PID steht darin (fuer die Meldung).
+    Windows: O_CREAT|O_EXCL. Die Wahrheit ist das offene Handle, nicht die PID: ohne FILE_SHARE_DELETE verweigert das System
+    jedem anderen das Loeschen, solange der Halter lebt (os.remove -> PermissionError = belegt). Gelingt das Loeschen, war die
+    Sperre verwaist (auch wenn die PID inzwischen einem fremden Prozess gehoert) und wird neu angelegt. entsperren schliesst das
+    Handle und loescht die Datei (bis 5 Versuche a 0,2 s, z. B. Virenscanner); scheitert das, bleibt sie verwaist liegen und
+    der naechste Halter uebernimmt sie per Loeschversuch.
+    POSIX: flock auf einer bleibenden Datei (nie geloescht: Loeschen liesse einem zweiten Oeffner ein verwaistes Inode, zwei
+    Halter waeren moeglich); der Kern gibt flock beim Tod des Halters frei. Die Datei bleibt nach entsperren liegen.
+    art "protokoll": belegt -> ProtokollGesperrt; art "lauf": belegt -> LaufLaeuft (Unterklasse)."""
+
+    def __init__(self, pfad, art="protokoll"):
+        if art not in ("protokoll", "lauf"):
+            raise ValueError("art: protokoll | lauf")
+        self.pfad = pfad
+        self.art = art
+        self._fd = None
+
+    def __enter__(self):
+        self.sperren()
+        return self
+
+    def __exit__(self, *a):
+        self.entsperren()
+
+    def _belegt(self, pid):
+        if self.art == "lauf":
+            return LaufLaeuft("Lauf laeuft bereits (Prozess %s): %s" % (pid or "?", self.pfad))
+        return ProtokollGesperrt("%s ist gesperrt (Prozess %s)" % (self.pfad, pid or "?"))
+
+    def sperren(self):
+        d = os.path.dirname(self.pfad)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        if os.name != "nt":
+            import fcntl
+            fd = os.open(self.pfad, os.O_CREAT | os.O_RDWR)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                os.close(fd)
+                raise self._belegt(_pid_aus(self.pfad))
+            os.ftruncate(fd, 0)
+            os.write(fd, str(os.getpid()).encode())
+            self._fd = fd
+            return
+        for _ in range(3):
+            try:
+                fd = os.open(self.pfad, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except PermissionError:  # "delete pending" (Scanner mit FILE_SHARE_DELETE, Netzlaufwerk): kurz warten
+                time.sleep(0.2)
+                continue
+            except FileExistsError:
+                try:
+                    os.remove(self.pfad)  # gelingt nur, wenn kein Halter die Datei offen haelt
+                except PermissionError:
+                    raise self._belegt(_pid_aus(self.pfad))
+                except FileNotFoundError:
+                    pass
+                continue
+            os.write(fd, str(os.getpid()).encode())
+            self._fd = fd
+            return
+        raise self._belegt(None)
+
+    def entsperren(self):
+        if self._fd is None:
+            return
         try:
-            os.kill(pid, 0); return True
+            os.close(self._fd)
         except OSError:
-            return False
-    k = ctypes.windll.kernel32
-    h = k.OpenProcess(0x1000, False, int(pid))  # PROCESS_QUERY_LIMITED_INFORMATION
-    if not h:
-        return False
-    code = ctypes.c_ulong()
-    ok = k.GetExitCodeProcess(h, ctypes.byref(code))
-    k.CloseHandle(h)
-    return bool(ok) and code.value == 259  # STILL_ACTIVE
+            pass
+        self._fd = None
+        if os.name == "nt":
+            for i in range(5):
+                try:
+                    os.remove(self.pfad)
+                    return
+                except FileNotFoundError:
+                    return
+                except OSError:
+                    if i < 4:
+                        time.sleep(0.2)
 
 
 class Protokoll:
-    """Offenes Protokoll mit Exklusiv-Lock; nr/kette werden erst nach erfolgreichem Schreiben uebernommen."""
+    """Offenes Protokoll mit Exklusiv-Sperre (<pfad>.lock, Klasse Sperre); nr/kette erst nach erfolgreichem Schreiben uebernommen."""
 
     def __init__(self, pfad):
         self.pfad = pfad
         d = os.path.dirname(pfad)
         if d:
             os.makedirs(d, exist_ok=True)
-        self._lock = pfad + ".lock"
-        self._sperren()
-        try:
+        self._sperre = Sperre(pfad + ".lock")
+        self._sperre.sperren()
+        self._f = None
+        try:  # jeder Fehler hier (ProtokollDefekt, KeyError, OSError): Sperre frei, sonst haengt sie im Hermes-Prozess
             letzte, endet_nl = _letzte_zeile(pfad)
-        except ProtokollDefekt:
-            self._entsperren(); raise
-        self.nr = letzte["nr"] if letzte else 0
-        self.kette = letzte["kette"] if letzte else ""
-        self._f = open(pfad, "a", buffering=1, newline="\n", **ENC)
-        if not endet_nl:
-            self._f.write("\n")  # eine vollstaendige Zeile ohne Zeilenende: sauber abschliessen
-
-    def _sperren(self):
-        """Exklusiv-Lock: die Lock-Datei bleibt waehrend der Lebensdauer OFFEN. Windows verweigert dann jedem anderen das Loeschen
-        (kein FILE_SHARE_DELETE), ein Lock kann nicht gestohlen werden; stirbt der Halter, gibt das System die Datei frei und der
-        naechste raeumt sie weg. Zusaetzlich steht die PID darin (Meldung). Unter Linux haelt flock die Sperre."""
-        for _ in range(3):
-            try:
-                fd = os.open(self._lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            except FileExistsError:
+            self.nr = letzte["nr"] if letzte else 0
+            self.kette = letzte["kette"] if letzte else ""
+            self._f = open(pfad, "a", buffering=1, newline="\n", **ENC)
+            if not endet_nl:
+                self._f.write("\n")  # eine vollstaendige Zeile ohne Zeilenende: sauber abschliessen
+        except BaseException:
+            if self._f is not None:
                 try:
-                    pid = int(open(self._lock).read().strip() or "0")
-                except (OSError, ValueError):
-                    pid = 0
-                try:
-                    os.remove(self._lock)  # gelingt nur, wenn kein lebender Halter die Datei offen haelt
-                except PermissionError:
-                    raise ProtokollGesperrt("%s wird von Prozess %s geschrieben" % (self.pfad, pid or "?"))
-                except FileNotFoundError:
-                    pass
-                if pid and _pid_lebt(pid):
-                    # Datei war loeschbar, Prozess lebt aber (anderes System ohne Loeschsperre): nicht anfassen
-                    raise ProtokollGesperrt("%s wird von Prozess %d geschrieben" % (self.pfad, pid))
-                continue
-            if os.name != "nt":
-                try:
-                    import fcntl
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    self._f.close()
                 except OSError:
-                    os.close(fd)
-                    raise ProtokollGesperrt("%s ist gesperrt (flock)" % self.pfad)
-            os.write(fd, str(os.getpid()).encode())
-            self._lockfd = fd  # bleibt offen bis _entsperren
-            return
-        raise ProtokollGesperrt("Lock %s nicht erhaeltlich" % self._lock)
-
-    def _entsperren(self):
-        fd = getattr(self, "_lockfd", None)
-        if fd is not None:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-            self._lockfd = None
-        try:
-            os.remove(self._lock)
-        except OSError:
-            pass
+                    pass
+            self._sperre.entsperren()
+            raise
 
     def schreiben(self, ereignis, quelle="", ziel="", sha256="", bytes_=None, werkzeug="", mandant="", lauf="", meldung="", zeit=None, **extra):
         if ereignis not in EREIGNISSE:
             raise ValueError("unbekanntes Ereignis: %r" % ereignis)
         nr = self.nr + 1
-        e = {"nr": nr, "zeit": zeit or _jetzt(), "ereignis": ereignis, "quelle": quelle, "ziel": ziel,
+        e = {"nr": nr, "zeit": zeit or jetzt(), "ereignis": ereignis, "quelle": quelle, "ziel": ziel,
              "sha256": sha256 or "", "bytes": bytes_, "werkzeug": werkzeug, "mandant": mandant, "lauf": lauf,
              "meldung": meldung}
         e.update(extra)
@@ -210,7 +258,7 @@ class Protokoll:
             return None
         pfad = anker_pfad_fuer(mandant)
         os.makedirs(os.path.dirname(pfad), exist_ok=True)
-        a = {"zeit": _jetzt(), "mandant": mandant, "lauf": lauf, "nr": self.nr, "kette": self.kette, "protokoll": self.pfad}
+        a = {"zeit": jetzt(), "mandant": mandant, "lauf": lauf, "nr": self.nr, "kette": self.kette, "protokoll": self.pfad}
         with open(pfad, "a", newline="\n", **ENC) as f:
             f.write(json.dumps(a, ensure_ascii=False) + "\n"); f.flush(); os.fsync(f.fileno())
         return a
@@ -219,7 +267,7 @@ class Protokoll:
         try:
             self._f.flush(); os.fsync(self._f.fileno()); self._f.close()
         finally:
-            self._entsperren()
+            self._sperre.entsperren()
 
     def __enter__(self):
         return self
@@ -343,12 +391,15 @@ def spur(pfad, datei, max_tiefe=50):
             "sha256": sorted(shas), "abgeschnitten": r_ab or v_ab}
 
 
-def _datei_sha(pfad):
+def datei_sha(pfad):
     h = hashlib.sha256()
     with open(pfad, "rb") as f:
         for block in iter(lambda: f.read(1 << 20), b""):
             h.update(block)
     return h.hexdigest()
+
+
+_datei_sha = datei_sha  # alter Name
 
 
 def einlesen_kopierprotokoll(alt, pfad, mandant, lauf, werkzeug="kopieren.py"):
@@ -358,7 +409,7 @@ def einlesen_kopierprotokoll(alt, pfad, mandant, lauf, werkzeug="kopieren.py"):
     werden in zeit_alt belassen (zeit_zone = 'angenommen lokal'); zeit = Einlesezeitpunkt."""
     abb = {"ok": "kopiert", "geaendert": "kopiert", "nicht_im_index": "kopiert", "schon_da": "gesehen",
            "mismatch": "fehler", "fehler": "fehler", "quelle_verschwunden": "notiz", "symlink": "notiz"}
-    alt_sha = _datei_sha(alt)
+    alt_sha = datei_sha(alt)
     if os.path.exists(pfad):
         for e in eintraege(pfad):
             if e.get("ereignis") == "notiz" and e.get("eingelesen_sha") == alt_sha:
@@ -388,7 +439,139 @@ def einlesen_kopierprotokoll(alt, pfad, mandant, lauf, werkzeug="kopieren.py"):
     return n
 
 
+def _selbsttest():
+    """Sperre mit zwei echten Prozessen: zweiter Schreiber gesperrt, toter Halter (kill -9 / verwaiste Datei) aufgeraeumt."""
+    import signal, subprocess, tempfile
+    with tempfile.TemporaryDirectory() as w:
+        pfad = os.path.join(w, "m", "belegprotokoll.jsonl")
+        halter = ("import sys; sys.path.insert(0, %r); import belegprotokoll as bp; p = bp.Protokoll(%r); "
+                  "p.schreiben('notiz', meldung='halter'); print('da', flush=True); sys.stdin.read()"
+                  % (os.path.dirname(os.path.abspath(__file__)), pfad))
+        k = subprocess.Popen([sys.executable, "-c", halter], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        try:
+            assert k.stdout.readline().strip() == "da"
+            try:
+                Protokoll(pfad)
+                raise AssertionError("zweiter Schreiber nicht gesperrt")
+            except ProtokollGesperrt as ex:
+                assert str(k.pid) in str(ex), ex
+            if os.name == "nt":
+                k.kill()
+            else:
+                os.kill(k.pid, signal.SIGKILL)
+            k.wait(10)
+        finally:
+            if k.poll() is None:
+                k.kill()
+        with Protokoll(pfad) as p:  # toter Halter: Sperre frei
+            p.schreiben("notiz", meldung="nach dem Tod")
+        with open(pfad + ".lock", "w") as fh:
+            fh.write(str(k.pid))  # verwaiste Sperrdatei mit toter PID
+        schreiben(pfad, ereignis="notiz", meldung="ueber verwaister Sperre")
+        assert pruefen(pfad)["kette"] == "ok" and [e["nr"] for e in eintraege(pfad)] == [1, 2, 3]
+        with Sperre(os.path.join(w, "lauf.lock"), art="lauf") as s:
+            try:
+                Sperre(s.pfad, art="lauf").sperren()
+                raise AssertionError("Laufsperre doppelt vergeben")
+            except LaufLaeuft as ex:
+                assert isinstance(ex, ProtokollGesperrt) and "Lauf laeuft bereits" in str(ex), ex
+        with Sperre(s.pfad):
+            pass
+        assert os.name == "nt" or os.path.exists(s.pfad)  # POSIX: Sperrdatei bleibt (siehe Sperre)
+        # Fehler in __init__ nach sperren() (KeyError: letzte Zeile ohne nr) -> Sperre wieder frei, im selben Prozess
+        kaputt = os.path.join(w, "k", "belegprotokoll.jsonl")
+        os.makedirs(os.path.dirname(kaputt))
+        with open(kaputt, "w", encoding="utf-8") as fh:
+            fh.write('{"ohne": "nr"}\n')
+        for _ in range(2):
+            try:
+                Protokoll(kaputt)
+                raise AssertionError("Zeile ohne nr angenommen")
+            except KeyError:
+                pass  # zweiter Durchlauf: wieder KeyError, nicht ProtokollGesperrt
+        with Sperre(kaputt + ".lock"):
+            pass
+        _selbsttest_windows(w)
+
+
+def _selbsttest_windows(w):
+    """Windows-Zweig mit Attrappen von os.name und os.remove (laeuft auch unter Linux): offenes Handle -> PermissionError."""
+    alt = os.name, os.remove
+    pfad = os.path.join(w, "win.lock")
+    offen, blockiert, versuche = set(), [0], []
+
+    def remove(p):
+        versuche.append(p)
+        if p in offen:
+            raise PermissionError(32, "offenes Handle")  # WinError 32: Halter lebt (ohne FILE_SHARE_DELETE)
+        if blockiert[0]:
+            blockiert[0] -= 1
+            raise PermissionError(32, "Virenscanner")
+        alt[1](p)
+    try:
+        os.name = "nt"
+        os.remove = remove
+        with open(pfad, "w") as fh:
+            fh.write(str(os.getppid()))  # PID lebt, gehoert aber einem fremden Prozess; kein Handle offen
+        with Sperre(pfad) as s:  # PID wiederverwendet: Uebernahme
+            assert _pid_aus(pfad) == os.getpid() and versuche == [pfad], versuche
+            offen.add(pfad)  # Halter lebt: remove -> PermissionError -> belegt, Datei bleibt
+            try:
+                Sperre(pfad, art="lauf").sperren()
+                raise AssertionError("lebender Halter uebergangen")
+            except LaufLaeuft as ex:
+                assert str(os.getpid()) in str(ex), ex
+            assert _pid_aus(pfad) == os.getpid()
+            offen.clear()
+            blockiert[0] = 2  # entsperren mit kurz blockiertem remove: nach Wiederholung geloescht
+            del versuche[:]
+        assert not os.path.exists(pfad) and versuche == [pfad] * 3 and s._fd is None, versuche
+        with Sperre(pfad):
+            blockiert[0] = 9  # dauerhaft blockiert: aufgeben ohne Fehler, Datei bleibt verwaist
+        assert os.path.exists(pfad) and blockiert[0] == 4
+        blockiert[0] = 0
+        with Sperre(pfad):  # der naechste Halter uebernimmt sie per Loeschversuch
+            assert _pid_aus(pfad) == os.getpid()
+        assert not os.path.exists(pfad)
+        _selbsttest_ausstehend(pfad)
+    finally:
+        os.name, os.remove = alt
+
+
+def _selbsttest_ausstehend(pfad):
+    """O_EXCL wirft PermissionError (Datei "delete pending"): warten und erneut; nach 3 Versuchen belegt."""
+    alt = os.open, time.sleep
+    rest, oeffnungen, pausen = [0], [], []
+
+    def oeffnen(p, flags, *a):
+        if p == pfad:
+            oeffnungen.append(p)
+            if rest[0]:
+                rest[0] -= 1
+                raise PermissionError(13, "delete pending")
+        return alt[0](p, flags, *a)
+    try:
+        os.open, time.sleep = oeffnen, pausen.append
+        rest[0] = 2
+        with Sperre(pfad):
+            assert len(oeffnungen) == 3 and pausen == [0.2, 0.2], (oeffnungen, pausen)
+        del oeffnungen[:], pausen[:]
+        rest[0] = 9
+        try:
+            Sperre(pfad, art="lauf").sperren()
+            raise AssertionError("pending delete nicht als belegt gemeldet")
+        except LaufLaeuft:
+            pass
+        assert len(oeffnungen) == 3 and pausen == [0.2] * 3 and not os.path.exists(pfad), (oeffnungen, pausen)
+    finally:
+        os.open, time.sleep = alt
+
+
 def main():
+    if sys.argv[1:] == ["--selbsttest"]:
+        _selbsttest()
+        print("selbsttest ok")
+        return
     ap = argparse.ArgumentParser(description="Trove F8 Belegprotokoll (append-only, rueckwaerts verfolgbar)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("schreiben"); s.add_argument("--mandant", required=True); s.add_argument("--ereignis", required=True, choices=EREIGNISSE)
