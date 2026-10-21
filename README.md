@@ -39,4 +39,18 @@ Requires Hermes Desktop >= 0.19.
 
 The installer locates the Hermes home automatically on Windows, macOS and Linux. If it cannot find it, set `HERMES_HOME` to your Hermes data folder and run step 2 again. It creates `config.yaml` if missing and enables the plugin idempotently (an existing `config.yaml` is backed up before any change).
 
+## Disclosures (plugin catalog)
+
+- Third-party network calls, all optional and only when the user configures them:
+  - reraise.ai: uploading public knowledge cards. Only with a stored Reraise key; without a key the button only opens the reraise.ai sign-up page (no upload). The server keeps the upload route closed in customer mode.
+  - A user-provided ERPNext instance (TROVE_ERPNEXT): mirroring receipts; inactive without configuration.
+  - Gmail, read-only, via the user's existing Hermes Google token: e-mail archive.
+  - A user-provided DocuSeal instance (TROVE_DOCUSEAL): optional document signing.
+  - Optional Paperless-ngx (TROVE_PAPERLESS).
+- Subprocesses: OCR and PDF-splitting run as a separate Python process (TROVE_PYTHON) because the Hermes runtime Python has no OCR libraries.
+- Background process: the optional Dauerlauf watches configured folders and updates knowledge twins on a schedule (LaunchAgent on macOS, Scheduled Task on Windows). Off unless the user enables it.
+- Stored credentials: ERPNext key/secret, the Reraise key, DocuSeal and Paperless tokens are read from local files or environment variables that the user sets (see Configuration). They are never bundled in the repo. Trove reads these from its own files/env, not from Hermes' secret_scope.
+- Optional OCR dependencies (onnxruntime, rapidocr-onnxruntime) are installed separately by the installer and may be skipped (then "no OCR"); they are not hard python_dependencies.
+- No telemetry.
+
 License: Apache-2.0

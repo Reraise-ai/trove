@@ -5,3 +5,7 @@ author: Reraise maintainers
 kind: standalone
 requires_hermes: ">=0.19"
 platforms: []
+python_dependencies:
+  - "pymupdf>=1.24,<2"
+  - "numpy>=1.26,<3"
+  - "pillow>=10,<13"
