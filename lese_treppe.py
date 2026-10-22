@@ -27,17 +27,19 @@ def sha_datei(p):
 
 # ---------- Stufe 1: E-Rechnung ----------
 
-def e_rechnung(doc):
+def e_rechnung(pfad):
     """Eingebettetes XML (ZUGFeRD/Factur-X/XRechnung) auslesen. Liefert Text + Felder oder None."""
+    import pikepdf
     try:
-        namen = doc.embfile_names()
+        pdf = pikepdf.open(pfad)
+        namen = list(pdf.attachments.keys())
     except Exception:
         return None
     for n in namen:
         if not n.lower().endswith(".xml"):
             continue
         try:
-            roh = doc.embfile_get(n)
+            roh = pdf.attachments[n].get_file().read_bytes()
             root = ET.fromstring(roh)
         except Exception:
             continue
@@ -56,14 +58,16 @@ def e_rechnung(doc):
         d = such("DateTimeString")
         if d and re.fullmatch(r"\d{8}", d):
             felder["datum"] = "%s-%s-%s" % (d[:4], d[4:6], d[6:])
+        pdf.close()
         return {"methode": "e-rechnung", "text": txt, "felder": {k: v for k, v in felder.items() if v}, "xml_name": n}
+    pdf.close()
     return None
 
 
 # ---------- Stufe 2: Textlayer ----------
 
 def textlayer(doc):
-    seiten = [p.get_text("text") for p in doc]
+    seiten = [doc[i].get_textpage().get_text_bounded() for i in range(len(doc))]
     gesamt = "\n\f".join(seiten)
     zeichen = sum(len(s.strip()) for s in seiten)
     return gesamt, zeichen / max(1, len(seiten))
@@ -72,8 +76,9 @@ def textlayer(doc):
 # ---------- Stufe 3: OCR ----------
 
 def seite_als_png(page, dpi=DPI):
-    pix = page.get_pixmap(dpi=dpi, colorspace="rgb")
-    return pix.tobytes("png")
+    bild = page.render(scale=dpi / 72.0).to_pil().convert("RGB")
+    buf = io.BytesIO(); bild.save(buf, format="PNG")
+    return buf.getvalue()
 
 
 def ocr_rapid(png_bytes):
@@ -191,13 +196,14 @@ def felder_aus_text(text):
 # ---------- Treppe ----------
 
 def lesen(pfad, ocr="rapidocr", erzwinge_ocr=False, max_seiten=10):
-    import fitz
+    import pypdfium2 as pdfium
     t0 = time.time()
-    doc = fitz.open(pfad)
-    seiten = min(len(doc), max_seiten)
-    erg = {"datei": pfad, "sha256": sha_datei(pfad), "seiten": len(doc), "gelesene_seiten": seiten, "stufen": []}
+    doc = pdfium.PdfDocument(pfad)
+    anz = len(doc)
+    seiten = min(anz, max_seiten)
+    erg = {"datei": pfad, "sha256": sha_datei(pfad), "seiten": anz, "gelesene_seiten": seiten, "stufen": []}
     if not erzwinge_ocr:
-        er = e_rechnung(doc)
+        er = e_rechnung(pfad)
         if er:
             erg.update(methode="e-rechnung", text=er["text"], felder=er["felder"], e_rechnung_xml=er["xml_name"])
             erg["stufen"].append("e-rechnung")

@@ -1,12 +1,18 @@
 """Trove: eine PDF-Seite als PNG fuer die Ansicht im Tab (nur lesen). Aufruf: python pdf_seite.py <pdf> <seite ab 0>
 Ausgabe (letzte Zeile): {"seiten": N, "seite": k, "mime": "image/png", "data": "data:image/png;base64,..."}"""
-import base64, json, sys
+import base64, io, json, sys
 
-import fitz  # pymupdf
+import pypdfium2 as pdfium  # Apache-2.0/BSD, ersetzt pymupdf (AGPL) fuers Rendern
 
-doc = fitz.open(sys.argv[1])
-if doc.needs_pass or len(doc) == 0:
+try:
+    doc = pdfium.PdfDocument(sys.argv[1])
+    n = len(doc)
+except Exception:
     sys.exit("PDF ist verschluesselt oder leer")
-seite = min(max(int(sys.argv[2]), 0), len(doc) - 1)
-png = doc[seite].get_pixmap(matrix=fitz.Matrix(1.6, 1.6)).tobytes("png")
-print(json.dumps({"seiten": len(doc), "seite": seite, "mime": "image/png", "data": "data:image/png;base64," + base64.b64encode(png).decode()}))
+if n == 0:
+    sys.exit("PDF ist verschluesselt oder leer")
+seite = min(max(int(sys.argv[2]), 0), n - 1)
+bild = doc[seite].render(scale=1.6).to_pil()
+buf = io.BytesIO(); bild.save(buf, format="PNG"); png = buf.getvalue()
+print(json.dumps({"seiten": n, "seite": seite, "mime": "image/png",
+                  "data": "data:image/png;base64," + base64.b64encode(png).decode()}))

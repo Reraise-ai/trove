@@ -418,7 +418,7 @@ def vorschau(quelle: str, pfad: str, mandant: str = MANDANT, seite: int = 0):
     if mime.startswith("image/") and groesse <= 4 * BLOCK:
         with open(voll, "rb") as f:
             return {"art": "bild", "mime": mime, "data": "data:%s;base64,%s" % (mime, base64.b64encode(f.read()).decode()), "groesse": groesse}
-    if name.endswith(".pdf"):  # seitenweise als Bild (nur lesen); ohne pymupdf weiter unten der ganze Browser-Viewer
+    if name.endswith(".pdf"):  # seitenweise als Bild (nur lesen); ohne pypdfium2 weiter unten der ganze Browser-Viewer
         try:
             return {"art": "pdf_seite", **_werkzeug("pdf_seite.py", voll, str(seite), timeout=60), "groesse": groesse}
         except HTTPException:
@@ -758,15 +758,15 @@ def auftraege(mandant: str = MANDANT):
 
 
 # ---------- F3/F4/F6: Lesen, Verproben, Stapel zerlegen (alles lokal, keine bezahlten Token) ----------
-FITZ_SKRIPTE = ("lese_treppe.py", "stapel.py", "wissen.py", "pdf_seite.py")  # brauchen pymupdf; die anderen laufen in jedem Python
-OHNE_FITZ_MOEGLICH = ("wissen.py",)  # laeuft notfalls ohne pymupdf: Text/Markdown/Word gelesen, PDFs mit klarer Meldung
+FITZ_SKRIPTE = ("lese_treppe.py", "stapel.py", "wissen.py", "pdf_seite.py")  # brauchen pypdfium2/pikepdf; die anderen laufen in jedem Python
+OHNE_FITZ_MOEGLICH = ("wissen.py",)  # laeuft notfalls ohne pypdfium2: Text/Markdown/Word gelesen, PDFs mit klarer Meldung
 
 
 def _werkzeug(skript, *args, timeout=1800, ok_rc=(0,)):
-    """OCR/PDF laufen im System-Python (pymupdf, rapidocr) als Unterprozess — der Hermes-Server hat ein eigenes Python ohne
+    """OCR/PDF laufen im System-Python (pypdfium2, pikepdf, rapidocr) als Unterprozess — der Hermes-Server hat ein eigenes Python ohne
     diese Pakete. ok_rc: Rueckgabewerte, bei denen die letzte Zeile die JSON-Zusammenfassung ist (reraise: 2 = Abbruch)."""
     try:
-        python = konfig.python_finden("fitz" if skript in FITZ_SKRIPTE else None)
+        python = konfig.python_finden("pypdfium2" if skript in FITZ_SKRIPTE else None)
     except RuntimeError as ex:
         if skript not in OHNE_FITZ_MOEGLICH:
             raise _fehler(500, str(ex))

@@ -2,7 +2,7 @@
 einzelne Belege geschnitten. Begleitseiten (Lieferschein, AGB, Anschreiben) bleiben beim Beleg, gehen aber nicht in die
 Buchung: je Beleg entsteht die volle Datei (alle Seiten) und eine Buchungsfassung (nur Rechnungsseiten).
 Schneiden macht Stirling-PDF (A-05, laeuft auf dem Server); Seiten lesen macht die Lese-Treppe (F3); Buchungsfassung
-leitet pymupdf aus dem geschnittenen Beleg ab. Das Original bleibt unveraendert. Jeder Beleg wird im Belegprotokoll
+leitet pikepdf aus dem geschnittenen Beleg ab. Das Original bleibt unveraendert. Jeder Beleg wird im Belegprotokoll
 als "zerlegt" festgehalten (Quelle = Stapel, Ziel = Beleg, Pruefsummen).
 """
 import argparse, hashlib, io, json, os, re, sys, time, urllib.request, uuid, zipfile
@@ -26,11 +26,12 @@ def sha_bytes(b):
 
 
 def seiten_lesen(pfad, ocr="rapidocr"):
-    import fitz
-    doc = fitz.open(pfad)
+    import pypdfium2 as pdfium
+    doc = pdfium.PdfDocument(pfad)
     seiten = []
-    for i, page in enumerate(doc):
-        text = page.get_text("text")
+    for i in range(len(doc)):
+        page = doc[i]
+        text = page.get_textpage().get_text_bounded()
         methode = "textlayer"
         if len(text.strip()) < lt.MIN_ZEICHEN_JE_SEITE:
             try:
@@ -108,7 +109,7 @@ def stirling_split(pdf_bytes, schnitte):
 
 
 def zerlegen(pfad, mandant="haus", ocr="rapidocr", ausgabe=None, protokollieren=True):
-    import fitz
+    import pikepdf
     t0 = time.time()
     with open(pfad, "rb") as f:
         roh = f.read()
@@ -132,14 +133,14 @@ def zerlegen(pfad, mandant="haus", ocr="rapidocr", ausgabe=None, protokollieren=
             p = os.path.join(ziel, name)
             with open(p, "wb") as f:
                 f.write(pdf)
-            d = fitz.open(p)
-            if len(d) != len(g["seiten"]):
-                raise RuntimeError("Beleg %d: %d Seiten geschnitten, %d erwartet" % (i, len(d), len(g["seiten"])))
+            d = pikepdf.open(p)
+            if len(d.pages) != len(g["seiten"]):
+                raise RuntimeError("Beleg %d: %d Seiten geschnitten, %d erwartet" % (i, len(d.pages), len(g["seiten"])))
             # Buchungsfassung: nur Rechnungsseiten (Lieferschein/AGB/Anschreiben bleiben nur in der vollen Datei)
             buch_pfad = None
             if g["anhangseiten"] and g["buchungsseiten"]:
                 idx = [s - g["von"] for s in g["buchungsseiten"]]
-                d.select(idx); buch_pfad = p[:-4] + ".buchung.pdf"; d.save(buch_pfad)
+                neu = pikepdf.new(); neu.pages.extend([d.pages[j] for j in idx]); buch_pfad = p[:-4] + ".buchung.pdf"; neu.save(buch_pfad); neu.close()
             d.close()
             eintrag = {"nr": i, "datei": p, "sha256": lt.sha_datei(p), "seiten": [g["von"], g["bis"]], "nummer": g.get("nummer"),
                        "arten": [s["art"] for s in g["seiten"]], "buchungsseiten": g["buchungsseiten"], "anhangseiten": g["anhangseiten"], "buchungsfassung": buch_pfad,

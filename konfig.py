@@ -119,7 +119,7 @@ def _kandidaten():
 
 def python_finden(modul=None):
     """Python fuer die Unterprozesse. TROVE_PYTHON (Umgebung oder trove.json) gilt ohne Pruefung; sonst das erste
-    python3/python/py im PATH (zuletzt sys.executable), das `modul` (z. B. fitz) importieren kann. RuntimeError mit Klartext."""
+    python3/python/py im PATH (zuletzt sys.executable), das `modul` (z. B. pypdfium2) importieren kann. RuntimeError mit Klartext."""
     fest = os.environ.get("TROVE_PYTHON")
     if fest:
         if not os.path.exists(fest):
@@ -132,7 +132,7 @@ def python_finden(modul=None):
             _python_cache[modul] = exe
             return exe
     raise RuntimeError("Kein Python mit %s gefunden. Einrichten: python plugin/installieren.py ... (legt auf dem Mac ~/.trove-venv mit allen Paketen an; "
-                       "Windows: py -3 -m pip install pymupdf rapidocr-onnxruntime numpy pillow) oder in trove.json \"python\" auf ein passendes Python setzen." % modul)
+                       "Windows: py -3 -m pip install pypdfium2 pikepdf rapidocr-onnxruntime numpy pillow) oder in trove.json \"python\" auf ein passendes Python setzen." % modul)
 
 
 if __name__ == "__main__":

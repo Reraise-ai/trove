@@ -157,16 +157,18 @@ def _verproben(felder):
 
 
 class FitzFehlt(RuntimeError):
-    """PDF/Bild ohne pymupdf: diese Datei wird nicht gelesen; Text-, Markdown- und Word-Dateien laufen weiter."""
+    """PDF/Bild ohne pypdfium2: diese Datei wird nicht gelesen; Text-, Markdown- und Word-Dateien laufen weiter."""
 
 
 _FITZ = []
 
 
 def fitz_da():
+    if os.environ.get("TROVE_OHNE_PDF") == "1":
+        return False
     if not _FITZ:
         try:
-            import fitz  # noqa: F401
+            import pypdfium2  # noqa: F401
             _FITZ.append(True)
         except ImportError:
             _FITZ.append(False)
@@ -198,7 +200,7 @@ def _lesen(pfad, max_seiten, sha):
         return {"text": text, "methode": methode, "seiten": 1, "gelesene_seiten": 1, "dauer_s": 0.0,
                 "felder": lt.felder_aus_text(text), "sha256": sha}
     if not fitz_da():
-        raise FitzFehlt("PDF/Bild nicht gelesen: Paket pymupdf fehlt im Python %s (Gesundheitscheck nennt den Befehl). "
+        raise FitzFehlt("PDF/Bild nicht gelesen: Paket pypdfium2 fehlt im Python %s (Gesundheitscheck nennt den Befehl). "
                         "Text-, Markdown- und Word-Dateien werden gelesen." % sys.executable)
     if klein.endswith(UMWANDELN):
         return _umgewandelt_lesen(pfad, max_seiten, sha)
@@ -896,8 +898,8 @@ def _lauf(l):
         z["fehler_qmd"] += 1
     z["fehler"] = z["fehler_datei"] + z["fehler_karte"] + z["fehler_qmd"] + len(unlesbar)
     if z.get("ohne_pymupdf"):
-        z["hinweise"].append("%d PDF-/Bild-Datei(en) nicht gelesen: Paket pymupdf fehlt (Python %s). Text-, Markdown- und Word-Dateien "
-                             "wurden gelesen; nach dem Einrichten von pymupdf erneut „Ins Wissen“ starten." % (z["ohne_pymupdf"], sys.executable))
+        z["hinweise"].append("%d PDF-/Bild-Datei(en) nicht gelesen: Paket pypdfium2 fehlt (Python %s). Text-, Markdown- und Word-Dateien "
+                             "wurden gelesen; nach dem Einrichten von pypdfium2 erneut „Ins Wissen“ starten." % (z["ohne_pymupdf"], sys.executable))
     zusammen = json.dumps({k: v for k, v in z.items() if k not in ("eintraege", "qmd")}, ensure_ascii=False)
     with _prot(l.mandant) as prot:
         prot.schreiben("notiz" if not z["fehler_qmd"] else "fehler", werkzeug="wissen.py/qmd", mandant=l.mandant, lauf=l.name,

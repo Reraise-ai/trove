@@ -16,7 +16,7 @@ HIER = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HIER)
 import konfig  # noqa: E402
 
-PAKETE = (("fitz", "pymupdf"), ("numpy", "numpy"), ("PIL", "pillow"))
+PAKETE = (("pypdfium2", "pypdfium2"), ("pikepdf", "pikepdf"), ("numpy", "numpy"), ("PIL", "pillow"))
 OCR = (("onnxruntime", "onnxruntime"), ("rapidocr_onnxruntime", "rapidocr-onnxruntime"))  # fehlt -> nur Hinweis "Scans ohne Texterkennung"
 SCHLECHT = ("fehlt", "offen")  # GESAMT "in Ordnung" nur ohne diese
 DIENSTE = (("Stirling-PDF (Zerlegen)", "TROVE_STIRLING", "http://127.0.0.1:8090"), ("Paperless (Suche)", "TROVE_PAPERLESS", "http://127.0.0.1:8010"),
@@ -239,8 +239,8 @@ def bericht():
     venv_hilfe = ("Einrichten mit dem Installer (legt %s mit allen Paketen an): python3 plugin/installieren.py --mandant <name> --datenwurzel ~/Trove ..."
                   % os.path.join(os.path.expanduser("~"), ".trove-venv"))
     try:
-        py = konfig.python_finden("fitz")  # TROVE_PYTHON/trove.json gilt ohne Paketpruefung -> Pakete stehen in den Zeilen darunter
-        p.append(_punkt("Python fuer Trove", "ok", py + (" (aus trove.json)" if os.environ.get("TROVE_PYTHON") else " (mit pymupdf)")))
+        py = konfig.python_finden("pypdfium2")  # TROVE_PYTHON/trove.json gilt ohne Paketpruefung -> Pakete stehen in den Zeilen darunter
+        p.append(_punkt("Python fuer Trove", "ok", py + (" (aus trove.json)" if os.environ.get("TROVE_PYTHON") else " (mit pypdfium2)")))
     except RuntimeError as ex:
         py = None
         p.append(_punkt("Python fuer Trove", "fehlt", str(ex), "" if sys.platform == "win32" else venv_hilfe))

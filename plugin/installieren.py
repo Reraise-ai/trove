@@ -6,7 +6,7 @@ Aufruf:  python installieren.py --mandant kunde --datenwurzel ~/Trove      (Kund
          Knopf "zu Reraise" (Upload oeffentlicher Karten): im Kundenmodus aus; einschalten nur auf Wunsch: --reraise-knopf an
          python installieren.py --pruefen                                  (Gesundheitscheck der Installation)
 Python (Mac Standard, sonst mit --venv): eigenes venv ~/.trove-venv aus /opt/homebrew/bin/python3.12 (oder 3.13, oder --python),
-Pakete pymupdf numpy pillow (Pflicht) + onnxruntime rapidocr-onnxruntime (Texterkennung, darf scheitern); offline: --wheels <ordner>.
+Pakete pypdfium2 pikepdf numpy pillow (Pflicht) + onnxruntime rapidocr-onnxruntime (Texterkennung, darf scheitern); offline: --wheels <ordner>.
 Nie pip --user. Windows bleibt beim bisherigen Weg (--python oder Suche), ausser --venv wird ausdruecklich gesetzt.
 """
 import argparse, json, os, re, shutil, subprocess, sys, time
@@ -20,7 +20,7 @@ import gesundheit  # noqa: E402
 for _k in set(os.environ) - _vorher:  # konfig belegt TROVE_* aus der Repo-trove.json vor; das darf nicht in die Pruefung der Installation durchschlagen
     del os.environ[_k]
 
-PAKETE_PFLICHT = ["pymupdf", "numpy", "pillow"]
+PAKETE_PFLICHT = ["pypdfium2", "pikepdf", "numpy", "pillow"]
 PAKETE_OCR = ["onnxruntime", "rapidocr-onnxruntime"]  # rapidocr-onnxruntime verlangt Python < 3.13
 BASIS_PYTHON = ("/opt/homebrew/bin/python3.12", "/usr/local/bin/python3.12", "/opt/homebrew/bin/python3.13", "/usr/local/bin/python3.13")
 VENV_STANDARD = os.path.join("~", ".trove-venv")
@@ -127,7 +127,7 @@ def venv_einrichten(basis, ziel, wheels=None, ausgabe=print):
     if not ocr:
         ausgabe("HINWEIS: Texterkennung (%s) nicht installiert - eingescannte Belege werden ohne Texterkennung aufgenommen, "
                 "Text-PDFs und Textdateien gehen normal. (Python %s; die Texterkennung braucht Python 3.12.)" % (" ".join(PAKETE_OCR), soll))
-    r = subprocess.run([vpy, "-c", "import fitz, numpy, PIL"], capture_output=True, text=True, errors="replace", timeout=120)
+    r = subprocess.run([vpy, "-c", "import pypdfium2, pikepdf, numpy, PIL"], capture_output=True, text=True, errors="replace", timeout=120)
     if r.returncode != 0:
         raise SystemExit("FEHLER: Pakete installiert, aber nicht ladbar in %s: %s" % (vpy, (r.stdout + r.stderr).strip()[-400:]))
     ausgabe("Pakete im venv: %s%s" % (" ".join(PAKETE_PFLICHT), (" + " + " ".join(PAKETE_OCR)) if ocr else " (ohne Texterkennung)"))
@@ -196,9 +196,9 @@ def dauerlauf_einrichten(minuten, dash, k, home):
     label = "ai.trove.dauerlauf-" + k.get("mandant", "haus")
     skript = os.path.join(dash, "dauerlauf.py")
     try:
-        python = k.get("python") or konfig.python_finden("fitz")
+        python = k.get("python") or konfig.python_finden("pypdfium2")
     except RuntimeError:
-        python = konfig.python_finden(None)  # ohne pymupdf laufen Textdateien; PDFs melden dann Fehler im Lauf
+        python = konfig.python_finden(None)  # ohne pypdfium2 laufen Textdateien; PDFs melden dann Fehler im Lauf
     log = os.path.join(os.path.expanduser(k["datenwurzel"]), "dauerlauf.log")
     os.makedirs(os.path.dirname(log), exist_ok=True)
     if sys.platform == "darwin":

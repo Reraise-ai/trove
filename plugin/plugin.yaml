@@ -6,6 +6,7 @@ kind: standalone
 requires_hermes: ">=0.19"
 platforms: []
 python_dependencies:
-  - "pymupdf>=1.24,<2"
+  - "pypdfium2>=4,<5"
+  - "pikepdf>=8"
   - "numpy>=1.26,<3"
   - "pillow>=10,<13"
