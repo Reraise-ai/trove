@@ -132,19 +132,19 @@ def lauf(mandant, ort, wurzel, werkzeug="aenderungen.py", nur_bericht=False):
     con.commit(); con.close()
     kennung = "f2-%s-%d" % (ort, lauf_id)
     with bp.Protokoll(prot_pfad) as prot:
-        prot.schreiben("notiz", werkzeug=werkzeug, mandant=mandant, lauf=kennung, meldung="F2-Lauf %d beginnt: Ort %s = %s, %d Dateien, %d Pruefsummen neu gerechnet%s" % (lauf_id, ort, wurzel, len(jetzt), gerechnet, ", erster Lauf (Grundstand)" if vorher_id is None else ""))
+        prot.schreiben("notiz", werkzeug=werkzeug, mandant=mandant, lauf=kennung, meldung="Change check %d starts: place %s = %s, %d files, %d checksums recalculated%s" % (lauf_id, ort, wurzel, len(jetzt), gerechnet, ", first run (baseline)" if vorher_id is None else ""))
         if vorher_id is not None:
             for b in befunde["neu"]:
-                prot.schreiben("gesehen", quelle=b["pfad"], sha256=b["sha256"], bytes_=jetzt[b["pfad"]][0], werkzeug=werkzeug, mandant=mandant, lauf=kennung, meldung="neu seit letztem Lauf" + (", gleicher Inhalt auch unter %s" % b["auch_unter"] if b["auch_unter"] else ""), f2="neu")
+                prot.schreiben("gesehen", quelle=b["pfad"], sha256=b["sha256"], bytes_=jetzt[b["pfad"]][0], werkzeug=werkzeug, mandant=mandant, lauf=kennung, meldung="new since the last run" + (", same content also at %s" % b["auch_unter"] if b["auch_unter"] else ""), f2="neu")
             for b in befunde["weg"]:
-                prot.schreiben("notiz", quelle=b["pfad"], sha256=b["sha256"], werkzeug=werkzeug, mandant=mandant, lauf=kennung, meldung="weg seit letztem Lauf" + (", Inhalt noch unter %s" % b["noch_woanders"] if b["noch_woanders"] else " — Inhalt an diesem Ort nicht mehr vorhanden"), f2="weg")
+                prot.schreiben("notiz", quelle=b["pfad"], sha256=b["sha256"], werkzeug=werkzeug, mandant=mandant, lauf=kennung, meldung="gone since the last run" + (", content still at %s" % b["noch_woanders"] if b["noch_woanders"] else " - content no longer at this place"), f2="weg")
             for b in befunde["verschoben"]:
-                prot.schreiben("verschoben", quelle=b["von"], ziel=b["nach"], sha256=b["sha256"], bytes_=jetzt[b["nach"]][0], werkzeug=werkzeug, mandant=mandant, lauf=kennung, meldung="ausserhalb von Trove verschoben/umbenannt, durch F2 erkannt", f2="verschoben")
+                prot.schreiben("verschoben", quelle=b["von"], ziel=b["nach"], sha256=b["sha256"], bytes_=jetzt[b["nach"]][0], werkzeug=werkzeug, mandant=mandant, lauf=kennung, meldung="moved/renamed outside Trove, detected by the change check", f2="verschoben")
             for b in befunde["aussen_geaendert"]:
-                prot.schreiben("notiz", quelle=b["pfad"], ziel=b["pfad"], sha256=b["sha_jetzt"], bytes_=b["bytes_jetzt"], werkzeug=werkzeug, mandant=mandant, lauf=kennung, meldung="aussen geaendert: sha %s -> %s" % (b["sha_vorher"][:12], b["sha_jetzt"][:12]), sha_vorher=b["sha_vorher"], f2="aussen_geaendert")
+                prot.schreiben("notiz", quelle=b["pfad"], ziel=b["pfad"], sha256=b["sha_jetzt"], bytes_=b["bytes_jetzt"], werkzeug=werkzeug, mandant=mandant, lauf=kennung, meldung="changed outside Trove: sha %s -> %s" % (b["sha_vorher"][:12], b["sha_jetzt"][:12]), sha_vorher=b["sha_vorher"], f2="aussen_geaendert")
             for b in befunde["durch_trove"]:
-                prot.schreiben("notiz", quelle=b["pfad"], ziel=b["pfad"], sha256=b["sha_jetzt"], bytes_=b["bytes_jetzt"], werkzeug=werkzeug, mandant=mandant, lauf=kennung, meldung="Inhalt geaendert, Bewegung durch Trove belegt", sha_vorher=b["sha_vorher"], f2="durch_trove")
-        prot.schreiben("notiz", werkzeug=werkzeug, mandant=mandant, lauf=kennung, meldung="F2-Lauf %d beendet: neu %d, weg %d, verschoben %d, aussen geaendert %d, durch Trove %d, unveraendert %d" % (lauf_id, len(befunde["neu"]), len(befunde["weg"]), len(befunde["verschoben"]), len(befunde["aussen_geaendert"]), len(befunde["durch_trove"]), befunde["unveraendert"]))
+                prot.schreiben("notiz", quelle=b["pfad"], ziel=b["pfad"], sha256=b["sha_jetzt"], bytes_=b["bytes_jetzt"], werkzeug=werkzeug, mandant=mandant, lauf=kennung, meldung="content changed, the change is recorded as done by Trove", sha_vorher=b["sha_vorher"], f2="durch_trove")
+        prot.schreiben("notiz", werkzeug=werkzeug, mandant=mandant, lauf=kennung, meldung="Change check %d finished: new %d, gone %d, moved %d, changed outside %d, by Trove %d, unchanged %d" % (lauf_id, len(befunde["neu"]), len(befunde["weg"]), len(befunde["verschoben"]), len(befunde["aussen_geaendert"]), len(befunde["durch_trove"]), befunde["unveraendert"]))
         prot.anker_setzen(mandant, kennung)
     return {"ort": ort, "wurzel": wurzel, "lauf": lauf_id, "erster_lauf": vorher_id is None, "dateien": len(jetzt), "gerechnet": gerechnet, "befunde": befunde}
 
@@ -161,7 +161,7 @@ def main():
     if a.json:
         print(json.dumps(r, ensure_ascii=False, indent=1)); return
     b = r["befunde"]
-    print("Ort %s (%s): Lauf %s, %d Dateien, %d Pruefsummen gerechnet%s" % (r["ort"], r["wurzel"], r.get("lauf", "-"), r["dateien"], r["gerechnet"], " — erster Lauf, Grundstand aufgenommen" if r["erster_lauf"] else ""))
+    print("Place %s (%s): run %s, %d files, %d checksums calculated%s" % (r["ort"], r["wurzel"], r.get("lauf", "-"), r["dateien"], r["gerechnet"], " - first run, baseline recorded" if r["erster_lauf"] else ""))
     for k in ("neu", "weg", "verschoben", "aussen_geaendert", "durch_trove"):
         print("  %-17s %d" % (k, len(b[k])))
         for x in b[k][:20]:

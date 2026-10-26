@@ -113,7 +113,7 @@ def _letzte_zeile(pfad):
     try:
         return json.loads(letzte.decode("utf-8", "surrogatepass")), endet_nl
     except (ValueError, UnicodeDecodeError) as ex:
-        raise ProtokollDefekt("letzte Zeile von %s nicht lesbar (%s): %r" % (pfad, ex, letzte[:120]))
+        raise ProtokollDefekt("last line of %s is not readable (%s): %r" % (pfad, ex, letzte[:120]))
 
 
 def _pid_aus(pfad):
@@ -152,7 +152,7 @@ class Sperre:
     def _belegt(self, pid):
         if self.art == "lauf":
             return LaufLaeuft("Lauf laeuft bereits (Prozess %s): %s" % (pid or "?", self.pfad))
-        return ProtokollGesperrt("%s ist gesperrt (Prozess %s)" % (self.pfad, pid or "?"))
+        return ProtokollGesperrt("%s is locked (process %s)" % (self.pfad, pid or "?"))
 
     def sperren(self):
         d = os.path.dirname(self.pfad)
@@ -324,7 +324,7 @@ def pruefen(pfad, anker=None):
     for zeilennr, e, fehler in lesen(pfad):
         n += 1
         if e is None:
-            return {"zeilen": n, "kette": "BRUCH", "bruch_bei": {"zeile": zeilennr, "fehler": fehler}, "anker": "nicht geprueft", "brueche": brueche}
+            return {"zeilen": n, "kette": "BRUCH", "bruch_bei": {"zeile": zeilennr, "fehler": fehler}, "anker": "not checked", "brueche": brueche}
         k = e.get("kette")
         ohne = {a: b for a, b in e.items() if a != "kette"}
         if e.get("nr") != vor_nr + 1 or _kette(vor, ohne) != k:
@@ -334,7 +334,7 @@ def pruefen(pfad, anker=None):
         vor, vor_nr = k, e.get("nr") or vor_nr
     offen = [b for b in brueche if b["zeile"] not in vermerkt]
     if offen:
-        return {"zeilen": n, "kette": "BRUCH", "bruch_bei": offen[0], "brueche": brueche, "offen": len(offen), "anker": "nicht geprueft"}
+        return {"zeilen": n, "kette": "BRUCH", "bruch_bei": offen[0], "brueche": brueche, "offen": len(offen), "anker": "not checked"}
     ergebnis = {"zeilen": n, "kette": "ok" if not brueche else "ok (%d Brueche vermerkt)" % len(brueche), "bruch_bei": None, "brueche": brueche, "anker": "kein"}
     if anker:
         # Anker = (nr, kette) einer Zeile: sie muss im Protokoll stehen (Position egal — nach einem vermerkten Bruch ist nr != Zeile moeglich)
@@ -601,9 +601,9 @@ def main():
         if a.json:
             print(json.dumps(r, ensure_ascii=False, indent=1))
         else:
-            print("Datei:", r["datei"]); print("sha256:", ", ".join(r["sha256"]) or "-")
-            for titel, liste in (("Direkt", r["direkt"]), ("Rueckwaerts (woher)", r["rueckwaerts"]), ("Vorwaerts (wohin)", r["vorwaerts"])):
-                print("\n%s: %d Ereignis(se)" % (titel, len(liste)))
+            print("File:", r["datei"]); print("sha256:", ", ".join(r["sha256"]) or "-")
+            for titel, liste in (("Direct", r["direkt"]), ("Backwards (from where)", r["rueckwaerts"]), ("Forwards (to where)", r["vorwaerts"])):
+                print("\n%s: %d event(s)" % (titel, len(liste)))
                 for e in liste:
                     print("  #%s %s %-10s %s -> %s %s" % (e["nr"], e["zeit"], e["ereignis"], e.get("quelle", ""), e.get("ziel", ""), ("[" + e["meldung"] + "]") if e.get("meldung") else ""))
             print("\nGleicher Inhalt (sha256) an %d Stelle(n)" % len(r["gleicher_inhalt"]))

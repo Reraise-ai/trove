@@ -43,7 +43,7 @@ def pruefe(tmp, env, wiki):
     assert os.path.isdir(wiki), wiki
     karten = glob.glob(os.path.join(wiki, "quellen", "trove-*.md"))
     assert len(karten) == 2, karten
-    assert "zu-prüfen" in open(karten[0], encoding="utf-8").read()
+    assert "status: to-review" in open(karten[0], encoding="utf-8").read()
     twins = glob.glob(os.path.join(os.path.dirname(wiki), "raw", "trove", "t1", "*.md"))
     assert len(twins) == 2, twins
     log = open(os.path.join(wiki, "log.md"), encoding="utf-8").read()

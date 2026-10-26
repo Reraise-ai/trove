@@ -71,31 +71,31 @@ def pruefe_karte(karte):
     """Typ-/Formatpruefung einer fertigen oeffentlichen Karte {titel, body, quelle, datum} gegen die Positivliste.
     Jeder Wert gegen ein festes Muster; Betraege nur bei verprobung sicher; Titel nur aus Body-Werten. Sonst ValueError."""
     if not isinstance(karte, dict) or set(karte) != {"titel", "body", "quelle", "datum"}:
-        raise ValueError("Karte: nur titel, body, quelle, datum erlaubt")
+        raise ValueError("Card: only titel, body, quelle, datum allowed")
     if not all(isinstance(karte[k], str) for k in ("titel", "body", "quelle")):
-        raise ValueError("Karte: titel/body/quelle muessen Text sein")
+        raise ValueError("Card: titel/body/quelle must be text")
     f = {}
     for i, zeile in enumerate(karte["body"].split("\n"), 1):
         k, _, w = zeile.partition(": ")
         if k not in MUSTER or k in f or not re.fullmatch(MUSTER[k], w):
-            raise ValueError("Karte: body-Zeile %d nicht in der Positivliste" % i)  # Wert nie in die Meldung (kann privat sein)
+            raise ValueError("Card: body line %d is not in the allow-list" % i)  # Wert nie in die Meldung (kann privat sein)
         f[k] = w
     if "pruefsumme" not in f:
-        raise ValueError("Karte: pruefsumme fehlt")
+        raise ValueError("Card: checksum missing")
     if "belegdatum" in f and not iso_datum(f["belegdatum"]):
-        raise ValueError("Karte: belegdatum kein gueltiges Datum")
+        raise ValueError("Card: belegdatum is not a valid date")
     if any(b in f for b in BETRAEGE) and f.get("verprobung") != "sicher":
-        raise ValueError("Karte: Betraege nur bei verprobung sicher")
+        raise ValueError("Card: amounts only when verification is sicher (certain)")
     if karte["quelle"] != "Trove-Beleg sha256 " + f["pruefsumme"]:
-        raise ValueError("Karte: quelle nicht in der festen Form")
+        raise ValueError("Card: quelle is not in the fixed form")
     if karte["datum"] != f.get("belegdatum"):
-        raise ValueError("Karte: datum weicht von belegdatum ab")
+        raise ValueError("Card: datum differs from belegdatum")
     m = RE_TITEL.fullmatch(karte["titel"])
     if not m or len(karte["titel"]) > TITEL_MAX:
-        raise ValueError("Karte: titel nicht in der festen Form")
+        raise ValueError("Card: titel is not in the fixed form")
     for k, w in m.groupdict().items():
         if w is not None and w != (f["pruefsumme"][:16] if k == "sha16" else f.get(k)):
-            raise ValueError("Karte: titel enthaelt %s, das nicht im body steht" % k)
+            raise ValueError("Card: titel contains %s, which is not in the body" % k)
     return karte
 
 

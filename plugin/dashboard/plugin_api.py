@@ -67,7 +67,7 @@ def _wiki_oder_none():
 
 def _mandant_pruefen(mandant):
     if not re.fullmatch(RE_MANDANT, mandant or ""):
-        raise HTTPException(400, "mandant: a-z 0-9 _ - (1-41 Zeichen)")
+        raise HTTPException(400, "client: a-z 0-9 _ - (1-41 characters)")
     return mandant
 
 
@@ -102,7 +102,7 @@ def _quelle(mandant, qid):
     for q in _quellen(mandant):
         if q["id"] == qid:
             return q
-    raise HTTPException(404, "Quelle %s unbekannt" % qid)
+    raise HTTPException(404, "Unknown source %s" % qid)
 
 
 
@@ -153,20 +153,20 @@ def _sicher(wurzel, rel):
     rel = (rel or "").replace("\\", "/").strip("/")
     voll = os.path.normpath(os.path.join(wurzel, *[s for s in rel.split("/") if s and s not in (".", "..")]))
     if os.path.commonpath([os.path.normpath(wurzel), voll]) != os.path.normpath(wurzel) or not _unter_real(voll, wurzel):
-        raise HTTPException(400, "Pfad ausserhalb der Quelle")
+        raise HTTPException(400, "Path is outside the source folder")
     return voll
 
 
 def _namen_pruefen(namen):
     """namen aus /aktion: nur Eintragsnamen im gewaehlten Ordner (Basename), keine Pfade, kein .. und nichts Absolutes."""
     if not isinstance(namen, list):
-        raise HTTPException(400, "namen: Liste von Eintragsnamen")
+        raise HTTPException(400, "namen: list of entry names")
     for n in namen:
         if n in (None, ""):
             continue
         if (not isinstance(n, str) or n in (".", "..") or "/" in n or "\\" in n or "\0" in n or os.path.isabs(n)
                 or os.path.splitdrive(n)[0] or os.path.basename(n) != n):
-            raise HTTPException(400, "namen: nur Eintragsnamen im Ordner, keine Pfade: %r" % (n,))
+            raise HTTPException(400, "namen: entry names inside the folder only, no paths: %r" % (n,))
     return namen
 
 
@@ -276,7 +276,7 @@ def quelle_schreibbar(qid: str, body: dict):
 def quelle_entfernen(qid: str, mandant: str = MANDANT):
     q = _quelle(mandant, qid)
     _quellen_speichern(mandant, [x for x in _quellen(mandant) if x["id"] != qid])
-    bp.schreiben(bp.pfad_fuer(mandant), ereignis="notiz", werkzeug="trove-plugin", mandant=mandant, meldung="Quelle entfernt (nur aus der Liste): " + q["name"], quelle_id=qid)
+    bp.schreiben(bp.pfad_fuer(mandant), ereignis="notiz", werkzeug="trove-plugin", mandant=mandant, meldung="Source removed (from the list only, no files touched): " + q["name"], quelle_id=qid)
     return {"ok": True}
 
 
@@ -284,7 +284,7 @@ def _liste_ordner(q, rel, mandant):
     wurzel = q["pfad"]
     voll = _sicher(wurzel, rel)
     if not os.path.isdir(voll):
-        raise HTTPException(404, "Ordner nicht gefunden")
+        raise HTTPException(404, "Folder not found")
     eintraege = []
     with os.scandir(voll) as it:
         for d in it:
@@ -319,7 +319,7 @@ def vorschau(quelle: str, pfad: str, mandant: str = MANDANT, seite: int = 0):
     q = _quelle(mandant, quelle)
     voll = _sicher(q["pfad"], pfad)
     if not os.path.isfile(voll):
-        raise HTTPException(404, "Datei nicht gefunden")
+        raise HTTPException(404, "File not found")
     groesse = os.path.getsize(voll)
     mime = mimetypes.guess_type(voll)[0] or "application/octet-stream"
     name = os.path.basename(voll).lower()
@@ -352,12 +352,12 @@ def register(body: dict):
     mandant = body.get("mandant") or MANDANT
     q = _quelle(mandant, body.get("quelle", ""))
     if q["art"] != "ordner":
-        raise HTTPException(400, "Register nur fuer lokale Ordner")
+        raise HTTPException(400, "Register works on local folders only")
     voll = _sicher(q["pfad"], body.get("pfad", ""))
     con = _register_con(mandant)
     n = wolke = 0
     with bp.Protokoll(bp.pfad_fuer(mandant)) as prot:
-        prot.schreiben("notiz", werkzeug="trove-plugin", mandant=mandant, meldung="Register-Lauf beginnt: " + voll)
+        prot.schreiben("notiz", werkzeug="trove-plugin", mandant=mandant, meldung="Register run starts: " + voll)
         for wurzel, dirs, files in os.walk(voll):
             dirs[:] = [d for d in dirs if not d.startswith(".")]
             for fn in files:
@@ -379,7 +379,7 @@ def register(body: dict):
                 except OSError as ex:
                     prot.schreiben("fehler", quelle=p, werkzeug="trove-plugin", mandant=mandant, meldung=str(ex))
         con.commit()
-        prot.schreiben("notiz", werkzeug="trove-plugin", mandant=mandant, meldung="Register-Lauf beendet: %d neue Dateien, %d nur in der Wolke (iCloud-Platzhalter, nicht gelesen)" % (n, wolke))
+        prot.schreiben("notiz", werkzeug="trove-plugin", mandant=mandant, meldung="Register run finished: %d new files, %d only in the cloud (iCloud placeholders, not read)" % (n, wolke))
         prot.anker_setzen(mandant, "register")
     gesamt = con.execute("select count(*) from datei").fetchone()[0]
     con.close()
@@ -395,7 +395,7 @@ def _kopiere_datei(prot, mandant, lauf, von, nach, werkzeug="trove-plugin"):
             prot.schreiben("gesehen", quelle=von, ziel=nach, sha256=neu, bytes_=os.path.getsize(von), werkzeug=werkzeug, mandant=mandant, lauf=lauf, status_alt="schon_da")
             return "schon_da"
         prot.schreiben("fehler", quelle=von, ziel=nach, sha256=neu, bytes_=os.path.getsize(von), werkzeug=werkzeug, mandant=mandant, lauf=lauf,
-                       meldung="konflikt: Ziel vorhanden mit anderem Inhalt, nicht ueberschrieben", status_alt="konflikt", sha_vorher=alt)
+                       meldung="conflict: target exists with different content, not overwritten", status_alt="konflikt", sha_vorher=alt)
         return "konflikt"
     os.makedirs(os.path.dirname(nach), exist_ok=True)
     h = hashlib.sha256()
@@ -419,9 +419,9 @@ def _kopiere_datei(prot, mandant, lauf, von, nach, werkzeug="trove-plugin"):
     prot.schreiben("kopiert", quelle=von, ziel=nach, sha256=sha, bytes_=groesse, werkzeug=werkzeug, mandant=mandant, lauf=lauf)
     zurueck = _sha(nach)
     if zurueck != sha:
-        prot.schreiben("fehler", quelle=nach, ziel=nach, sha256=zurueck, bytes_=groesse, werkzeug=werkzeug, mandant=mandant, lauf=lauf, meldung="Gegenprobe fehlgeschlagen")
+        prot.schreiben("fehler", quelle=nach, ziel=nach, sha256=zurueck, bytes_=groesse, werkzeug=werkzeug, mandant=mandant, lauf=lauf, meldung="read-back check failed")
         return "fehler"
-    prot.schreiben("verifiziert", quelle=nach, ziel=nach, sha256=sha, bytes_=groesse, werkzeug=werkzeug, mandant=mandant, lauf=lauf, meldung="von der Platte zurueckgelesen, sha gleich")
+    prot.schreiben("verifiziert", quelle=nach, ziel=nach, sha256=sha, bytes_=groesse, werkzeug=werkzeug, mandant=mandant, lauf=lauf, meldung="read back from disk, sha256 equal")
     return "verifiziert"
 
 
@@ -443,7 +443,7 @@ def aktion(body: dict):
     mandant = body.get("mandant") or MANDANT
     art = body.get("art")
     if art not in ("kopieren", "verschieben", "sync"):
-        raise HTTPException(400, "art muss kopieren, verschieben oder sync sein")
+        raise HTTPException(400, "art must be kopieren (copy), verschieben (move) or sync")
     _namen_pruefen(body.get("namen") or [])
     qv, qn = _quelle(mandant, body["von"]["quelle"]), _quelle(mandant, body["nach"]["quelle"])
     if qn.get("nur_lesen", True):
@@ -454,14 +454,14 @@ def aktion(body: dict):
     lauf = "%s-%s" % (art, time.strftime("%Y%m%d-%H%M%S"))
     ergebnis = []
     with bp.Protokoll(bp.pfad_fuer(mandant)) as prot:
-        prot.schreiben("notiz", werkzeug="trove-plugin", mandant=mandant, lauf=lauf, meldung="Aktion %s beginnt: %s -> %s" % (art, qv["name"], nach_ordner))
+        prot.schreiben("notiz", werkzeug="trove-plugin", mandant=mandant, lauf=lauf, meldung="Action %s starts: %s -> %s" % (art, qv["name"], nach_ordner))
         von_ordner = _sicher(qv["pfad"], body["von"].get("pfad", ""))
         if os.path.commonpath([von_ordner, nach_ordner]) == von_ordner and art in ("verschieben", "sync") and not body.get("namen"):
-            raise HTTPException(400, "Ziel liegt innerhalb der Quelle")
+            raise HTTPException(400, "Target is inside the source folder")
         namen = body.get("namen") or ([os.path.basename(von_ordner)] if art != "sync" else [None])
         for n in namen:
             if n and os.path.lexists(os.path.join(von_ordner, n)) and not _unter_real(os.path.join(von_ordner, n), von_ordner):
-                raise HTTPException(400, "Pfad ausserhalb der Quelle (Verknuepfung): %s" % n)
+                raise HTTPException(400, "Path leaves the source folder (symlink): %s" % n)
         for n in namen:
             start = os.path.join(von_ordner, n) if n else von_ordner
             if not os.path.exists(start):
@@ -474,13 +474,13 @@ def aktion(body: dict):
                 if art == "verschieben" and st in ("verifiziert", "schon_da"):
                     os.remove(p)
                     prot.schreiben("verschoben", quelle=p, ziel=ziel_pfad, sha256=_sha(ziel_pfad), bytes_=os.path.getsize(ziel_pfad), werkzeug="trove-plugin",
-                                   mandant=mandant, lauf=lauf, meldung="Quelle nach bestandener Gegenprobe entfernt")
+                                   mandant=mandant, lauf=lauf, meldung="source removed after the read-back check passed")
             if art == "verschieben" and os.path.isdir(start) and zusammen["konflikt"] == 0 and zusammen["fehler"] == 0:
                 for wurzel, dirs, files in os.walk(start, topdown=False):
                     if not os.listdir(wurzel):
                         os.rmdir(wurzel)
-            ergebnis.append({"name": n or "(Ordner)", **zusammen})
-        prot.schreiben("notiz", werkzeug="trove-plugin", mandant=mandant, lauf=lauf, meldung="Aktion %s beendet: %s" % (art, json.dumps(ergebnis, ensure_ascii=False)[:800]))
+            ergebnis.append({"name": n or "(folder)", **zusammen})
+        prot.schreiben("notiz", werkzeug="trove-plugin", mandant=mandant, lauf=lauf, meldung="Action %s finished: %s" % (art, json.dumps(ergebnis, ensure_ascii=False)[:800]))
         prot.anker_setzen(mandant, lauf)
     return {"ok": True, "lauf": lauf, "ergebnis": ergebnis}
 
@@ -518,10 +518,10 @@ def _hermes_exe():
 def _hermes(*args, timeout=120):
     exe = _hermes_exe()
     if exe is None:
-        raise HTTPException(502, "hermes-Programm nicht gefunden (nicht im PATH). Pfad per TROVE_HERMES setzen.")
+        raise HTTPException(502, "hermes CLI not found (not in PATH). Set its path with TROVE_HERMES.")
     r = subprocess.run([exe, *args], capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace")
     if r.returncode != 0:
-        raise HTTPException(502, "hermes: " + (r.stderr.strip()[-400:] or r.stdout.strip()[-400:] or "Fehler %d" % r.returncode))
+        raise HTTPException(502, "hermes: " + (r.stderr.strip()[-400:] or r.stdout.strip()[-400:] or "error %d" % r.returncode))
     return r.stdout
 
 
@@ -552,21 +552,27 @@ def _auftraege_speichern(mandant, liste):
 
 @router.post("/auftrag")
 def auftrag_anlegen(body: dict):
-    """Karte im Hermes-Kanban anlegen — gesperrt (blocked), bis ein Mensch sie freigibt."""
+    """Create a card on the Hermes kanban board -- blocked until a human releases it."""
     mandant = body.get("mandant") or MANDANT
     titel = (body.get("titel") or "").strip()
     if not titel:
-        raise HTTPException(400, "Titel fehlt")
+        raise HTTPException(400, "Title is missing")
     text = (body.get("text") or "").strip()
-    assignee = (body.get("assignee") or "schnapper").strip()
+    assignee = (body.get("assignee") or os.environ.get("TROVE_ASSIGNEE") or "").strip()  # Hermes profile; empty = Hermes default
     kontext = body.get("kontext") or {}
-    rumpf = text + "\n\n--\nAngelegt aus dem Trove-Tab (Datei-Zentrale), Mandant %s. Kontext: %s\nRegeln: nichts loeschen, nichts ueberschreiben; Ergebnis als Kommentar auf dieser Karte, dann Karte auf done." % (mandant, json.dumps(kontext, ensure_ascii=False))
+    rumpf = text + "\n\n--\nCreated from the Trove tab, client %s. Context: %s\nRules: delete nothing, overwrite nothing; post the result as a comment on this card, then set the card to done." % (mandant, json.dumps(kontext, ensure_ascii=False))
     tmp = os.path.join(_mandant_dir(mandant), "auftrag_%d.txt" % int(time.time()))
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(rumpf)
     try:
-        karte = _hermes_json("kanban", "create", "Trove: " + titel, "--body-file", tmp, "--assignee", assignee, "--initial-status", "blocked",
-                             "--workspace", "dir:" + (os.environ.get("TROVE_ARBEITSORDNER") or TROVE_REPO), "--max-retries", "1", "--max-runtime", "900", "--skill", "ponytail")
+        args = ["kanban", "create", "Trove: " + titel, "--body-file", tmp, "--initial-status", "blocked",
+                "--workspace", ("dir:" + os.environ["TROVE_ARBEITSORDNER"]) if os.environ.get("TROVE_ARBEITSORDNER") else "scratch",
+                "--max-retries", "1", "--max-runtime", "900"]
+        if assignee:
+            args += ["--assignee", assignee]
+        if os.environ.get("TROVE_SKILL"):  # optional Hermes skill for the agent, none by default
+            args += ["--skill", os.environ["TROVE_SKILL"]]
+        karte = _hermes_json(*args)
     finally:
         try:
             os.remove(tmp)
@@ -576,7 +582,7 @@ def auftrag_anlegen(body: dict):
     eintrag = {"id": kid, "titel": titel, "assignee": assignee, "zeit": _jetzt(), "status": "blocked", "protokolliert": [], "kontext": kontext}
     _auftraege_speichern(mandant, _auftraege_lesen(mandant) + [eintrag])
     bp.schreiben(bp.pfad_fuer(mandant), ereignis="notiz", werkzeug="trove-plugin/kanban", mandant=mandant, lauf=kid,
-                 meldung="Auftrag an die KI angelegt (gesperrt, wartet auf Freigabe durch Menschen): " + titel, karte=kid, assignee=assignee, kontext=kontext)
+                 meldung="Task for an agent created (blocked, waits for human release): " + titel, karte=kid, assignee=assignee, kontext=kontext)
     return eintrag
 
 
@@ -588,7 +594,7 @@ def auftrag_freigeben(kid: str, body: dict = None):
         _hermes("kanban", "dispatch", "--max", "1", timeout=60)
     except HTTPException:
         pass
-    bp.schreiben(bp.pfad_fuer(mandant), ereignis="notiz", werkzeug="trove-plugin/kanban", mandant=mandant, lauf=kid, meldung="Auftrag freigegeben durch Mensch", karte=kid)
+    bp.schreiben(bp.pfad_fuer(mandant), ereignis="notiz", werkzeug="trove-plugin/kanban", mandant=mandant, lauf=kid, meldung="Task released by a human", karte=kid)
     return {"ok": True}
 
 
@@ -601,7 +607,7 @@ def auftrag_archivieren(kid: str, body: dict = None):
         if a["id"] == kid:
             a["status"] = "archived"
     _auftraege_speichern(mandant, liste)
-    bp.schreiben(bp.pfad_fuer(mandant), ereignis="notiz", werkzeug="trove-plugin/kanban", mandant=mandant, lauf=kid, meldung="Auftrag archiviert", karte=kid)
+    bp.schreiben(bp.pfad_fuer(mandant), ereignis="notiz", werkzeug="trove-plugin/kanban", mandant=mandant, lauf=kid, meldung="Task archived", karte=kid)
     return {"ok": True}
 
 
@@ -627,7 +633,7 @@ def auftraege(mandant: str = MANDANT):
         if a["status"] == "blocked" and fehler and fehler[:200] != a.get("letzter_fehler"):
             a["letzter_fehler"] = fehler[:200]; geaendert = True
             bp.schreiben(bp.pfad_fuer(mandant), ereignis="fehler", werkzeug="trove-plugin/kanban", mandant=mandant, lauf=a["id"],
-                         meldung="Auftrag fehlgeschlagen, Karte wieder gesperrt: " + fehler[:800], karte=a["id"])
+                         meldung="Task failed, card blocked again: " + fehler[:800], karte=a["id"])
         if a["status"] in ("done", "review") and a["status"] not in a.get("protokolliert", []):
             try:
                 detail = _hermes_json("kanban", "show", a["id"], timeout=60)
@@ -636,7 +642,7 @@ def auftraege(mandant: str = MANDANT):
             kommentare = detail.get("comments") or []
             letzter = (kommentare[-1].get("body") or kommentare[-1].get("text") or "") if kommentare else ""
             bp.schreiben(bp.pfad_fuer(mandant), ereignis="notiz", werkzeug="trove-plugin/kanban", mandant=mandant, lauf=a["id"],
-                         meldung="Ergebnis des Auftrags (%s): %s" % (a["status"], (a["zusammenfassung"] or letzter or "(kein Text)")[:1500]), karte=a["id"],
+                         meldung="Task result (%s): %s" % (a["status"], (a["zusammenfassung"] or letzter or "(no text)")[:1500]), karte=a["id"],
                          kommentare=len(kommentare), ergebnis_kommentar=letzter[:1500])
             a.setdefault("protokolliert", []).append(a["status"]); a["ergebnis_kommentar"] = letzter[:1500]; geaendert = True
     if geaendert:
@@ -676,14 +682,14 @@ def _werkzeug(skript, *args, timeout=1800, ok_rc=(0,)):
             p.communicate(timeout=30)
         except subprocess.TimeoutExpired:
             pass
-        raise HTTPException(504, skript + ": Zeit abgelaufen, Prozessbaum beendet")
+        raise HTTPException(504, skript + ": timed out, process tree terminated")
     out, err = out or "", err or ""
     if p.returncode not in ok_rc:
         raise _fehler(500, "%s fehlgeschlagen (rc %d): %s" % (skript, p.returncode, (err or out)[-800:]))
     try:
         return json.loads(out.strip().splitlines()[-1])
     except (ValueError, IndexError):
-        raise _fehler(500, skript + ": keine JSON-Ausgabe: " + out[-400:] + (" | stderr: " + err[-400:] if err else ""))
+        raise _fehler(500, skript + ": no JSON output: " + out[-400:] + (" | stderr: " + err[-400:] if err else ""))
 
 
 
@@ -692,7 +698,7 @@ def _quell_datei(mandant, body):
     q = _quelle(mandant, body.get("quelle", ""))
     voll = _sicher(q["pfad"], body.get("pfad", ""))
     if not os.path.isfile(voll):
-        raise HTTPException(404, "Datei nicht gefunden: " + body.get("pfad", ""))
+        raise HTTPException(404, "File not found: " + body.get("pfad", ""))
     return voll
 
 
@@ -767,9 +773,9 @@ def _max(body):
             raise TypeError
         n = int(body["max"])
     except (TypeError, ValueError):
-        raise HTTPException(400, "max: ganze Zahl")
+        raise HTTPException(400, "max: whole number")
     if n < 1:
-        raise HTTPException(400, "max: mindestens 1")  # 0 hiesse im Werkzeug "alle"
+        raise HTTPException(400, "max: at least 1")  # 0 hiesse im Werkzeug "alle"
     return ["--max", str(n)]
 
 
@@ -789,28 +795,28 @@ def wissen_sammlungen(mandant: str = MANDANT):
 
 @router.post("/wissen")
 def wissen(body: dict):
-    """F16: Ordner einer Quelle lesen -> Markdown je Datei (mit Original verheiratet) -> optional knowledge cards in the wiki -> optional qmd index.
-    sichtbarkeit privat = own use, oeffentlich = card limited to the public allow-list. Laeuft als Unterprozess im System-Python."""
+    """Into knowledge: read the files of a source folder -> one markdown twin per file (bound to the original) -> optional knowledge cards in the wiki -> optional qmd index.
+    sichtbarkeit privat = own use, oeffentlich = card limited to the public allow-list. Runs as a subprocess in the system Python."""
     mandant = _mandant_pruefen(body.get("mandant") or MANDANT)
     q = _quelle(mandant, body.get("quelle", ""))
     wurzel = _sicher(q["pfad"], body.get("pfad", ""))
     if not os.path.isdir(wurzel):
-        raise HTTPException(404, "Ordner nicht gefunden")
-    sicht = body.get("sichtbarkeit") or "privat"  # keine Pflichtfelder: Standard privat
+        raise HTTPException(404, "Folder not found")
+    sicht = body.get("sichtbarkeit") or "privat"  # no mandatory fields: default private
     if sicht not in ("privat", "oeffentlich"):
-        raise HTTPException(400, "sichtbarkeit: privat | oeffentlich")
+        raise HTTPException(400, "sichtbarkeit: privat (private) | oeffentlich (public)")
     sammlung = _sammlung(mandant, body)
     if body.get("zugehoerigkeit") is not None and not isinstance(body.get("zugehoerigkeit"), str):
-        raise HTTPException(400, "zugehoerigkeit: Text")
+        raise HTTPException(400, "zugehoerigkeit: text")
     zug = (body.get("zugehoerigkeit") or "").strip() or ZUG_OFFEN  # leer -> "offen"; die Belegbuchung fragt spaeter nach
     auswahl = body.get("dateien") or []
     if not isinstance(auswahl, list) or not all(isinstance(x, str) and x.strip() for x in auswahl) or len(auswahl) > 500:
-        raise HTTPException(400, "dateien: Liste relativer Pfade (höchstens 500)")
+        raise HTTPException(400, "dateien: list of relative paths (at most 500)")
     einzeln = []
     for rel in auswahl:
         voll = _sicher(q["pfad"], rel)  # realpath-Pruefung: nie ausserhalb der eingebundenen Quelle
         if not _unter_real(voll, wurzel) or not os.path.isfile(voll):
-            raise HTTPException(400, "keine Datei im gewählten Ordner: %s" % rel)
+            raise HTTPException(400, "no such file in the chosen folder: %s" % rel)
         einzeln.append(voll)
     args = [wurzel, "--mandant", mandant, "--sammlung", sammlung, "--sichtbarkeit", sicht,
             "--zugehoerigkeit=" + zug, "--json", *_max(body)]
@@ -823,11 +829,13 @@ def wissen(body: dict):
     args += ["--datei=" + p for p in einzeln]
     r = _werkzeug("wissen.py", *args, timeout=7200, ok_rc=(0, 2))
     if r.get("lauf_laeuft"):
-        raise _fehler(409, r.get("abbruch") or "Lauf laeuft bereits")
-    # Ordner fuer den Dauerlauf vormerken (dauerlauf.py fuehrt ihn bei geplantem Lauf automatisch nach); nie den eigenen Wissensspeicher
-    if not r.get("eigene_ablage") and not einzeln:  # Einzelauswahl: Ordner NICHT dauerhaft nachfuehren
+        raise _fehler(409, r.get("abbruch") or "A run is already active")
+    # Remember the folder for the optional continuous run (dauerlauf.py, needs the OS scheduler job from tools/installieren.py) -
+    # only when the caller asks for it explicitly; never the knowledge folder itself, never a hand-picked file selection.
+    folgen = body.get("nachfuehren") is True and not r.get("eigene_ablage") and not einzeln
+    if folgen:
         konfig.ueberwacht_eintragen({"ordner": wurzel, "sammlung": sammlung, "sichtbarkeit": sicht, "zugehoerigkeit": zug,
-                                 "traeger": body.get("traeger") or "", "karten": bool(body.get("karten"))})
-    return {"ok": True, "nachgefuehrt": not r.get("eigene_ablage") and not einzeln, **{k: v for k, v in r.items() if k != "eintraege"}, "eintraege": r.get("eintraege", [])[:200]}
+                                     "traeger": body.get("traeger") or "", "karten": bool(body.get("karten"))})
+    return {"ok": True, "nachgefuehrt": folgen, **{k: v for k, v in r.items() if k != "eintraege"}, "eintraege": r.get("eintraege", [])[:200]}
 
 

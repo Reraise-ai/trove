@@ -1,720 +1,588 @@
-// Trove — Hermes-Desktop-Tab (Disk-Plugin, kein Build)
-// Zwei Seiten (links Quelle, rechts Ziel), Vorschau auf beiden Seiten, Aktionen laufen ueber das Belegprotokoll (F8).
-// Je Datei: Lesen (F3 Treppe + F4 Verprobung), Zerlegen (F6 Stapel), Historie (F11 ERPNext-Spiegel), Unterschrift (F7 DocuSeal),
-// zu Reraise (F16). Ordner: Ins Wissen (F16: Markdown-Zwilling, QMD-Sammlung, Beleg-Karten privat/oeffentlich),
-// zu Reraise hochladen (nur oeffentliche Zwillinge).
-// Kopf: Suche ueber beide Welten (F15), Mail abholen (F5), ERPNext-Spiegel (F11), Unterschriften holen (F7).
-// Multimonitor: Routen /trove/links und /trove/rechts zeigen je eine Seite; ein zweites Hermes-Fenster kann sie auf dem
-// zweiten Monitor anzeigen (gleicher Zustand ueber ctx.storage).
-import { host, Button, Badge, Input, SandboxedFrame, ROUTES_AREA, SIDEBAR_NAV_AREA, PALETTE_AREA } from '@hermes/plugin-sdk'
+// Trove — Hermes Desktop tab (disk plugin, no build step).
+// Two panes (source on the left, target on the right) with preview on both sides. Every action goes through the hash-chained
+// receipt log. Per file: Read (text layers, OCR, fixed plausibility checks), Split (multi-page PDFs), Trace (receipt history).
+// Per folder: Into knowledge (markdown twin + knowledge card in your wiki), Index files, Check changes.
+// Trove never asks for or stores passwords: mail attachments and drive files arrive in the source folders through your Hermes agents.
+// UI language: English by default, German as the second language through the Hermes plugin i18n (ctx.i18n.register).
+import { host, Button, Badge, Input, SandboxedFrame, ROUTES_AREA, SIDEBAR_NAV_AREA, PALETTE_AREA, usePluginI18n, useI18n } from '@hermes/plugin-sdk'
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
 const ID = 'trove'
 let rest = null
 let storage = null
-let MANDANT = ''      // kommt vom Backend (GET /status), keine zweite Wahrheit
-let KARTENZIEL = 'wiki'  // fail-closed wie der Server: Kundenmodus, bis /status ausdruecklich brett meldet
-// Knoepfe, die je Einrichtung fehlen koennen: erst nach GET /status zeigen (kein Aufblitzen im Kundenmodus).
-// reraise: status.reraise_knopf (fehlt = alte Fassung = an); mail/erpnext: im Kundenmodus nur, wenn eingerichtet
-let ZEIGE = { docuseal: false, reraise: false, mail: false, erpnext: false }
+let files = null          // ctx.files (the app's folder picker); may be missing on older Hermes builds
+let T = (k) => k          // ctx.i18n.t, for code outside React (notifications)
+let MANDANT = ''          // comes from the backend (GET /status), no second source of truth
 let PROFILE = ['default']
-let HERMES_CLI = true
-let PROFILE_GELADEN = false
+let PROFILE_LOADED = false
+const DEFAULT_COLLECTION = 'quellen'  // Into knowledge without a collection name -> raw/trove/quellen, cards in wiki/quellen
+const AFFILIATION_OPEN = 'offen'      // Into knowledge without an affiliation: marked "offen" (open)
 
-let WISSEN_EINZELN = false  // Backend kann Einzeldateien (status.wissen_einzeln); sonst Auswahl sperren, nie still den ganzen Ordner
-let WISSEN_OHNE_PFLICHT = false  // Backend setzt fehlende Sammlung/Zugehoerigkeit selbst (status.wissen_ohne_pflicht)
-const SAMMLUNG_STANDARD = 'quellen'  // Ins Wissen ohne Sammlung -> raw/trove/quellen, Karte wiki/quellen
-const ZUG_OFFEN = 'offen'  // Ins Wissen ohne Zugehoerigkeit: als offen gekennzeichnet, die Belegbuchung fragt spaeter nach
-
-function statusUebernehmen(s) { MANDANT = s.mandant || MANDANT; KARTENZIEL = s.kartenziel === 'brett' ? 'brett' : 'wiki'; ZEIGE = { docuseal: KARTENZIEL !== 'wiki', reraise: s.reraise_knopf !== false, mail: KARTENZIEL !== 'wiki' || s.postfach === true, erpnext: KARTENZIEL !== 'wiki' || s.erpnext === true }; WISSEN_EINZELN = s.wissen_einzeln === true; WISSEN_OHNE_PFLICHT = s.wissen_ohne_pflicht === true; PROFILE = s.profile || ['default']; PROFILE_GELADEN = Array.isArray(s.profile) && s.profile.length > 0; HERMES_CLI = s.hermes_cli !== false; }
-
-// Backend-Neuladen: EIN Zustand fuer alle Teile. Knoepfe bleiben immer sichtbar, sind waehrenddessen gesperrt und nennen den Grund.
-let BACKEND_LAEDT = false
-const backendHoerer = new Set()
-function backendMelden(laedt) { BACKEND_LAEDT = laedt; for (const f of [...backendHoerer]) { try { f(laedt) } catch (e) { /* Hoerer weg */ } } }
-function useBackendLaedt() {
-  const [b, setB] = useState(BACKEND_LAEDT)
-  useEffect(() => { const f = (x) => setB(x); backendHoerer.add(f); setB(BACKEND_LAEDT); return () => { backendHoerer.delete(f) } }, [])
-  return b
-}
-async function backendNeuLaden() {
-  const d = typeof window !== 'undefined' ? window.hermesDesktop : null
-  if (!d || typeof d.recycleBackend !== 'function') return 'Diese Hermes-Version kann das Backend nicht aus dem Plugin neu laden.'
-  if (BACKEND_LAEDT) return 'Backend wird schon neu geladen …'
-  backendMelden(true)
-  try {
-    try { await d.recycleBackend() } catch (e) { return 'Fehler: ' + String(e && e.message || e) }
-    for (let i = 0; i < 45; i++) {
-      await new Promise((ok) => setTimeout(ok, 2000))
-      try { const st = await rest('/status'); if (st.wissen_einzeln === true && st.wissen_ohne_pflicht === true) { statusUebernehmen(st); return null } } catch (e) { /* Backend startet noch */ }
-    }
-    return 'Backend antwortet nach 90 s noch nicht mit der neuen Fassung.'
-  } finally { backendMelden(false) }
-}
+const errText = (e) => String((e && e.message) || e)
 const fmtB = (n) => n == null ? '–' : n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(1) + ' KB' : n < 1073741824 ? (n / 1048576).toFixed(1) + ' MB' : (n / 1073741824).toFixed(2) + ' GB'
-const fmtT = (t) => t ? new Date(t * 1000).toLocaleString('de-DE') : ''
-const rahmen = 'rounded border border-(--ui-stroke-secondary)'
-const leise = 'text-(--ui-text-tertiary)'
-// Leisten nur mit Inline-Stilen: der Host liefert nur die Tailwind-Klassen, die er selbst benutzt (z. B. fehlt die Klasse fuer 11-px-Schrift)
-const LEISTE = { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, minWidth: 0 }
-const LEISE_STIL = { fontSize: 12, color: 'var(--ui-text-tertiary)' }
-const GRUPPE = { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 4, padding: '2px 6px', border: '1px solid var(--ui-stroke-secondary)', borderRadius: 4, minWidth: 0 }
-// Benannte Knopfgruppe (nur Werkzeugzeile oben); ohne sichtbare Knoepfe faellt die ganze Gruppe weg (Kundenmodus blendet aus statt grau)
-// Knoepfe, die nur gemeinsam umbrechen
-const PAAR = { display: 'flex', gap: 4, whiteSpace: 'nowrap' }
-function gruppe(name, knoepfe) {
-  const da = knoepfe.filter(Boolean)
-  return da.length ? jsxs('div', { role: 'group', 'aria-label': name, 'data-gruppe': name, style: GRUPPE, children: [jsx('span', { style: { ...LEISE_STIL, fontSize: 11, marginRight: 2 }, children: name }), ...da] }, name) : null
-}
-// Kleiner Leistenknopf; an = aktive Ansicht, disabled mit title = Grund
-function knopf(text, onClick, o = {}) {
-  return jsx(Button, { size: 'sm', variant: o.an ? 'secondary' : 'ghost', title: o.title, disabled: o.disabled, onClick, children: text })
-}
+const fmtT = (t, locale) => { if (!t) return ''; try { return new Date(t * 1000).toLocaleString(locale || undefined) } catch (e) { return new Date(t * 1000).toLocaleString() } }
+const baseName = (p) => String(p || '').split(/[\\/]/).pop()
+const box = 'rounded border border-(--ui-stroke-secondary)'
+const quiet = 'text-(--ui-text-tertiary)'
+const selectCls = 'rounded border border-(--ui-stroke-secondary) bg-transparent px-2 py-1 text-xs'
+// Bars use inline styles only: the host ships only the Tailwind classes it uses itself
+const BAR = { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, minWidth: 0 }
+const QUIET_STYLE = { fontSize: 12, color: 'var(--ui-text-tertiary)' }
+const GROUP = { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 4, padding: '2px 6px', border: '1px solid var(--ui-stroke-secondary)', borderRadius: 4, minWidth: 0 }
+const PAIR = { display: 'flex', gap: 4, whiteSpace: 'nowrap' }
 
-function Zeile(label, wert) {
-  return jsxs('div', { className: 'flex justify-between gap-3 text-xs', children: [jsx('span', { className: leise, children: label }), jsx('span', { className: 'font-mono truncate', title: String(wert ?? ''), children: String(wert ?? '–') })] })
+function group(name, buttons) {
+  const present = buttons.filter(Boolean)
+  return present.length ? jsxs('div', { role: 'group', 'aria-label': name, style: GROUP, children: [jsx('span', { style: { ...QUIET_STYLE, fontSize: 11, marginRight: 2 }, children: name }), ...present] }, name) : null
 }
-
-const CLOUD = {
-  webdav: ['Nextcloud / WebDAV', [['url', 'Adresse, z. B. https://cloud.example.com/remote.php/dav/files/NAME'], ['vendor', 'nextcloud, owncloud oder other'], ['user', 'Benutzer'], ['pass', 'Passwort']]],
-  sftp: ['SFTP', [['host', 'Server'], ['port', 'Port (leer = 22)'], ['user', 'Benutzer'], ['pass', 'Passwort']]],
-  mega: ['Mega', [['user', 'E-Mail'], ['pass', 'Passwort']]],
-  drive: ['Google Drive', []],
-  icloud: ['iCloud Drive', [['apple_id', 'Apple-ID'], ['password', 'Passwort']]]
+// Small bar button; on = active view, disabled + title = reason
+function btn(text, onClick, o = {}) {
+  return jsx(Button, { size: 'sm', variant: o.on ? 'secondary' : 'ghost', title: o.title, disabled: o.disabled, onClick, children: text })
 }
-
-function CloudAnbinden({ onFertig }) {
-  const [typ, setTyp] = useState('webdav'); const [name, setName] = useState(''); const [felder, setFelder] = useState({})
-  const [fehler, setFehler] = useState(null); const [laeuft, setLaeuft] = useState(false)
-  const anbinden = async () => {
-    setLaeuft(true); setFehler(null)
-    try { await rest('/cloud', { method: 'POST', body: { typ, name, felder }, timeoutMs: 700000 }); onFertig(true) } catch (e) { setFehler(String(e && e.message || e)) } finally { setLaeuft(false) }
-  }
-  return jsxs('div', { className: 'flex flex-col gap-2', children: [
-    jsx('select', { className: 'rounded border border-(--ui-stroke-secondary) bg-transparent px-2 py-1', value: typ, onChange: (e) => { setTyp(e.target.value); setFelder({}) }, children: Object.keys(CLOUD).map((k) => jsx('option', { value: k, children: CLOUD[k][0] }, k)) }),
-    jsx(Input, { placeholder: 'Name für diesen Speicher (Buchstaben/Ziffern, z. B. meinecloud)', value: name, onChange: (e) => setName(e.target.value) }),
-    ...CLOUD[typ][1].map((f) => jsx(Input, { type: f[0].indexOf('pass') >= 0 ? 'password' : 'text', placeholder: f[1], value: felder[f[0]] || '', onChange: (e) => setFelder({ ...felder, [f[0]]: e.target.value }) }, f[0])),
-    typ === 'drive' ? jsx('div', { className: leise, children: 'Beim Anbinden öffnet sich auf diesem Rechner der Browser zur Google-Anmeldung.' }) : null,
-    fehler ? jsx('div', { className: 'text-destructive', children: fehler }) : null,
-    jsx('div', { children: jsx(Button, { size: 'sm', disabled: laeuft || !name, onClick: anbinden, children: laeuft ? 'binde an …' : 'Anbinden und prüfen' }) })
-  ] })
+function Row(label, value) {
+  return jsxs('div', { className: 'flex justify-between gap-3 text-xs', children: [jsx('span', { className: quiet, children: label }), jsx('span', { className: 'font-mono truncate', title: String(value ?? ''), children: String(value ?? '–') })] })
 }
+// Machine states from the backend -> readable text
+function stateText(t, z) { return ({ neu: t('stNew'), schon_da: t('stThere'), dublette: t('stDup'), fehler: t('stError') })[z] || z || '' }
 
-const ICLOUD_HINWEIS = 'iCloud: in den Systemeinstellungen iCloud Drive einschalten, dann den Ordner iCloud Drive hier wählen. Dateien nur in der Cloud vorher im Finder ‚Jetzt laden‘.'
-
-// Kundenmodus: statt rclone (fehlt dort, und „Ins Wissen“ geht nur aus lokalem Ordner) der lokale iCloud-Drive-Ordner des Macs
-function ICloudWaehlen({ onGewaehlt }) {
-  const [meldung, setMeldung] = useState(null); const [laeuft, setLaeuft] = useState(false)
-  const waehlen = async () => {
-    setLaeuft(true); setMeldung(null)
+// ---------------------------------------------------------------- add a source folder
+function AddSource({ onDone }) {
+  const t = usePluginI18n(ID)
+  const [name, setName] = useState(''); const [path, setPath] = useState(''); const [writable, setWritable] = useState(false)
+  const [err, setErr] = useState(null); const [busy, setBusy] = useState(false)
+  const canPick = !!(files && typeof files.requestFolder === 'function')
+  const browse = async () => {
+    setErr(null)
     try {
-      const s = await rest('/status')
-      if (s.icloud_drive) onGewaehlt(s.icloud_drive)
-      else setMeldung('iCloud Drive ist auf diesem Rechner nicht eingeschaltet (Ordner fehlt). Systemeinstellungen → Apple-ID → iCloud → iCloud Drive einschalten, dann erneut wählen.')
-    } catch (e) { setMeldung(String(e && e.message || e)) } finally { setLaeuft(false) }
+      const r = await files.requestFolder()   // the app's own folder picker; ctx.files is the documented way to choose folders
+      if (r && r.ok && r.folder && r.folder.path) { setPath(r.folder.path); if (!name) setName(r.folder.name || '') }
+    } catch (e) { setErr(errText(e)) }
   }
-  return jsxs('div', { className: 'flex flex-col gap-2', children: [
-    jsx('div', { children: ICLOUD_HINWEIS }),
-    jsx('div', { children: jsx(Button, { size: 'sm', disabled: laeuft, onClick: waehlen, children: laeuft ? 'suche …' : 'iCloud Drive wählen' }) }),
-    meldung ? jsx('div', { className: 'text-destructive', children: meldung }) : null
-  ] })
-}
-
-function QuelleAnlegen({ remotes, onFertig }) {
-  const kunde = KARTENZIEL === 'wiki'
-  const [art, setArt] = useState('ordner'); const [name, setName] = useState(''); const [pfad, setPfad] = useState(''); const [remote, setRemote] = useState(remotes[0] || '')
-  const [fehler, setFehler] = useState(null); const [laeuft, setLaeuft] = useState(false); const [beschreibbar, setBeschreibbar] = useState(false)
-  const anlegen = async () => {
-    setLaeuft(true); setFehler(null)
-    try { await rest('/quellen', { method: 'POST', body: { mandant: MANDANT, art, name, pfad, remote, nur_lesen: !(beschreibbar && art === 'ordner' && KARTENZIEL !== 'wiki') } }); onFertig(true) } catch (e) { setFehler(String(e && e.message || e)) } finally { setLaeuft(false) }
+  const add = async () => {
+    setBusy(true); setErr(null)
+    try { await rest('/quellen', { method: 'POST', body: { mandant: MANDANT, art: 'ordner', name, pfad: path.trim(), nur_lesen: !writable } }); onDone(true) } catch (e) { setErr(errText(e)) } finally { setBusy(false) }
   }
-  return jsxs('div', { className: rahmen + ' p-2 flex flex-col gap-2 text-xs', children: [
-    jsxs('div', { className: 'flex gap-2 items-center', children: [
-      jsx('span', { className: leise, children: 'Neue Quelle:' }),
-      jsx(Button, { size: 'sm', variant: art === 'ordner' ? 'default' : 'ghost', onClick: () => setArt('ordner'), children: 'Ordner' }),
-      kunde ? null : jsx(Button, { size: 'sm', variant: art === 'rclone' ? 'default' : 'ghost', onClick: () => setArt('rclone'), children: 'Online-Drive (rclone)' }),
-      jsx(Button, { size: 'sm', variant: art === 'cloud' ? 'default' : 'ghost', onClick: () => setArt('cloud'), children: kunde ? 'iCloud Drive' : 'Cloud-Speicher anbinden' })
+  return jsxs('div', { className: box + ' p-2 flex flex-col gap-2 text-xs', children: [
+    jsx('span', { className: quiet, children: t('addHint') }),
+    jsxs('div', { className: 'flex gap-2', children: [
+      jsx(Input, { placeholder: t('pathPlaceholder'), value: path, onChange: (e) => setPath(e.target.value), className: 'text-xs flex-1' }),
+      canPick ? jsx(Button, { size: 'sm', variant: 'ghost', onClick: browse, children: t('browse') }) : null
     ] }),
-    art === 'cloud' && kunde ? jsx(ICloudWaehlen, { onGewaehlt: (p) => { setArt('ordner'); setPfad(p); if (!name) setName('iCloud Drive') } }) : null,
-    art === 'cloud' && !kunde ? jsx(CloudAnbinden, { onFertig: (ok) => { if (ok) { setArt('rclone'); onFertig(true) } } }) : null,
-    art === 'cloud' ? null : jsx(Input, { placeholder: 'Anzeigename (optional)', value: name, onChange: (e) => setName(e.target.value) }),
-    art === 'cloud' ? null : art === 'ordner'
-      ? jsx(Input, { placeholder: 'Ordnerpfad, z. B. ~/Documents/Ablage', value: pfad, onChange: (e) => setPfad(e.target.value) })
-      : jsxs('div', { className: 'flex gap-2', children: [
-          jsx('select', { className: 'rounded border border-(--ui-stroke-secondary) bg-transparent px-2 py-1', value: remote, onChange: (e) => setRemote(e.target.value), children: remotes.map((r) => jsx('option', { value: r, children: r + ':' }, r)) }),
-          jsx(Input, { placeholder: 'Unterordner im Drive (optional)', value: pfad, onChange: (e) => setPfad(e.target.value) })
-        ] }),
-    art === 'ordner' && KARTENZIEL !== 'wiki' ? jsxs('label', { className: 'flex gap-1 items-center ' + leise, children: [jsx('input', { type: 'checkbox', checked: beschreibbar, onChange: (e) => setBeschreibbar(e.target.checked) }), 'beschreibbar (Ziel für Kopieren/Verschieben; sonst nur lesen)'] }) : null,
-    remotes.length === 0 && art === 'rclone' ? jsx('div', { className: leise, children: 'Kein Online-Speicher angebunden: oben „Cloud-Speicher anbinden“ wählen (Nextcloud, SFTP, Mega, Google Drive, iCloud).' }) : null,
-    fehler ? jsx('div', { className: 'text-destructive', children: fehler }) : null,
-    art === 'cloud' ? null : jsxs('div', { className: 'flex gap-2', children: [jsx(Button, { size: 'sm', disabled: laeuft, onClick: anlegen, children: laeuft ? 'prüfe …' : 'Einbinden' }), jsx(Button, { size: 'sm', variant: 'ghost', onClick: () => onFertig(false), children: 'Abbrechen' })] })
+    jsx(Input, { placeholder: t('namePlaceholder'), value: name, onChange: (e) => setName(e.target.value) }),
+    jsxs('label', { className: 'flex gap-1 items-center ' + quiet, children: [jsx('input', { type: 'checkbox', checked: writable, onChange: (e) => setWritable(e.target.checked) }), t('writableCheck')] }),
+    err ? jsx('div', { className: 'text-destructive', children: err }) : null,
+    jsxs('div', { className: 'flex gap-2', children: [jsx(Button, { size: 'sm', disabled: busy || !path.trim(), onClick: add, children: busy ? t('checking') : t('addBtn') }), jsx(Button, { size: 'sm', variant: 'ghost', onClick: () => onDone(false), children: t('cancel') })] })
   ] })
 }
 
-function Vorschau({ quelle, eintrag }) {
-  const [v, setV] = useState(null); const [seite, setSeite] = useState(0)
-  useEffect(() => { setSeite(0) }, [quelle, eintrag && eintrag.rel])
+// ---------------------------------------------------------------- preview
+function Preview({ source, entry }) {
+  const t = usePluginI18n(ID)
+  const [v, setV] = useState(null); const [page, setPage] = useState(0)
+  useEffect(() => { setPage(0) }, [source, entry && entry.rel])
   useEffect(() => {
     setV(null)
-    if (!quelle || !eintrag || eintrag.ordner) return
-    let aktiv = true
-    rest('/vorschau?quelle=' + encodeURIComponent(quelle) + '&pfad=' + encodeURIComponent(eintrag.rel) + '&seite=' + seite).then((r) => { if (aktiv) setV(r) }).catch((e) => { if (aktiv) setV({ art: 'fehler', hinweis: String(e && e.message || e) }) })
-    return () => { aktiv = false }
-  }, [quelle, eintrag && eintrag.rel, seite])
-  if (!eintrag) return jsx('div', { className: leise + ' text-xs p-2', children: 'Datei anklicken für Vorschau.' })
-  if (eintrag.ordner) return jsx('div', { className: leise + ' text-xs p-2', children: 'Ordner: ' + eintrag.name })
-  if (!v) return jsx('div', { className: leise + ' text-xs p-2', children: 'lade Vorschau …' })
-  if (v.art === 'bild') return jsx('img', { src: v.data, alt: eintrag.name, className: 'max-h-full max-w-full object-contain' })
+    if (!source || !entry || entry.ordner) return
+    let live = true
+    rest('/vorschau?quelle=' + encodeURIComponent(source) + '&pfad=' + encodeURIComponent(entry.rel) + '&seite=' + page).then((r) => { if (live) setV(r) }).catch((e) => { if (live) setV({ art: 'fehler', hinweis: errText(e) }) })
+    return () => { live = false }
+  }, [source, entry && entry.rel, page])
+  if (!entry) return jsx('div', { className: quiet + ' text-xs p-2', children: t('clickForPreview') })
+  if (entry.ordner) return jsx('div', { className: quiet + ' text-xs p-2', children: t('folderLabel', entry.name) })
+  if (!v) return jsx('div', { className: quiet + ' text-xs p-2', children: t('loadingPreview') })
+  if (v.art === 'bild') return jsx('img', { src: v.data, alt: entry.name, className: 'max-h-full max-w-full object-contain' })
   if (v.art === 'pdf_seite') return jsxs('div', { className: 'flex h-full flex-col gap-1 min-h-0', children: [
     jsxs('div', { className: 'flex items-center gap-1 text-xs p-1', children: [
-      jsx(Button, { size: 'sm', variant: 'ghost', disabled: v.seite <= 0, onClick: () => setSeite(v.seite - 1), children: '‹' }),
-      jsx('span', { children: 'Seite ' + (v.seite + 1) + ' von ' + v.seiten }),
-      jsx(Button, { size: 'sm', variant: 'ghost', disabled: v.seite + 1 >= v.seiten, onClick: () => setSeite(v.seite + 1), children: '›' })] }),
-    jsx('div', { className: 'flex-1 min-h-0 overflow-auto', children: jsx('img', { src: v.data, alt: eintrag.name + ' Seite ' + (v.seite + 1), className: 'w-full' }) })] })
+      jsx(Button, { size: 'sm', variant: 'ghost', disabled: v.seite <= 0, onClick: () => setPage(v.seite - 1), children: '‹' }),
+      jsx('span', { children: t('pageOf', v.seite + 1, v.seiten) }),
+      jsx(Button, { size: 'sm', variant: 'ghost', disabled: v.seite + 1 >= v.seiten, onClick: () => setPage(v.seite + 1), children: '›' })] }),
+    jsx('div', { className: 'flex-1 min-h-0 overflow-auto', children: jsx('img', { src: v.data, alt: entry.name + ' ' + t('pageOf', v.seite + 1, v.seiten), className: 'w-full' }) })] })
   if (v.art === 'karte') return jsxs('div', { className: 'p-2 overflow-auto h-full', style: { fontSize: 11 }, children: [
-    jsx('div', { className: 'mb-2 rounded border border-(--ui-stroke-secondary) p-1', children: v.kopf.map((z) => jsxs('div', { children: [jsx('span', { className: leise, children: z[0] + ': ' }), z[1]] }, z[0])) }),
-    jsx('pre', { className: 'whitespace-pre-wrap break-words font-sans', children: v.inhalt + (v.abgeschnitten ? '\n… (gekürzt)' : '') })] })
-  if (v.art === 'pdf') return jsx(SandboxedFrame, { src: v.data, title: eintrag.name, className: 'w-full h-full' })
-  if (v.art === 'text') return jsx('pre', { className: 'whitespace-pre-wrap break-all p-2 font-mono', style: { fontSize: 11 }, children: v.inhalt + (v.abgeschnitten ? '\n… (gekürzt)' : '') })
-  return jsx('div', { className: leise + ' text-xs p-2', children: 'Keine Vorschau: ' + (v.hinweis || v.mime || '') + ' · ' + fmtB(v.groesse) })
+    jsx('div', { className: 'mb-2 rounded border border-(--ui-stroke-secondary) p-1', children: v.kopf.map((z) => jsxs('div', { children: [jsx('span', { className: quiet, children: z[0] + ': ' }), z[1]] }, z[0])) }),
+    jsx('pre', { className: 'whitespace-pre-wrap break-words font-sans', children: v.inhalt + (v.abgeschnitten ? '\n' + t('truncated') : '') })] })
+  if (v.art === 'pdf') return jsx(SandboxedFrame, { src: v.data, title: entry.name, className: 'w-full h-full' })
+  if (v.art === 'text') return jsx('pre', { className: 'whitespace-pre-wrap break-all p-2 font-mono', style: { fontSize: 11 }, children: v.inhalt + (v.abgeschnitten ? '\n' + t('truncated') : '') })
+  return jsx('div', { className: quiet + ' text-xs p-2', children: t('noPreview') + ': ' + (v.hinweis || v.mime || '') + ' · ' + fmtB(v.groesse) })
 }
 
-function ReraiseErgebnis({ erg, laeuft, onJa, onNein }) {
-  if (erg.laeuft) {
-    return jsx('div', { children: erg.probe ? 'Reraise: prüfe Zwillinge, baue Karten (nichts wird gesendet) …' : 'Reraise: sende …' })
-  }
-  if (erg.ausfall) return jsx('div', { className: 'text-destructive', children: erg.ausfall })
-  const kopf = (erg.probe ? 'Reraise-Probe (nichts gesendet): ' : 'Reraise: ') + erg.dateien + ' Dateien: ' + erg.gesendet + ' gesendet, '
-    + erg.schon_da + ' schon da, ' + (erg.dubletten ? erg.dubletten + ' Dubletten, ' : '') + erg.verweigert_privat + ' privat verweigert, ' + erg.ohne_zwilling + ' ohne Zwilling, '
-    + (erg.probe ? erg.gebaut + ' gebaut, ' : '') + (erg.unklar ? erg.unklar + ' unklar, ' : '')
-    + (erg.nicht_bestaetigt ? erg.nicht_bestaetigt + ' nicht bestätigt, ' : '') + erg.fehler + ' Fehler'
-    + (erg.protokoll_fehler ? ', ' + erg.protokoll_fehler + ' Protokollfehler' : '')
-  const zeile = (e, i) => jsx('div', {
-    className: 'truncate', title: (e.karte_probe && e.karte_probe.body) || e.url || e.grund || '',
-    children: (e.datei || '').split(/[\\/]/).pop() + ' → ' + e.zustand + (e.karte ? ' · Karte ' + e.karte : '')
-      + (e.titel ? ' · „' + e.titel + '“' : '') + (e.grund ? ' · ' + e.grund : '')
-  }, i)
-  const frage = 'Öffentliche Karten sind endgültig und für alle sichtbar – ' + (erg.bestaetigt || []).length + ' Karten wirklich senden? '
-    + 'Reraise kennt kein Löschen.'
-  return jsxs('div', { children: [
-    jsx('div', { className: 'font-medium', children: kopf }),
-    erg.abbruch ? jsx('div', { className: 'text-destructive', children: 'Abbruch: ' + erg.abbruch }) : null,
-    erg.frage ? jsxs('div', { className: 'flex gap-2 items-center flex-wrap', children: [
-      jsx('span', { className: 'font-medium', children: frage }),
-      jsx(Button, { size: 'sm', disabled: laeuft, onClick: onJa, children: 'Ja, senden' }),
-      jsx(Button, { size: 'sm', variant: 'ghost', onClick: onNein, children: 'Abbrechen' })
-    ] }) : null,
-    ...(erg.eintraege || []).slice(0, 40).map(zeile)
-  ] })
-}
-
-// sperre: EIN useRef des Elternteils fuer alle Laeufe dort (Ins Wissen und Reraise), damit nie zwei gleichzeitig starten
-function useReraise(quelle, pfad, sperre) {
-  const [erg, setErg] = useState(null); const [probe, setProbe] = useState(true)
-  const laeuft = !!(erg && erg.laeuft)
-  const rufen = async (sammlung, nurProbe, bestaetigt) => {
-    if (sperre.current) return
-    sperre.current = true
-    setErg({ laeuft: true, probe: nurProbe })
-    try {
-      const body = { mandant: MANDANT, quelle, pfad, sammlung, probe: nurProbe }
-      if (!nurProbe) body.bestaetigt = bestaetigt
-      const r = await rest('/reraise', { method: 'POST', body, timeoutMs: 3600000 })
-      const gebaut = (r.eintraege || []).filter((e) => e.zustand === 'gebaut' && e.sha256 && e.karte_hash).map((e) => e.sha256 + ':' + e.karte_hash)
-      setErg(nurProbe && !probe && gebaut.length ? { ...r, frage: true, sammlung, bestaetigt: gebaut } : r)
-    } catch (e) { setErg({ ausfall: String(e && e.message || e) }) } finally { sperre.current = false }
-  }
-  const los = (sammlung) => {
-    if (!sammlung) { host.notify({ kind: 'warning', message: 'Trove: Sammlung angeben (die des Markdown-Zwillings).' }); return }
-    rufen(sammlung, true)
-  }
-  const knopf = (sammlung, gesperrt) => !ZEIGE.reraise ? [jsx('a', { href: 'https://reraise.ai', target: '_blank', rel: 'noopener', className: 'text-xs', style: { color: 'var(--ui-text-tertiary)', textDecoration: 'underline' }, title: 'Veroeffentlichen nur mit hinterlegtem Reraise-Schluessel — zum Anmelden: reraise.ai', children: 'zu Reraise – anmelden' }, 'reraise-anmelden')] : [
-    jsxs('label', {
-      className: 'text-xs flex items-center gap-1', title: 'Karten bauen und anzeigen (Maus über die Zeile), nichts senden',
-      children: [jsx('input', {
-        type: 'checkbox', checked: probe, disabled: laeuft, onChange: (e) => { setProbe(e.target.checked); setErg(null) }
-      }), 'nur Probe']
-    }),
-    jsx(Button, {
-      size: 'sm', variant: 'ghost', disabled: laeuft || !!gesperrt, onClick: () => los(sammlung),
-      title: 'Öffentliche Markdown-Zwillinge als Beleg-Karten zu reraise.ai. Ohne „nur Probe“: erst Probe, dann Rückfrage.',
-      children: laeuft ? 'läuft …' : 'zu Reraise hochladen'
-    })
-  ]
-  const ergebnis = erg ? jsx(ReraiseErgebnis, {
-    erg, laeuft, onJa: () => rufen(erg.sammlung, false, erg.bestaetigt), onNein: () => setErg({ ...erg, frage: false })
-  }) : null
-  return { knopf, laeuft, ergebnis }
-}
-
-function ZuReraise({ r }) {
-  const sammlungen = r.sammlungen || []
-  const [sammlung, setSammlung] = useState(sammlungen[0] ? sammlungen[0].sammlung : ''); const sperre = useRef(false)
-  const rr = useReraise(r.quelle, r.pfad, sperre)
-  return jsxs('div', { className: 'flex flex-col gap-1', children: [
-    jsx('div', {
-      className: leise,
-      children: 'Datei „' + r.datei + '“ als öffentliche Beleg-Karte zu reraise.ai — nur wenn ihr Markdown-Zwilling '
-        + 'in der Sammlung Sichtbarkeit öffentlich trägt.'
-    }),
-    sammlungen.length ? jsxs('div', { className: 'flex gap-2 items-center flex-wrap', children: [
-      jsxs('select', {
-        className: 'rounded border border-(--ui-stroke-secondary) bg-transparent px-2 py-1 text-xs', value: sammlung,
-        onChange: (e) => setSammlung(e.target.value),
-        children: sammlungen.map((s) => jsx('option', {
-          value: s.sammlung, children: s.sammlung + ' (' + s.markdown + ' Markdown)'
-        }, s.sammlung))
-      }),
-      ...rr.knopf(sammlung)
-    ] }) : jsx('div', { children: 'Noch keine Sammlung — erst den Ordner „Ins Wissen“ geben (Sichtbarkeit öffentlich).' }),
-    rr.ergebnis
-  ] })
-}
-
-function InsWissen({ r }) {
-  // Kundenmodus: keine Pflichtfelder. Sammlung leer = SAMMLUNG_STANDARD (wiki/quellen), Zugehoerigkeit leer = ZUG_OFFEN
-  // (die Belegbuchung fragt spaeter gezielt nach). Sammlung, Sichtbarkeit, Traeger nur unter "Mehr".
-  const [sammlung, setSammlung] = useState(''); const [zug, setZug] = useState('')
-  const [sicht, setSichtRoh] = useState(() => storage.get('sichtbarkeit_' + MANDANT, 'privat'))
-  const setSicht = (v) => { storage.set('sichtbarkeit_' + MANDANT, v); setSichtRoh(v) }  // je Mandant dauerhaft, Standard privat
-  const [traeger, setTraeger] = useState(''); const [karten, setKarten] = useState(KARTENZIEL === 'wiki'); const [erg, setErg] = useState(null)
-  const [mehr, setMehr] = useState(false)
-  const sperre = useRef(false); const sammlungEff = sammlung.trim().toLowerCase() || SAMMLUNG_STANDARD
-  const rr = useReraise(r.quelle, r.pfad, sperre)
-  const laeuft = !!(erg && erg.laeuft)
-  const auswahlD = r.dateien || []; const ganz = auswahlD.length === 0
-  const [einzeln, setEinzeln] = useState(WISSEN_EINZELN); const [ganzOk, setGanzOk] = useState(false); const [recycle, setRecycle] = useState(null)
-  const [ohnePflicht, setOhnePflicht] = useState(WISSEN_OHNE_PFLICHT)
-  const laedt = useBackendLaedt()
-  useEffect(() => { if (!laedt) { setEinzeln(WISSEN_EINZELN); setOhnePflicht(WISSEN_OHNE_PFLICHT) } }, [laedt])
-  const backendNeu = async () => {
-    setRecycle('Backend wird neu geladen …')
-    const m = await backendNeuLaden()
-    setEinzeln(WISSEN_EINZELN); setOhnePflicht(WISSEN_OHNE_PFLICHT); setRecycle(m)
-  }
-  const grund = laeuft ? null : laedt ? 'Backend lädt …' : rr.laeuft ? 'Reraise läuft …' : (!ganz && !einzeln) ? 'erst Backend neu laden' : null
-  const los = async () => {
-    if (sperre.current || grund) return
-    if (ganz && !ganzOk) { setGanzOk(true); return }
-    sperre.current = true
-    setErg({ laeuft: true })
-    const body = { mandant: MANDANT, quelle: r.quelle, pfad: r.pfad, sammlung: sammlungEff, sichtbarkeit: sicht, zugehoerigkeit: zug.trim() || ZUG_OFFEN, karten }
-    if (!ganz) body.dateien = auswahlD
-    if (traeger) body.traeger = traeger
+// ---------------------------------------------------------------- Into knowledge
+// lock: ONE useRef of the parent so two runs never start at once
+function IntoKnowledge({ r }) {
+  const t = usePluginI18n(ID)
+  const [collection, setCollection] = useState(''); const [affiliation, setAffiliation] = useState('')
+  const [cards, setCards] = useState(true); const [follow, setFollow] = useState(false)
+  const [res, setRes] = useState(null); const [more, setMore] = useState(false); const [wholeOk, setWholeOk] = useState(false)
+  const lock = useRef(false)
+  const collectionEff = collection.trim().toLowerCase() || DEFAULT_COLLECTION
+  const running = !!(res && res.laeuft)
+  const picked = r.dateien || []; const whole = picked.length === 0
+  const go = async () => {
+    if (lock.current) return
+    if (whole && !wholeOk) { setWholeOk(true); return }
+    lock.current = true
+    setRes({ laeuft: true })
+    const body = { mandant: MANDANT, quelle: r.quelle, pfad: r.pfad, sammlung: collectionEff, sichtbarkeit: 'privat', zugehoerigkeit: affiliation.trim() || AFFILIATION_OPEN, karten: cards, nachfuehren: follow }
+    if (!whole) body.dateien = picked
     try {
       const z = await rest('/wissen', { method: 'POST', body, timeoutMs: 7200000 })
-      setErg(z)
+      setRes(z)
       if (z.wolke_hinweis) host.notify({ kind: 'warning', message: 'Trove: ' + z.wolke_hinweis })
-    }
-    catch (e) { setErg({ ausfall: String(e && e.message || e) }) } finally { sperre.current = false; setGanzOk(false) }
+    } catch (e) { setRes({ ausfall: errText(e) }) } finally { lock.current = false; setWholeOk(false) }
   }
-  const auswahl = 'rounded border border-(--ui-stroke-secondary) bg-transparent px-2 py-1 text-xs'
-  const zeile = (e, i) => jsx('div', {
+  const line = (e, i) => jsx('div', {
     className: 'truncate', title: e.md || e.fehler,
-    children: (e.fehler ? 'FEHLER ' : '') + (e.datei || '').split(/[\\/]/).pop() + ' → ' + (e.zustand || '')
-      + (e.karte ? ' · Karte ' + e.karte : e.grund ? ' · keine Karte: ' + e.grund : '')
-      + (e.fehler ? ' ' + e.fehler : '')
+    children: (e.fehler ? t('errorWord') + ' ' : '') + baseName(e.datei) + ' → ' + stateText(t, e.zustand)
+      + (e.karte ? ' · ' + t('cardWord') + ' ' + e.karte : e.grund ? ' · ' + t('noCard') + ': ' + e.grund : '') + (e.fehler ? ' ' + e.fehler : '')
   }, i)
-  const erklaerung = (ganz ? 'GANZER Ordner „' + (r.datei || '/') + '“ (' + (r.anzahl || 0) + ' Dateien, auch Unterordner)' : auswahlD.length + ' ausgewählte Datei(en): ' + auswahlD.map((x) => x.split('/').pop()).join(', ')) + ' ins Wissen: je Datei ein Markdown-Zwilling (mit Prüfsumme ans Original '
-    + 'gebunden), ' + (KARTENZIEL === 'wiki' ? 'dazu je Datei eine Wissenskarte im Wiki (status: zu-prüfen) mit Herkunft: Originalpfad und Ordner in deiner Ablage. Das Original bleibt unverändert.' : 'QMD-Sammlung trove-' + MANDANT + '-' + sammlungEff + ', optional Beleg-Karten auf dem Brett.')
-  const zusammen = (z) => z.dateien + ' Dateien: ' + z.neu + ' neu, ' + z.schon_da + ' schon da, ' + (z.dubletten ? z.dubletten + ' Dubletten, ' : '') + z.karten + ' Karten, '
-    + z.fehler + ' Fehler' + (z.nachgefuehrt ? ' · Ordner wird automatisch nachgeführt' : '') + (z.merker_offen ? ' · ' + z.merker_offen + ' Karte(n) unklar (Brett prüfen)' : '') + ' · QMD ' + (z.qmd && z.qmd.sammlung) + ' (' + (z.qmd && z.qmd.dateien_im_index) + ' im Index)'
-  let ausgabe = null
-  if (laeuft) ausgabe = jsx('div', { children: 'liest, schreibt Markdown, baut Sammlung … (OCR je Seite einige Sekunden)' })
-  else if (erg && erg.ausfall) ausgabe = jsx('div', { className: 'text-destructive', children: erg.ausfall })
-  else if (erg) {
-    ausgabe = jsxs('div', { children: [
-      jsx('div', { className: 'font-medium', children: zusammen(erg) }),
-      erg.wolke_hinweis ? jsx('div', { className: 'font-medium text-destructive', children: '☁ ' + erg.wolke_hinweis }) : null, ...(erg.hinweise || []).map((h, i) => jsx('div', { className: 'text-destructive', children: h }, 'h' + i)), ...(erg.eintraege || []).slice(0, 40).map(zeile)] })
-  }
-  const knopfText = laeuft ? 'läuft …' : grund ? 'Ins Wissen – ' + grund : ganz ? (ganzOk ? 'Ja, ganzen Ordner (' + (r.anzahl || 0) + ' Dateien)' : 'Ins Wissen (ganzer Ordner)') : 'Ins Wissen (' + auswahlD.length + ' ausgewählt)'
+  const explain = (whole ? t('wholeFolder', r.datei || '/', r.anzahl || 0) : t('selectedFiles', picked.length, picked.map((x) => x.split('/').pop()).join(', '))) + ' ' + t('knowledgeExplain')
+  const summary = (z) => t('summary', z.dateien, z.neu, z.schon_da, z.dubletten || 0, z.karten, z.fehler)
+    + (z.nachgefuehrt ? ' · ' + t('followed') : '') + ' · ' + t('qmdState', z.qmd && z.qmd.uebersprungen ? t('qmdSkipped') : ((z.qmd && z.qmd.dateien_im_index) || 0) + ' ' + t('inIndex'))
+  let out = null
+  if (running) out = jsx('div', { children: t('readingNow') })
+  else if (res && res.ausfall) out = jsx('div', { className: 'text-destructive', children: res.ausfall })
+  else if (res) out = jsxs('div', { children: [
+    jsx('div', { className: 'font-medium', children: summary(res) }),
+    res.wolke_hinweis ? jsx('div', { className: 'font-medium text-destructive', children: '☁ ' + res.wolke_hinweis }) : null,
+    ...(res.hinweise || []).map((h, i) => jsx('div', { className: 'text-destructive', children: h }, 'h' + i)),
+    ...(res.eintraege || []).slice(0, 40).map(line)] })
+  const label = running ? t('running') : whole ? (wholeOk ? t('yesWhole', r.anzahl || 0) : t('intoWhole')) : t('intoSelected', picked.length)
   return jsxs('div', { className: 'flex flex-col gap-1', children: [
-    jsx('div', { className: leise, children: erklaerung }),
+    jsx('div', { className: quiet, children: explain }),
     jsxs('div', { className: 'flex gap-2 items-center flex-wrap', children: [
-      jsx(Input, {
-        placeholder: 'Zugehörigkeit (optional, z. B. Meine Firma)', value: zug, onChange: (e) => setZug(e.target.value), className: 'text-xs w-56',
-        title: 'Optional. Leer = „offen“; die Belegbuchung fragt später gezielt nach.'
-      }),
-      jsxs('label', { className: 'text-xs flex items-center gap-1', children: [
-        jsx('input', { type: 'checkbox', checked: karten, onChange: (e) => setKarten(e.target.checked) }), KARTENZIEL === 'wiki' ? 'Wissenskarten erzeugen' : 'Beleg-Karten erzeugen'] }),
-      jsx(Button, { size: 'sm', disabled: laeuft || !!grund, title: grund ? 'Gerade nicht möglich: ' + grund : 'Keine Pflichtfelder: ohne Angaben Sammlung „' + SAMMLUNG_STANDARD + '“, Zugehörigkeit „' + ZUG_OFFEN + '“.', onClick: los, children: knopfText }),
-      ganzOk && !laeuft ? jsx(Button, { size: 'sm', variant: 'ghost', onClick: () => setGanzOk(false), children: 'Abbrechen' }) : null,
-      jsx(Button, { size: 'sm', variant: 'ghost', onClick: () => setMehr(!mehr), children: mehr ? 'Weniger' : 'Mehr …' })
+      jsx(Input, { placeholder: t('affiliationPlaceholder'), value: affiliation, onChange: (e) => setAffiliation(e.target.value), className: 'text-xs w-56', title: t('affiliationTip') }),
+      jsxs('label', { className: 'text-xs flex items-center gap-1', children: [jsx('input', { type: 'checkbox', checked: cards, onChange: (e) => setCards(e.target.checked) }), t('makeCards')] }),
+      jsx(Button, { size: 'sm', disabled: running, title: t('noMandatory', DEFAULT_COLLECTION, AFFILIATION_OPEN), onClick: go, children: label }),
+      wholeOk && !running ? jsx(Button, { size: 'sm', variant: 'ghost', onClick: () => setWholeOk(false), children: t('cancel') }) : null,
+      jsx(Button, { size: 'sm', variant: 'ghost', onClick: () => setMore(!more), children: more ? t('less') : t('more') })
     ] }),
-    mehr ? jsxs('div', { className: 'flex gap-2 items-center flex-wrap', children: [
-      jsx(Input, {
-        placeholder: 'Sammlung (leer = ' + SAMMLUNG_STANDARD + ')', value: sammlung, onChange: (e) => setSammlung(e.target.value), className: 'text-xs w-44'
-      }),
-      jsxs('select', {
-        className: auswahl, value: sicht, onChange: (e) => setSicht(e.target.value),
-        title: 'privat = eigene Nutzung · öffentlich = Reraise-Tausch',
-        children: [jsx('option', { value: 'privat', children: 'privat (eigene Nutzung)' }),
-          jsx('option', { value: 'oeffentlich', children: 'öffentlich (Reraise)' })]
-      }),
-      jsxs('select', {
-        className: auswahl, value: traeger, onChange: (e) => setTraeger(e.target.value),
-        title: 'automatisch: „offen“ ohne Zugehörigkeit, Person bei „privat“ in der Zugehörigkeit, sonst Firma',
-        children: [jsx('option', { value: '', children: 'Träger automatisch' }, ''),
-          ...['Firma', 'Person', 'Projekt', 'Kunde', 'Behoerde'].map((t) => jsx('option', { value: t, children: t }, t))]
-      }),
-      ...rr.knopf(sammlungEff, laeuft)
+    more ? jsxs('div', { className: 'flex gap-2 items-center flex-wrap', children: [
+      jsx(Input, { placeholder: t('collectionPlaceholder', DEFAULT_COLLECTION), value: collection, onChange: (e) => setCollection(e.target.value), className: 'text-xs w-44' }),
+      jsxs('label', { className: 'text-xs flex items-center gap-1', title: t('followTip'), children: [jsx('input', { type: 'checkbox', checked: follow, onChange: (e) => setFollow(e.target.checked) }), t('followCheck')] })
     ] }) : null,
-    ganzOk && !laeuft ? jsx('div', { className: 'font-medium text-destructive', children: 'Nichts angehakt: es wird der GANZE Ordner verarbeitet (' + (r.anzahl || 0) + ' Dateien, mit Unterordnern, danach automatisch nachgeführt). Einzelne Belege: Häkchen setzen.' }) : null,
-    (!ganz && !einzeln) || !ohnePflicht || recycle ? jsxs('div', { className: 'flex gap-2 items-center flex-wrap', children: [
-      (!ganz && !einzeln) || !ohnePflicht ? jsx('span', { className: 'font-medium' + (!ganz && !einzeln ? ' text-destructive' : ''), children: !ganz && !einzeln ? 'Einzelauswahl: erst das Backend neu laden (10–30 s, laufende KI-Antworten abwarten).' : 'Neue Backend-Fassung bereit – bei Gelegenheit neu laden (10–30 s). „Ins Wissen“ geht auch ohne.' }) : null,
-      (!ganz && !einzeln) || !ohnePflicht ? jsx(Button, { size: 'sm', disabled: laedt, onClick: backendNeu, children: laedt ? 'Backend lädt …' : 'Trove-Backend neu laden' }) : null,
-      recycle ? jsx('span', { children: recycle }) : null
-    ] }) : null,
-    laeuft ? null : rr.ergebnis, // laufende Anzeige hat Vorrang vor dem alten Ergebnis der anderen Aktion
-    rr.laeuft ? null : ausgabe
+    wholeOk && !running ? jsx('div', { className: 'font-medium text-destructive', children: t('wholeWarn', r.anzahl || 0) }) : null,
+    out
   ] })
 }
 
-function Unterschrift({ r }) {
-  const [vorlage, setVorlage] = useState(r.vorlagen && r.vorlagen[0] ? String(r.vorlagen[0].id) : ''); const [an, setAn] = useState(''); const [name, setName] = useState(''); const [mail, setMail] = useState(false); const [erg, setErg] = useState(null)
-  const senden = async () => {
-    if (!an || !vorlage) { host.notify({ kind: 'warning', message: 'Trove: Vorlage und E-Mail angeben.' }); return }
-    setErg({ laeuft: true })
-    try { setErg(await rest('/docuseal/senden', { method: 'POST', body: { mandant: MANDANT, quelle: r.quelle, pfad: r.pfad, vorlage, an, name, mail }, timeoutMs: 120000 })) }
-    catch (e) { setErg({ fehler: String(e && e.message || e) }) }
-  }
-  return jsxs('div', { className: 'flex flex-col gap-1', children: [
-    jsx('div', { className: leise, children: 'Original: ' + r.datei + ' — Vorlage aus DocuSeal (Vorlagen entstehen in der DocuSeal-Oberfläche; PDF-Upload per API ist Pro-Edition).' }),
-    jsxs('div', { className: 'flex gap-2 items-center flex-wrap', children: [
-      jsxs('select', { className: 'rounded border border-(--ui-stroke-secondary) bg-transparent px-2 py-1 text-xs', value: vorlage, onChange: (e) => setVorlage(e.target.value), children: (r.vorlagen || []).map((v) => jsx('option', { value: String(v.id), children: v.id + ' · ' + v.name + ' (' + (v.rollen || []).join(', ') + ')' }, v.id)) }),
-      jsx(Input, { placeholder: 'E-Mail des Unterzeichners', value: an, onChange: (e) => setAn(e.target.value), className: 'text-xs w-56' }),
-      jsx(Input, { placeholder: 'Name (optional)', value: name, onChange: (e) => setName(e.target.value), className: 'text-xs w-40' }),
-      jsxs('label', { className: 'text-xs flex items-center gap-1', children: [jsx('input', { type: 'checkbox', checked: mail, onChange: (e) => setMail(e.target.checked) }), 'DocuSeal mailt die Einladung'] }),
-      jsx(Button, { size: 'sm', onClick: senden, children: 'Vorgang anlegen' })
-    ] }),
-    erg ? (erg.laeuft ? jsx('div', { children: 'lege Vorgang an …' }) : erg.fehler ? jsx('div', { className: 'text-destructive', children: erg.fehler }) : jsxs('div', { children: ['Vorgang ' + erg.vorgang + ' angelegt (' + erg.vorlage + ' an ' + erg.an + '). Link: ', jsx('span', { className: 'font-mono select-all', children: erg.link }), mail ? '' : ' — Link selbst übergeben (keine Mail).'] })) : null
-  ] })
-}
-
-function BelegErgebnis({ r, zurueck }) {
-  const z = (k, v) => jsxs('div', { children: [jsx('span', { className: leise, children: k + ': ' }), jsx('span', { children: String(v ?? '–') })] }, k)
-  let inhalt
-  if (r.laeuft) inhalt = jsx('div', { children: r.art + ' läuft … (OCR kann je Seite einige Sekunden brauchen)' })
-  else if (r.fehler) inhalt = jsx('div', { className: 'text-destructive', children: r.fehler })
-  else if (r.art === 'lesen') inhalt = jsxs('div', { children: [
-    z('Methode', r.methode + ', ' + r.seiten + ' Seiten, ' + r.dauer_s + ' s'), z('sha256', r.sha256),
+function ResultPanel({ r, back }) {
+  const t = usePluginI18n(ID)
+  const z = (k, v) => jsxs('div', { children: [jsx('span', { className: quiet, children: k + ': ' }), jsx('span', { children: String(v ?? '–') })] }, k)
+  const ev = (e) => jsx('div', { children: '#' + e.nr + ' ' + e.zeit + ' ' + e.ereignis + ' ' + (e.quelle || '') + (e.ziel ? ' → ' + e.ziel : '') + (e.meldung ? ' [' + e.meldung + ']' : '') }, e.nr)
+  let body
+  if (r.laeuft) body = jsx('div', { children: t('runningOcr') })
+  else if (r.fehler) body = jsx('div', { className: 'text-destructive', children: r.fehler })
+  else if (r.art === 'lesen') body = jsxs('div', { children: [
+    z(t('method'), r.methode + ', ' + t('nPages', r.seiten) + ', ' + r.dauer_s + ' s'), z('sha256', r.sha256),
     ...Object.entries(r.felder || {}).map(([k, v]) => z(k, v)),
-    jsx('div', { className: 'mt-1 font-medium', children: 'Verprobung: ' + (r.verprobung.sicher ? 'bestanden (sicher)' : r.verprobung.bestanden ? 'bestanden' : 'Prüfliste') }),
+    jsx('div', { className: 'mt-1 font-medium', children: t('verification') + ': ' + (r.verprobung.sicher ? t('passedSure') : r.verprobung.bestanden ? t('passed') : t('needsReview')) }),
     ...(r.verprobung.gruende || []).map((g, i) => jsx('div', { children: '· ' + g }, i)),
-    jsx('div', { className: leise + ' mt-1', children: 'Zwilling: ' + r.zwilling }),
-    jsx('pre', { className: 'mt-1 whitespace-pre-wrap ' + leise, style: { fontSize: 10 }, children: r.text_anfang })
+    jsx('div', { className: quiet + ' mt-1', children: t('twin') + ': ' + r.zwilling }),
+    jsx('pre', { className: 'mt-1 whitespace-pre-wrap ' + quiet, style: { fontSize: 10 }, children: r.text_anfang })
   ] })
-  else if (r.art === 'stapel') inhalt = jsxs('div', { children: [
-    z('Stapel', r.datei + ' → ' + (r.ziel || '') + ' · ' + (r.belege || []).length + ' Belege aus ' + r.seiten + ' Seiten, ' + r.dauer_s + ' s'),
-    ...(r.belege || []).map((b) => jsx('div', { children: '#' + b.nr + ' Seiten ' + b.seiten.join('–') + ' ' + (b.nummer ? 'Nr ' + b.nummer + ' ' : '') + b.arten.join('/') + (b.buchungsfassung ? ' (Buchungsfassung ohne Anhang)' : '') + ' → ' + b.datei }, b.nr))
+  else if (r.art === 'stapel') body = jsxs('div', { children: [
+    z(t('batch'), r.datei + ' → ' + (r.ziel || '') + ' · ' + t('splitSummary', (r.belege || []).length, r.seiten, r.dauer_s)),
+    ...(r.belege || []).map((b) => jsx('div', { children: '#' + b.nr + ' ' + t('pagesRange', b.seiten.join('–')) + ' ' + (b.nummer ? '№ ' + b.nummer + ' ' : '') + b.arten.join('/') + (b.buchungsfassung ? ' (' + t('bookingVersion') + ')' : '') + ' → ' + b.datei }, b.nr))
   ] })
-  else if (r.art === 'unterschrift') inhalt = jsx(Unterschrift, { r })
-  else if (r.art === 'wissen') inhalt = jsx(InsWissen, { r })
-  else if (r.art === 'reraise') inhalt = jsx(ZuReraise, { r })
-  else inhalt = jsxs('div', { children: [
-    z('sha256', r.sha256),
-    r.fehler ? z('ERPNext', r.fehler) : null,
-    r.beleg ? jsxs('div', { className: 'mt-1', children: [jsx('div', { className: 'font-medium', children: 'Beleg (ERPNext-Spiegel)' }),
-      ...['dateiname', 'letzter_ort', 'erste_sicht', 'letzte_bewegung', 'ereignisse', 'belegdatum', 'brutto', 'netto', 'steuer', 'waehrung', 'rechnungsnummer', 'aussteller_kennung', 'lesemethode', 'verprobung'].filter((k) => r.beleg[k] != null && r.beleg[k] !== '').map((k) => z(k, r.beleg[k]))] }) : jsx('div', { className: leise, children: 'kein Beleg-Satz im Spiegel (noch nicht gespiegelt oder nie gelesen)' }),
-    r.zwilling ? jsxs('div', { className: 'mt-1', children: [jsx('div', { className: 'font-medium', children: 'Zwilling (lokal): ' + r.zwilling.methode }), ...Object.entries(r.zwilling.felder || {}).map(([k, v]) => z(k, v))] }) : null,
-    jsx('div', { className: 'font-medium mt-1', children: 'Ereignisse: ' + (Array.isArray(r.ereignisse) ? r.ereignisse.length : '–') }),
-    ...(Array.isArray(r.ereignisse) ? r.ereignisse.slice(0, 40).map((e) => jsx('div', { children: '#' + e.nr + ' ' + e.zeit + ' ' + e.ereignis + ' ' + (e.quelle || '') + (e.ziel ? ' → ' + e.ziel : '') + (e.meldung ? ' [' + e.meldung + ']' : '') }, e.nr)) : [])
+  else body = jsxs('div', { children: [
+    ['direkt', 'rueckwaerts', 'vorwaerts', 'gleicher_inhalt'].map((k) => jsxs('div', { children: [jsx('div', { className: quiet + ' mt-1', children: t('trace_' + k) + ': ' + ((r[k] || []).length) }), ...(r[k] || []).slice(0, 30).map(ev)] }, k))
   ] })
-  return jsxs('div', { className: 'p-2 font-mono', style: { fontSize: 11 }, children: [jsx('div', { className: 'font-medium mb-1', children: r.art + ': ' + (r.datei || '') }), inhalt, jsx(Button, { size: 'sm', variant: 'ghost', onClick: zurueck, children: 'zurück zur Vorschau' })] })
+  const title = r.art === 'spur' ? t('traceTitle', r.datei || '') : t('art_' + r.art) + ': ' + (r.datei || '')
+  return jsxs('div', { className: 'p-2 font-mono', style: { fontSize: 11 }, children: [jsx('div', { className: 'font-medium mb-1', children: title }), body, jsx(Button, { size: 'sm', variant: 'ghost', onClick: back, children: t('backToPreview') })] })
 }
 
-function Seite({ seite, quellen, remotes, zustand, setZustand, auswahl, setAuswahl, neuLaden, onQuellenGeaendert }) {
-  const [liste, setListe] = useState(null); const [fehler, setFehler] = useState(null); const [neu, setNeu] = useState(false); const [aktiv, setAktiv] = useState(null)
-  const [filter, setFilter] = useState('alle'); const [spur, setSpur] = useState(null)
-  const [tippen, setTippen] = useState(false); const [eingabe, setEingabe] = useState('')
-  const pfadOeffnen = async (pfad) => {
-    setFehler(null)
-    try { const n = await rest('/quellen', { method: 'POST', body: { mandant: MANDANT, art: 'auto', pfad: (typeof pfad === 'string' ? pfad : eingabe).trim() } }); setZustand({ quelle: n.id, pfad: '' }); setTippen(false); setEingabe(''); onQuellenGeaendert() } catch (e) { setFehler(String(e && e.message || e)) }
-  }
-  // "…": nativer Finder-Ordnerdialog der Hermes-App (window.hermesDesktop.selectPaths); ohne Bruecke oder bei Fehler das Pfad-Textfeld
-  const durchsuchen = async () => {
-    const d = typeof window !== 'undefined' ? window.hermesDesktop : null
-    if (d && typeof d.selectPaths === 'function') {
-      try {
-        const p = await d.selectPaths({ directories: true, multiple: false, title: 'Ordner für Trove wählen' })
-        if (Array.isArray(p) && p[0]) await pfadOeffnen(p[0])
-        return
-      } catch (e) { setFehler('Ordnerdialog: ' + String(e && e.message || e) + ' — Pfad bitte eintippen.') }
-    }
-    setTippen(true)
-  }
-  const q = quellen.find((x) => x.id === zustand.quelle)
-  const laedt = useBackendLaedt()
-  const wissenGrund = laedt ? 'Backend lädt …' : !zustand.quelle ? 'erst Quelle wählen' : !q ? 'Quelle lädt …' : q.art !== 'ordner' ? 'nur lokale Ordner' : null
-  const laden = useCallback(() => {
-    if (!q) { setListe(null); return }
-    setFehler(null)
-    rest('/liste?quelle=' + encodeURIComponent(q.id) + '&pfad=' + encodeURIComponent(zustand.pfad || '')).then((r) => {
-      r.eintraege.forEach((e) => { e.rel = (zustand.pfad ? zustand.pfad + '/' : '') + e.name }); setListe(r)
-    }).catch((e) => setFehler(String(e && e.message || e)))
-  }, [zustand.quelle, zustand.pfad, q && q.id])
-  useEffect(() => { laden() }, [laden, neuLaden])
-  const geh = (pfad) => { setZustand({ ...zustand, pfad }); setAuswahl([]); setAktiv(null); setSpur(null) }
-  const teile = (zustand.pfad || '').split('/').filter(Boolean)
-  const sichtbar = (liste ? liste.eintraege : []).filter((e) => filter === 'alle' || e.ordner || (filter === 'nur' ? e.dublette : !e.dublette))
-  const gewaehlt = (liste ? liste.eintraege : []).filter((e) => !e.ordner && auswahl.includes(e.name)).map((e) => e.rel)
-  const insWissen = () => wissenGrund ? null : setSpur({ art: 'wissen', datei: zustand.pfad || q.name, quelle: q.id, pfad: zustand.pfad || '', dateien: gewaehlt, anzahl: liste ? liste.eintraege.filter((e) => !e.ordner).length : 0 })
-  const toggle = (name) => setAuswahl(auswahl.includes(name) ? auswahl.filter((n) => n !== name) : [...auswahl, name])
-  const registrieren = async () => { setFehler(null); try { const r = await rest('/register', { method: 'POST', body: { mandant: MANDANT, quelle: q.id, pfad: zustand.pfad || '' } }); host.notify({ kind: 'info', message: 'Trove: Register – ' + r.neu + ' neue, ' + r.gesamt + ' gesamt' + (r.nur_in_wolke ? ', ' + r.nur_in_wolke + ' nur in der Wolke (iCloud-Platzhalter)' : '') }); laden() } catch (e) { setFehler(String(e && e.message || e)) } }
-  const [f2, setF2] = useState(null)
-  const aenderungen = async () => { setFehler(null); setF2({ laeuft: true }); try { const r = await rest('/aenderungen', { method: 'POST', body: { mandant: MANDANT, quelle: q.id, pfad: zustand.pfad || '' }, timeoutMs: 3600000 }); setF2(r); laden() } catch (e) { setF2(null); setFehler(String(e && e.message || e)) } }
-  const spurZeigen = async (e) => { try { setSpur(await rest('/spur?datei=' + encodeURIComponent(e.pfad))) } catch (x) { setSpur({ fehler: String(x && x.message || x) }) } }
-  const belegAktion = async (art) => {
-    const e = liste && liste.eintraege.find((x) => x.name === aktiv)
-    if (!e || e.ordner) { host.notify({ kind: 'warning', message: 'Trove: erst eine Datei anklicken.' }); return }
-    setSpur({ art, laeuft: true, datei: e.name })
+// ---------------------------------------------------------------- one side (source or target)
+function Side({ side, sources, state, setState, selection, setSelection, reload, onSourcesChanged }) {
+  const t = usePluginI18n(ID)
+  const { locale } = useI18n()
+  const [list, setList] = useState(null); const [error, setError] = useState(null); const [adding, setAdding] = useState(false); const [active, setActive] = useState(null)
+  const [filter, setFilter] = useState('all'); const [panel, setPanel] = useState(null); const [changes, setChanges] = useState(null)
+  const [askWritable, setAskWritable] = useState(false)
+  const q = sources.find((x) => x.id === state.quelle)
+  const knowledgeReason = !state.quelle ? t('pickSourceFirst') : !q ? t('sourceLoading') : null
+  const load = useCallback(() => {
+    if (!q) { setList(null); return }
+    setError(null)
+    rest('/liste?quelle=' + encodeURIComponent(q.id) + '&pfad=' + encodeURIComponent(state.pfad || '')).then((r) => {
+      r.eintraege.forEach((e) => { e.rel = (state.pfad ? state.pfad + '/' : '') + e.name }); setList(r)
+    }).catch((e) => setError(errText(e)))
+  }, [state.quelle, state.pfad, q && q.id])
+  useEffect(() => { load() }, [load, reload])
+  useEffect(() => { setAskWritable(false) }, [state.quelle])
+  const go = (path) => { setState({ ...state, pfad: path }); setSelection([]); setActive(null); setPanel(null) }
+  const parts = (state.pfad || '').split('/').filter(Boolean)
+  const entries = list ? list.eintraege : []
+  const visible = entries.filter((e) => filter === 'all' || e.ordner || (filter === 'only' ? e.dublette : !e.dublette))
+  const picked = entries.filter((e) => !e.ordner && selection.includes(e.name)).map((e) => e.rel)
+  const intoKnowledge = () => knowledgeReason ? null : setPanel({ art: 'wissen', datei: state.pfad || q.name, quelle: q.id, pfad: state.pfad || '', dateien: picked, anzahl: entries.filter((e) => !e.ordner).length })
+  const toggle = (name) => setSelection(selection.includes(name) ? selection.filter((n) => n !== name) : [...selection, name])
+  const register = async () => {
+    setError(null)
     try {
-      if (art === 'lesen') setSpur({ art, datei: e.name, ...(await rest('/lesen', { method: 'POST', body: { mandant: MANDANT, quelle: q.id, pfad: e.rel }, timeoutMs: 1800000 })) })
-      else if (art === 'stapel') setSpur({ art, datei: e.name, ...(await rest('/stapel', { method: 'POST', body: { mandant: MANDANT, quelle: q.id, pfad: e.rel }, timeoutMs: 1800000 })) })
-      else if (art === 'unterschrift') setSpur({ art, datei: e.name, quelle: q.id, pfad: e.rel, ...(await rest('/docuseal/vorlagen')) })
-      else if (art === 'reraise') setSpur({ art, datei: e.name, quelle: q.id, pfad: e.rel, ...(await rest('/wissen/sammlungen')) })
-      else setSpur({ art, datei: e.name, ...(await rest('/historie?datei=' + encodeURIComponent(e.pfad))) })
-      if (art !== 'historie') laden()
-    } catch (x) { setSpur({ art, datei: e.name, fehler: String(x && x.message || x) }) }
+      const r = await rest('/register', { method: 'POST', body: { mandant: MANDANT, quelle: q.id, pfad: state.pfad || '' } })
+      host.notify({ kind: 'info', message: 'Trove: ' + t('registerDone', r.neu, r.gesamt) }); load()
+    } catch (e) { setError(errText(e)) }
   }
-  // Datei-Knoepfe stehen immer da (nichts springt beim Anklicken); ohne angeklickte Datei gesperrt
-  const dateiKnopf = (text, art, title) => knopf(text, () => belegAktion(art), aktiv ? { title } : { title: 'erst Datei anklicken', disabled: true })
+  const checkChanges = async () => {
+    setError(null); setChanges({ laeuft: true })
+    try { const r = await rest('/aenderungen', { method: 'POST', body: { mandant: MANDANT, quelle: q.id, pfad: state.pfad || '' }, timeoutMs: 3600000 }); setChanges(r); load() } catch (e) { setChanges(null); setError(errText(e)) }
+  }
+  const showTrace = async (e) => {
+    try { setPanel({ art: 'spur', datei: e.name, ...(await rest('/spur?datei=' + encodeURIComponent(e.pfad))) }) } catch (x) { setPanel({ art: 'spur', datei: e.name, fehler: errText(x) }) }
+  }
+  const fileAction = async (art) => {
+    const e = entries.find((x) => x.name === active)
+    if (!e || e.ordner) { host.notify({ kind: 'warning', message: 'Trove: ' + t('clickFileFirst') }); return }
+    setPanel({ art, laeuft: true, datei: e.name })
+    try {
+      const path = art === 'lesen' ? '/lesen' : '/stapel'
+      setPanel({ art, datei: e.name, ...(await rest(path, { method: 'POST', body: { mandant: MANDANT, quelle: q.id, pfad: e.rel }, timeoutMs: 1800000 })) })
+      load()
+    } catch (x) { setPanel({ art, datei: e.name, fehler: errText(x) }) }
+  }
+  const setWritable = async (writable) => {
+    setError(null)
+    try { await rest('/quellen/' + q.id + '/schreibbar', { method: 'POST', body: { mandant: MANDANT, nur_lesen: !writable } }); setAskWritable(false); onSourcesChanged() } catch (e) { setError(errText(e)) }
+  }
+  const fileBtn = (text, art, title) => btn(text, () => fileAction(art), active ? { title } : { title: t('clickFileFirst'), disabled: true })
+  const preview = jsx(Preview, { source: q && q.id, entry: entries.find((e) => e.name === active) })
+  const bottom = panel && panel.art === 'wissen' ? jsx(IntoKnowledge, { r: panel }) : panel ? jsx(ResultPanel, { r: panel, back: () => setPanel(null) }) : preview
   return jsxs('div', { className: 'flex flex-col gap-2 min-w-0 h-full', children: [
-    jsxs('div', { 'data-zeile': 'quelle', style: LEISTE, children: [
-      jsx('span', { className: 'text-xs font-medium', children: seite === 'links' ? 'Quelle (links)' : 'Ziel (rechts)' }),
-      jsxs('select', { className: 'rounded border border-(--ui-stroke-secondary) bg-transparent px-2 py-1 text-xs', style: { flex: '1 1 120px', minWidth: 0, maxWidth: 240 }, value: zustand.quelle || '', onChange: (e) => { setZustand({ quelle: e.target.value, pfad: '' }); setAuswahl([]); setAktiv(null) }, children: [
-        jsx('option', { value: '', children: '– Quelle wählen –' }),
-        ...quellen.map((x) => jsx('option', { value: x.id, children: (x.art === 'rclone' ? '☁ ' : '📁 ') + x.name + (x.nur_lesen ? ' (nur lesen)' : '') }, x.id))
+    jsxs('div', { 'data-zeile': 'quelle', style: BAR, children: [
+      jsx('span', { className: 'text-xs font-medium', children: side === 'links' ? t('sourceLeft') : t('targetRight') }),
+      jsxs('select', { className: selectCls, style: { flex: '1 1 120px', minWidth: 0, maxWidth: 240 }, value: state.quelle || '', onChange: (e) => { setState({ quelle: e.target.value, pfad: '' }); setSelection([]); setActive(null); setPanel(null) }, children: [
+        jsx('option', { value: '', children: t('chooseSource') }),
+        ...sources.map((x) => jsx('option', { value: x.id, children: '📁 ' + x.name + ' ' + (x.nur_lesen ? t('readOnlyTag') : t('writableTag')) }, x.id))
       ] }),
-      q ? knopf('×', async () => { await rest('/quellen/' + q.id, { method: 'DELETE' }); setZustand({ quelle: '', pfad: '' }); onQuellenGeaendert() }, { title: 'Quelle entfernen' }) : null,
-      jsxs('span', { 'data-paar': true, style: PAAR, children: [
-        knopf('…', durchsuchen, { title: 'Ordner im Finder wählen' }),
-        knopf('Pfad', () => setTippen(!tippen), { title: 'Pfad direkt eintippen (Ordner oder Online-Speicher als name:pfad)' }),
-        knopf('+ Quelle', () => setNeu(!neu))] })
+      q ? btn('×', async () => { try { await rest('/quellen/' + q.id, { method: 'DELETE' }); setState({ quelle: '', pfad: '' }); onSourcesChanged() } catch (e) { setError(errText(e)) } }, { title: t('removeSource') }) : null,
+      q && q.nur_lesen && !askWritable ? btn(t('makeWritable'), () => setAskWritable(true), { title: t('makeWritableTip') }) : null,
+      q && !q.nur_lesen ? btn(t('makeReadOnly'), () => setWritable(false), { title: t('makeReadOnlyTip') }) : null,
+      btn(t('addFolder'), () => setAdding(!adding))
     ] }),
-    tippen ? jsxs('div', { className: 'flex gap-2 items-center', children: [
-      jsx(Input, { placeholder: 'Pfad, z. B. ~/Dokumente/Belege oder meinecloud:Belege', value: eingabe, onChange: (e) => setEingabe(e.target.value), onKeyDown: (e) => { if (e.key === 'Enter' && eingabe.trim()) pfadOeffnen() }, className: 'text-xs flex-1' }),
-      jsx(Button, { size: 'sm', disabled: !eingabe.trim(), onClick: () => pfadOeffnen(), children: 'Prüfen und öffnen' })
-    ] }) : null,
-    neu ? jsx(QuelleAnlegen, { remotes, onFertig: (ok) => { setNeu(false); if (ok) onQuellenGeaendert() } }) : null,
-    jsxs('div', { 'data-zeile': 'pfad', className: 'text-xs', style: LEISTE, children: [
-      // Pfad kuerzt sich bis 140 px (feste Basis), damit beide Seiten gleich umbrechen und die Listen auf gleicher Hoehe beginnen
+    askWritable ? jsxs('div', { className: box + ' p-2 text-xs flex gap-2 items-center flex-wrap', children: [
+      jsx('span', { className: 'text-destructive', children: t('writableWarn', q ? q.name : '') }),
+      jsx(Button, { size: 'sm', onClick: () => setWritable(true), children: t('yesWritable') }),
+      jsx(Button, { size: 'sm', variant: 'ghost', onClick: () => setAskWritable(false), children: t('cancel') })] }) : null,
+    adding ? jsx(AddSource, { onDone: (ok) => { setAdding(false); if (ok) onSourcesChanged() } }) : null,
+    jsxs('div', { 'data-zeile': 'pfad', className: 'text-xs', style: BAR, children: [
       q ? jsxs('span', { title: q.pfad, style: { flex: '1 1 140px', minWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, children: [
-        jsx('button', { className: 'underline', onClick: () => geh(''), children: q.art === 'rclone' ? q.remote + ':' + (q.pfad || '') : q.pfad }),
-        ...teile.map((t, i) => jsxs('span', { children: [' / ', jsx('button', { className: 'underline', onClick: () => geh(teile.slice(0, i + 1).join('/')), children: t })] }, i))] }) : jsx('span', { style: { flex: '1 1 140px' } }),
-      q && q.art === 'ordner' ? knopf(liste && liste.indexiert ? 'Register ✓' : 'Indexieren', registrieren, { title: 'Prüfsummen rechnen (Dubletten erkennen)' }) : null,
-      q && q.art === 'ordner' ? knopf('Änderungen prüfen', aenderungen, { title: 'F2: Stand aufnehmen und mit dem letzten Lauf vergleichen (neu / weg / verschoben / außen geändert)' }) : null,
-      q ? jsxs('select', { className: 'rounded border border-(--ui-stroke-secondary) bg-transparent px-1 text-xs', value: filter, onChange: (e) => setFilter(e.target.value), children: [jsx('option', { value: 'alle', children: 'alle' }), jsx('option', { value: 'nur', children: 'nur Dubletten' }), jsx('option', { value: 'ohne', children: 'ohne Dubletten' })] }) : null,
-      jsx(Button, { size: 'sm', disabled: !!wissenGrund, title: wissenGrund ? 'Gerade nicht möglich: ' + wissenGrund : 'F16: angehakte Dateien (sonst den ganzen Ordner) ins Wissen — Markdown-Zwilling je Datei, QMD-Sammlung, Wissenskarte. Das Original bleibt unverändert.', onClick: insWissen, children: wissenGrund ? 'Ins Wissen – ' + wissenGrund : gewaehlt.length ? 'Ins Wissen (' + gewaehlt.length + ' ausgewählt)' : 'Ins Wissen (ganzer Ordner)' })
+        jsx('button', { className: 'underline', onClick: () => go(''), children: q.pfad }),
+        ...parts.map((p, i) => jsxs('span', { children: [' / ', jsx('button', { className: 'underline', onClick: () => go(parts.slice(0, i + 1).join('/')), children: p })] }, i))] }) : jsx('span', { style: { flex: '1 1 140px' } }),
+      q ? btn(list && list.indexiert ? t('indexed') : t('indexFiles'), register, { title: t('indexTip') }) : null,
+      q ? btn(t('checkChanges'), checkChanges, { title: t('checkChangesTip') }) : null,
+      q ? jsxs('select', { className: selectCls, value: filter, onChange: (e) => setFilter(e.target.value), children: [jsx('option', { value: 'all', children: t('fAll') }), jsx('option', { value: 'only', children: t('fDup') }), jsx('option', { value: 'without', children: t('fNoDup') })] }) : null,
+      jsx(Button, { size: 'sm', disabled: !!knowledgeReason, title: knowledgeReason ? t('notNow', knowledgeReason) : t('intoKnowledgeTip'), onClick: intoKnowledge, children: knowledgeReason ? t('intoKnowledge') + ' – ' + knowledgeReason : picked.length ? t('intoKnowledgeN', picked.length) : t('intoKnowledgeAll') })
     ] }),
-    fehler ? jsx('div', { className: 'text-xs text-destructive', children: fehler }) : null,
-    f2 ? jsxs('div', { className: rahmen + ' p-2 text-xs', children: [
-      jsx('span', { className: 'font-medium', children: f2.laeuft ? 'Änderungen werden geprüft …' : 'F2 Lauf ' + f2.lauf + (f2.erster_lauf ? ' (Grundstand aufgenommen)' : '') + ': ' + Object.entries(f2.zusammen || {}).map(([k, v]) => k + ' ' + v).join(' · ') }),
-      !f2.laeuft ? jsx(Button, { size: 'sm', variant: 'ghost', onClick: () => setF2(null), children: '×' }) : null,
-      ...(!f2.laeuft ? ['neu', 'weg', 'verschoben', 'aussen_geaendert', 'durch_trove'].flatMap((k) => (f2.befunde[k] || []).slice(0, 15).map((b, i) => jsx('div', { className: 'font-mono truncate', children: k + ': ' + (b.pfad || (b.von + ' → ' + b.nach)) }, k + i))) : [])
+    error ? jsx('div', { className: 'text-xs text-destructive', children: error }) : null,
+    changes ? jsxs('div', { className: box + ' p-2 text-xs', children: [
+      jsx('span', { className: 'font-medium', children: changes.laeuft ? t('checkingChanges') : t('changesRun', changes.lauf) + (changes.erster_lauf ? ' ' + t('baselineTaken') : '') + ': ' + Object.entries(changes.zusammen || {}).map(([k, v]) => k + ' ' + v).join(' · ') }),
+      !changes.laeuft ? jsx(Button, { size: 'sm', variant: 'ghost', onClick: () => setChanges(null), children: '×' }) : null,
+      ...(!changes.laeuft ? ['neu', 'weg', 'verschoben', 'aussen_geaendert', 'durch_trove'].flatMap((k) => (changes.befunde[k] || []).slice(0, 15).map((b, i) => jsx('div', { className: 'font-mono truncate', children: k + ': ' + (b.pfad || (b.von + ' → ' + b.nach)) }, k + i))) : [])
     ] }) : null,
-    jsxs('div', { 'data-liste': seite, className: rahmen + ' flex-1 min-h-0 overflow-auto text-xs', style: { minHeight: 160 }, children: [
-      !q ? jsx('div', { className: leise + ' p-2', children: 'Keine Quelle gewählt.' }) : !liste ? jsx('div', { className: leise + ' p-2', children: 'lade …' }) : null,
-      zustand.pfad ? jsx('div', { className: 'px-2 py-1 cursor-pointer hover:bg-(--ui-row-hover-background)', onDoubleClick: () => geh(teile.slice(0, -1).join('/')), children: '⬆ ..' }) : null,
-      ...sichtbar.map((e) => jsxs('div', { className: 'flex items-center gap-2 px-2 py-0.5 cursor-pointer hover:bg-(--ui-row-hover-background) ' + (aktiv === e.name ? 'bg-(--ui-bg-secondary)' : ''),
-        onClick: () => { setAktiv(e.name); setSpur(null) }, onDoubleClick: () => e.ordner ? geh(e.rel) : spurZeigen(e), children: [
-        jsx('input', { type: 'checkbox', checked: auswahl.includes(e.name), onChange: () => toggle(e.name), onClick: (ev) => ev.stopPropagation() }),
+    jsxs('div', { 'data-liste': side, className: box + ' flex-1 min-h-0 overflow-auto text-xs', style: { minHeight: 160 }, children: [
+      !q ? jsx('div', { className: quiet + ' p-2', children: t('noSource') }) : !list ? jsx('div', { className: quiet + ' p-2', children: t('loading') }) : null,
+      state.pfad ? jsx('div', { className: 'px-2 py-1 cursor-pointer hover:bg-(--ui-row-hover-background)', onDoubleClick: () => go(parts.slice(0, -1).join('/')), children: '⬆ ..' }) : null,
+      ...visible.map((e) => jsxs('div', { className: 'flex items-center gap-2 px-2 py-0.5 cursor-pointer hover:bg-(--ui-row-hover-background) ' + (active === e.name ? 'bg-(--ui-bg-secondary)' : ''),
+        onClick: () => { setActive(e.name); setPanel(null) }, onDoubleClick: () => e.ordner ? go(e.rel) : showTrace(e), children: [
+        jsx('input', { type: 'checkbox', checked: selection.includes(e.name), onChange: () => toggle(e.name), onClick: (ev) => ev.stopPropagation() }),
         jsx('span', { className: 'flex-1 truncate', title: e.pfad, children: (e.ordner ? '📁 ' : '') + e.name }),
-        e.dublette ? jsx(Badge, { children: e.fundorte + '× vorhanden' }) : null,
-        jsx('span', { className: leise + ' w-16 text-right', children: e.ordner ? '' : fmtB(e.groesse) }),
-        jsx('span', { className: leise + ' w-32 text-right', children: fmtT(e.mtime) })
+        e.dublette ? jsx(Badge, { children: t('foundNTimes', e.fundorte) }) : null,
+        jsx('span', { className: quiet + ' w-16 text-right', children: e.ordner ? '' : fmtB(e.groesse) }),
+        jsx('span', { className: quiet + ' w-32 text-right', children: fmtT(e.mtime, locale) })
       ] }, e.name))
     ] }),
-    jsxs('div', { 'data-zeile': 'fuss', className: 'text-xs', style: LEISTE, children: [
-      jsx('span', { className: leise, style: { whiteSpace: 'nowrap' }, children: liste ? liste.eintraege.length + ' Einträge, ' + auswahl.length + ' markiert' : '' }),
-      dateiKnopf('Lesen', 'lesen', 'F3/F4: Lese-Treppe (E-Rechnung, Textlayer, sonst OCR lokal) und feste Verprobung; Zwilling + Belegprotokoll'),
-      dateiKnopf('Zerlegen', 'stapel', 'F6: mehrseitiges PDF in einzelne Belege zerlegen (Stirling-PDF)'),
-      dateiKnopf('Historie', 'historie', 'F11: Geschäftshistorie dieses Inhalts aus dem ERPNext-Spiegel'),
-      ZEIGE.docuseal ? dateiKnopf('Unterschrift', 'unterschrift', 'F7: diese Datei als Original zu einem Unterschriften-Vorgang (DocuSeal-Vorlage) geben') : null,
-      ZEIGE.reraise ? dateiKnopf('zu Reraise', 'reraise', 'F16: diese Datei als öffentliche Beleg-Karte zu reraise.ai (nur mit öffentlichem Markdown-Zwilling)') : jsx('a', { href: 'https://reraise.ai', target: '_blank', rel: 'noopener', className: 'text-xs', style: { color: 'var(--ui-text-tertiary)', textDecoration: 'underline' }, title: 'Veroeffentlichen nur mit hinterlegtem Reraise-Schluessel — zum Anmelden: reraise.ai', children: 'zu Reraise – anmelden' }, 'reraise-anmelden'),
-      jsxs('span', { 'data-paar': true, style: { ...PAAR, marginLeft: 'auto' }, children: [
-        knopf('alle', () => setAuswahl(liste.eintraege.map((e) => e.name)), { disabled: !liste }),
-        knopf('Auswahl leeren', () => setAuswahl([]), { disabled: !auswahl.length })] })
+    jsxs('div', { 'data-zeile': 'fuss', className: 'text-xs', style: BAR, children: [
+      jsx('span', { className: quiet, style: { whiteSpace: 'nowrap' }, children: list ? t('entriesMarked', list.eintraege.length, selection.length) : '' }),
+      fileBtn(t('read'), 'lesen', t('readTip')),
+      fileBtn(t('split'), 'stapel', t('splitTip')),
+      jsxs('span', { 'data-paar': true, style: { ...PAIR, marginLeft: 'auto' }, children: [
+        btn(t('all'), () => setSelection(entries.map((e) => e.name)), { disabled: !list }),
+        btn(t('clearSelection'), () => setSelection([]), { disabled: !selection.length })] })
     ] }),
-    jsx('div', { className: rahmen + ' overflow-auto shrink-0', style: { height: 220 }, children: spur && spur.art
-      ? jsx(BelegErgebnis, { r: spur, zurueck: () => setSpur(null) })
-      : spur
-      ? jsxs('div', { className: 'p-2 font-mono', style: { fontSize: 11 }, children: [
-          jsx('div', { className: 'font-medium mb-1', children: 'Spur (Belegprotokoll): ' + (spur.datei || '') }),
-          spur.fehler ? jsx('div', { children: spur.fehler }) : null,
-          ...['direkt', 'rueckwaerts', 'vorwaerts', 'gleicher_inhalt'].map((k) => jsxs('div', { children: [jsx('div', { className: leise + ' mt-1', children: k + ': ' + ((spur[k] || []).length) }), ...(spur[k] || []).slice(0, 30).map((e) => jsx('div', { children: '#' + e.nr + ' ' + e.zeit + ' ' + e.ereignis + ' ' + (e.quelle || '') + (e.ziel ? ' → ' + e.ziel : '') + (e.meldung ? ' [' + e.meldung + ']' : '') }, e.nr))] }, k)),
-          jsx(Button, { size: 'sm', variant: 'ghost', onClick: () => setSpur(null), children: 'zurück zur Vorschau' })
-        ] })
-      : jsx(Vorschau, { quelle: q && q.id, eintrag: liste && liste.eintraege.find((e) => e.name === aktiv) }) })
+    jsx('div', { className: box + ' overflow-auto shrink-0', style: { height: 220 }, children: bottom })
   ] })
 }
 
-function Suche() {
-  const [q, setQ] = useState(''); const [r, setR] = useState(null); const [offen, setOffen] = useState(false)
-  const suchen = async () => { if (q.trim().length < 2) return; setOffen(true); setR({ laeuft: true }); try { setR(await rest('/suche?q=' + encodeURIComponent(q.trim()))) } catch (e) { setR({ fehler: String(e && e.message || e) }) } }
-  const zeile = (t, k) => jsx('div', { className: 'truncate', title: t, children: t }, k)
+// ---------------------------------------------------------------- search (register + receipt log)
+function Search() {
+  const t = usePluginI18n(ID)
+  const [q, setQ] = useState(''); const [r, setR] = useState(null); const [open, setOpen] = useState(false)
+  const run = async () => { if (q.trim().length < 2) return; setOpen(true); setR({ laeuft: true }); try { setR(await rest('/suche?q=' + encodeURIComponent(q.trim()))) } catch (e) { setR({ fehler: errText(e) }) } }
+  const line = (text, k) => jsx('div', { className: 'truncate', title: text, children: text }, k)
   return jsxs('div', { style: { position: 'relative' }, children: [
     jsxs('div', { className: 'flex gap-2 items-center', children: [
-      jsx(Input, { placeholder: 'Suche über beide Welten: Dateiname, Rechnungsnummer, Absender, sha256 …', value: q, onChange: (e) => setQ(e.target.value), onKeyDown: (e) => { if (e.key === 'Enter') suchen() }, className: 'text-xs flex-1' }),
-      jsx(Button, { size: 'sm', onClick: suchen, children: 'Suchen' }),
-      r ? jsx(Button, { size: 'sm', variant: 'ghost', onClick: () => setOffen(!offen), children: offen ? 'zu' : 'auf' }) : null
+      jsx(Input, { placeholder: t('searchPlaceholder'), value: q, onChange: (e) => setQ(e.target.value), onKeyDown: (e) => { if (e.key === 'Enter') run() }, className: 'text-xs flex-1' }),
+      jsx(Button, { size: 'sm', onClick: run, children: t('search') }),
+      r ? jsx(Button, { size: 'sm', variant: 'ghost', onClick: () => setOpen(!open), children: open ? t('collapse') : t('expand') }) : null
     ] }),
-    // ueberlagert die Leisten darunter, statt sie nach unten zu schieben
-    offen && r ? jsx('div', { 'data-suchergebnis': true, className: rahmen + ' overflow-auto p-2 font-mono', style: { fontSize: 11, maxHeight: 260, position: 'absolute', top: '100%', left: 0, right: 0, marginTop: 4, zIndex: 20, background: 'var(--ui-bg-chrome)', boxShadow: '0 6px 16px rgba(0,0,0,.18)' }, children:
-      r.laeuft ? 'suche …' : r.fehler ? jsx('span', { className: 'text-destructive', children: r.fehler }) : r.hinweis ? r.hinweis : jsxs('div', { children: [
-        ...Object.entries(r.liegt || {}).map(([wo, pfade]) => jsxs('div', { className: 'mb-1', children: [jsx('div', { className: 'font-medium', children: 'liegt ' + wo + ' unter (' + pfade.length + '):' }), ...pfade.map((p, i) => zeile(p, i))] }, wo)),
-        (r.erpnext && r.erpnext.belege && r.erpnext.belege.length) ? jsxs('div', { className: 'mb-1', children: [jsx('div', { className: 'font-medium', children: 'ERPNext Belege (' + r.erpnext.belege.length + '):' }), ...r.erpnext.belege.map((b) => zeile((b.belegdatum || '') + ' ' + (b.brutto != null ? b.brutto + ' ' + (b.waehrung || '') : '') + ' ' + (b.rechnungsnummer || '') + ' ' + (b.dateiname || '') + ' [' + (b.verprobung || '–') + ']', b.name))] }) : null,
-        (r.erpnext && r.erpnext.kunden && r.erpnext.kunden.length) ? jsxs('div', { className: 'mb-1', children: [jsx('div', { className: 'font-medium', children: 'ERPNext Kundenakten (' + r.erpnext.kunden.length + '):' }), ...r.erpnext.kunden.map((k) => zeile(k.doctype + ' ' + k.name + ' ' + (k.customer_name || k.supplier_name || '') + ' ' + (k.grand_total != null ? k.grand_total + ' ' + (k.currency || '') : ''), k.doctype + k.name))] }) : null,
-        (r.paperless && r.paperless.dokumente && r.paperless.dokumente.length) ? jsxs('div', { className: 'mb-1', children: [jsx('div', { className: 'font-medium', children: 'Paperless (Welt A, ' + r.paperless.dokumente.length + '):' }), ...r.paperless.dokumente.map((d) => zeile('#' + d.id + ' ' + (d.erstellt || '').slice(0, 10) + ' ' + (d.titel || '') + ' (' + (d.datei || '') + ')', d.id))] }) : null,
-        (r.protokoll && r.protokoll.length) ? jsxs('div', { children: [jsx('div', { className: 'font-medium', children: 'Belegprotokoll (' + r.protokoll.length + '):' }), ...r.protokoll.slice(0, 20).map((e) => zeile('#' + e.nr + ' ' + e.zeit + ' ' + e.ereignis + ' ' + (e.quelle || '') + (e.ziel ? ' → ' + e.ziel : '') + (e.meldung ? ' [' + e.meldung + ']' : ''), e.nr))] }) : null,
-        ...['erpnext', 'paperless'].filter((k) => r[k] && r[k].fehler).map((k) => jsx('div', { className: leise, children: k + ': ' + r[k].fehler }, k))
+    // overlays the bars below instead of pushing them down
+    open && r ? jsx('div', { 'data-suchergebnis': true, className: box + ' overflow-auto p-2 font-mono', style: { fontSize: 11, maxHeight: 260, position: 'absolute', top: '100%', left: 0, right: 0, marginTop: 4, zIndex: 20, background: 'var(--ui-bg-chrome)', boxShadow: '0 6px 16px rgba(0,0,0,.18)' }, children:
+      r.laeuft ? t('searching') : r.fehler ? jsx('span', { className: 'text-destructive', children: r.fehler }) : r.hinweis ? r.hinweis : jsxs('div', { children: [
+        ...Object.entries(r.liegt || {}).map(([where, paths]) => jsxs('div', { className: 'mb-1', children: [jsx('div', { className: 'font-medium', children: t('foundUnder', where, paths.length) }), ...paths.map((p, i) => line(p, i))] }, where)),
+        (r.protokoll && r.protokoll.length) ? jsxs('div', { children: [jsx('div', { className: 'font-medium', children: t('receiptLogN', r.protokoll.length) }), ...r.protokoll.slice(0, 20).map((e) => line('#' + e.nr + ' ' + e.zeit + ' ' + e.ereignis + ' ' + (e.quelle || '') + (e.ziel ? ' → ' + e.ziel : '') + (e.meldung ? ' [' + e.meldung + ']' : ''), e.nr))] }) : null
       ] }) }) : null
   ] })
 }
 
-function Auftraege() {
-  const [liste, setListe] = useState([]); const [titel, setTitel] = useState(''); const [text, setText] = useState(''); const [assignee, setAssignee] = useState('schnapper')
-  const [offen, setOffen] = useState(false); const [fehler, setFehler] = useState(null); const [laeuft, setLaeuft] = useState(false)
-  const laden = useCallback(() => rest('/auftraege').then((r) => { setListe(r.auftraege || []); if (r.fehler) setFehler(r.fehler) }).catch((e) => setFehler(String(e && e.message || e))), [])
-  useEffect(() => { laden(); const t = setInterval(laden, 20000); return () => clearInterval(t) }, [laden])
-  const titelEff = titel.trim() || text.trim().split('\n')[0].slice(0, 80)
-  const anlegen = async () => { if (!titelEff || laeuft) return; setLaeuft(true); setFehler(null); try { await rest('/auftrag', { method: 'POST', body: { mandant: MANDANT, titel: titelEff, text, assignee: (PROFILE_GELADEN && !PROFILE.includes(assignee)) ? PROFILE[0] : assignee, kontext: { links: storage.get('links', {}), rechts: storage.get('rechts', {}) } } }); setTitel(''); setText(''); setOffen(false); laden() } catch (e) { setFehler(String(e && e.message || e)) } finally { setLaeuft(false) } }
-  const tu = async (id, was) => { setFehler(null); try { await rest('/auftrag/' + id + '/' + was, { method: 'POST', body: { mandant: MANDANT } }); laden() } catch (e) { setFehler(String(e && e.message || e)) } }
-  const farbe = (s) => s === 'done' ? 'text-(--ui-text-success)' : s === 'blocked' ? 'text-(--ui-text-warning)' : s === 'running' ? 'text-(--ui-text-info)' : leise
-  return jsxs('div', { className: rahmen + ' p-2 text-xs flex flex-col gap-1 shrink-0', children: [
+// ---------------------------------------------------------------- tasks for your agents (Hermes Kanban)
+function Tasks() {
+  const t = usePluginI18n(ID)
+  const [list, setList] = useState([]); const [title, setTitle] = useState(''); const [text, setText] = useState(''); const [assignee, setAssignee] = useState('')
+  const [open, setOpen] = useState(false); const [error, setError] = useState(null); const [busy, setBusy] = useState(false)
+  const load = useCallback(() => rest('/auftraege').then((r) => { setList(r.auftraege || []); if (r.fehler) setError(r.fehler) }).catch((e) => setError(errText(e))), [])
+  useEffect(() => { load(); const iv = setInterval(load, 20000); return () => clearInterval(iv) }, [load])
+  const titleEff = title.trim() || text.trim().split('\n')[0].slice(0, 80)
+  const create = async () => {
+    if (!titleEff || busy) return
+    setBusy(true); setError(null)
+    try {
+      await rest('/auftrag', { method: 'POST', body: { mandant: MANDANT, titel: titleEff, text, assignee: (PROFILE_LOADED && assignee && !PROFILE.includes(assignee)) ? '' : assignee, kontext: { links: storage.get('links', {}), rechts: storage.get('rechts', {}) } } })
+      setTitle(''); setText(''); setOpen(false); load()
+    } catch (e) { setError(errText(e)) } finally { setBusy(false) }
+  }
+  const act = async (id, what) => { setError(null); try { await rest('/auftrag/' + id + '/' + what, { method: 'POST', body: { mandant: MANDANT } }); load() } catch (e) { setError(errText(e)) } }
+  const color = (s) => s === 'done' ? 'text-(--ui-text-success)' : s === 'blocked' ? 'text-(--ui-text-warning)' : s === 'running' ? 'text-(--ui-text-info)' : quiet
+  return jsxs('div', { className: box + ' p-2 text-xs flex flex-col gap-1 shrink-0', children: [
     jsxs('div', { className: 'flex items-center gap-2', children: [
-      jsx('span', { className: 'font-medium', children: 'Aufträge an die KI (Kanban)' }),
-      jsx('span', { className: leise, children: liste.filter((a) => a.status !== 'archived').length + ' offen' }),
+      jsx('span', { className: 'font-medium', children: t('tasksTitle') }),
+      jsx('span', { className: quiet, children: t('nOpen', list.filter((a) => a.status !== 'archived').length) }),
       jsx('span', { className: 'flex-1' }),
-      jsx(Button, { size: 'sm', variant: 'ghost', onClick: () => setOffen(!offen), children: offen ? 'schließen' : '+ Auftrag' })
+      jsx(Button, { size: 'sm', variant: 'ghost', onClick: () => setOpen(!open), children: open ? t('close') : t('newTask') })
     ] }),
-    offen ? jsxs('div', { className: 'flex flex-col gap-1', children: [
-      jsx(Input, { placeholder: 'Titel (z. B. Belegstapel in Quelle links sichten und Dubletten listen)', value: titel, onChange: (e) => setTitel(e.target.value), onKeyDown: (e) => { if (e.key === 'Enter') anlegen() } }),
-      jsx('textarea', { className: 'rounded border border-(--ui-stroke-secondary) bg-transparent p-1', style: { minHeight: 60 }, placeholder: 'Auftragstext — was genau getan werden soll. Die Karte bleibt gesperrt, bis du sie freigibst.', value: text, onChange: (e) => setText(e.target.value) }),
+    open ? jsxs('div', { className: 'flex flex-col gap-1', children: [
+      jsx(Input, { placeholder: t('taskTitlePlaceholder'), value: title, onChange: (e) => setTitle(e.target.value), onKeyDown: (e) => { if (e.key === 'Enter') create() } }),
+      jsx('textarea', { className: 'rounded border border-(--ui-stroke-secondary) bg-transparent p-1', style: { minHeight: 60 }, placeholder: t('taskTextPlaceholder'), value: text, onChange: (e) => setText(e.target.value) }),
       jsxs('div', { className: 'flex gap-2 items-center', children: [
-        jsx('span', { className: leise, children: 'Agent:' }),
-        jsxs('select', { className: 'rounded border border-(--ui-stroke-secondary) bg-transparent px-1', value: assignee, onChange: (e) => setAssignee(e.target.value), children: (PROFILE_GELADEN ? PROFILE : ['schnapper', 'scotty', 'monk', 'default']).map((p) => jsx('option', { value: p, children: p }, p)) }),
-        jsx(Button, { size: 'sm', disabled: laeuft || !titelEff, onClick: anlegen, children: laeuft ? 'lege an …' : !titelEff ? 'erst Titel oder Text eingeben' : 'Karte anlegen (gesperrt)' }),
-        jsx('span', { className: leise, children: 'Die KI startet erst nach „Freigeben“ in der Liste.' })
+        jsx('span', { className: quiet, children: t('agent') }),
+        jsxs('select', { className: selectCls, value: assignee, onChange: (e) => setAssignee(e.target.value), children: [jsx('option', { value: '', children: t('defaultAgent') }), ...(PROFILE_LOADED ? PROFILE : []).map((p) => jsx('option', { value: p, children: p }, p))] }),
+        jsx(Button, { size: 'sm', disabled: busy || !titleEff, onClick: create, children: busy ? t('creating') : !titleEff ? t('titleFirst') : t('createCard') }),
+        jsx('span', { className: quiet, children: t('startsAfterRelease') })
       ] })
     ] }) : null,
-    fehler ? jsx('div', { className: 'text-destructive', children: fehler }) : null,
-    ...liste.filter((a) => a.status !== 'archived').slice(0, 12).map((a) => jsxs('div', { className: 'flex items-center gap-2', children: [
-      jsx('span', { className: 'font-mono ' + farbe(a.status), children: a.status }),
+    error ? jsx('div', { className: 'text-destructive', children: error }) : null,
+    ...list.filter((a) => a.status !== 'archived').slice(0, 12).map((a) => jsxs('div', { className: 'flex items-center gap-2', children: [
+      jsx('span', { className: 'font-mono ' + color(a.status), children: a.status }),
       jsx('span', { className: 'font-mono', children: a.id }),
       jsx('span', { className: 'flex-1 truncate', title: a.ergebnis_kommentar || a.zusammenfassung || '', children: a.titel + (a.zusammenfassung ? ' — ' + a.zusammenfassung : a.ergebnis_kommentar ? ' — ' + a.ergebnis_kommentar : '') }),
-      a.status === 'blocked' ? jsx(Button, { size: 'sm', onClick: () => tu(a.id, 'freigeben'), children: 'Freigeben' }) : null,
-      ['done', 'blocked', 'review'].includes(a.status) ? jsx(Button, { size: 'sm', variant: 'ghost', onClick: () => tu(a.id, 'archivieren'), children: 'Archivieren' }) : null
+      a.status === 'blocked' ? jsx(Button, { size: 'sm', onClick: () => act(a.id, 'freigeben'), children: t('release') }) : null,
+      ['done', 'blocked', 'review'].includes(a.status) ? jsx(Button, { size: 'sm', variant: 'ghost', onClick: () => act(a.id, 'archivieren'), children: t('archive') }) : null
     ] }, a.id))
   ] })
 }
 
-function TrovePage({ nur }) {
-  const [quellen, setQuellen] = useState([]); const [remotes, setRemotes] = useState([]); const [status, setStatus] = useState(null)
-  const [links, setLinksRoh] = useState(() => storage.get('links', { quelle: '', pfad: '' })); const [rechts, setRechtsRoh] = useState(() => storage.get('rechts', { quelle: '', pfad: '' }))
-  const [auswahlL, setAuswahlL] = useState([]); const [auswahlR, setAuswahlR] = useState([]); const [neuLaden, setNeuLaden] = useState(0); const [lauf, setLauf] = useState(null)
-  const setLinks = (z) => { storage.set('links', z); setLinksRoh(z) }; const setRechts = (z) => { storage.set('rechts', z); setRechtsRoh(z) }
-  // Quellen holen; antwortet das Backend gerade nicht (Neustart), bis 60 s wiederholen statt die Quelle stumm zu verlieren
-  const quellenLaden = useCallback(async () => { for (let i = 0; i < 30; i++) { try { const r = await rest('/quellen'); setQuellen(r.quellen); setRemotes(r.rclone_remotes || []); return } catch (e) { await new Promise((ok) => setTimeout(ok, 2000)) } } }, [])
-  const statusLaden = useCallback(() => rest('/status').then((s) => { statusUebernehmen(s); setStatus(s) }).catch(() => setStatus({ fehler: true })), [])
-  useEffect(() => { quellenLaden(); statusLaden() }, [])
-  // nach "Trove-Backend neu laden": Quellen, Status und Listen selbst neu holen (kein Seitenwechsel noetig)
-  const laedt = useBackendLaedt(); const warLaedt = useRef(false)
-  useEffect(() => { if (laedt) { warLaedt.current = true; return } if (warLaedt.current) { warLaedt.current = false; quellenLaden(); statusLaden(); setNeuLaden((n) => n + 1) } }, [laedt])
-  const aktion = async (art, richtung) => {
-    const von = richtung === 'lr' ? links : rechts, nach = richtung === 'lr' ? rechts : links, namen = richtung === 'lr' ? auswahlL : auswahlR
-    if (!von.quelle || !nach.quelle) { host.notify({ kind: 'warning', message: 'Trove: beide Seiten brauchen eine Quelle.' }); return }
-    if (art !== 'sync' && namen.length === 0) { host.notify({ kind: 'warning', message: 'Trove: erst Einträge markieren.' }); return }
-    setLauf({ art, laeuft: true })
+// ---------------------------------------------------------------- page
+function TrovePage({ only }) {
+  const t = usePluginI18n(ID)
+  const [sources, setSources] = useState([]); const [status, setStatus] = useState(null)
+  const [left, setLeftRaw] = useState(() => storage.get('links', { quelle: '', pfad: '' })); const [right, setRightRaw] = useState(() => storage.get('rechts', { quelle: '', pfad: '' }))
+  const [selL, setSelL] = useState([]); const [selR, setSelR] = useState([]); const [reload, setReload] = useState(0); const [run, setRun] = useState(null)
+  const [confirm, setConfirm] = useState(null)
+  const setLeft = (z) => { storage.set('links', z); setLeftRaw(z) }; const setRight = (z) => { storage.set('rechts', z); setRightRaw(z) }
+  // fetch sources; if the backend does not answer (restart), retry for up to 60 s instead of silently losing the source
+  const loadSources = useCallback(async () => { for (let i = 0; i < 30; i++) { try { const r = await rest('/quellen'); setSources(r.quellen); return } catch (e) { await new Promise((ok) => setTimeout(ok, 2000)) } } }, [])
+  const loadStatus = useCallback(() => rest('/status').then((s) => { MANDANT = s.mandant || MANDANT; PROFILE = Array.isArray(s.profile) && s.profile.length ? s.profile : PROFILE; PROFILE_LOADED = true; setStatus(s) }).catch(() => setStatus({ fehler: true })), [])
+  useEffect(() => { loadSources(); loadStatus() }, [])
+  useEffect(() => { if (!confirm) return; const iv = setTimeout(() => setConfirm(null), 6000); return () => clearTimeout(iv) }, [confirm])
+  const srcOf = (z) => sources.find((x) => x.id === z.quelle)
+  const doAction = async (art, dir) => {
+    const from = dir === 'lr' ? left : right, to = dir === 'lr' ? right : left, names = dir === 'lr' ? selL : selR
+    if (!from.quelle || !to.quelle) { host.notify({ kind: 'warning', message: 'Trove: ' + t('needBothSides') }); return }
+    if (art !== 'sync' && names.length === 0) { host.notify({ kind: 'warning', message: 'Trove: ' + t('markFirst') }); return }
+    setConfirm(null); setRun({ art, laeuft: true })
     try {
-      const r = await rest('/aktion', { method: 'POST', body: { mandant: MANDANT, art, von: { quelle: von.quelle, pfad: von.pfad }, nach: { quelle: nach.quelle, pfad: nach.pfad }, namen: art === 'sync' ? [] : namen }, timeoutMs: 3600000 })
-      setLauf({ art, ergebnis: r.ergebnis, lauf: r.lauf }); setNeuLaden((n) => n + 1); setAuswahlL([]); setAuswahlR([])
-      host.notify({ kind: 'info', message: 'Trove: ' + art + ' fertig (' + r.lauf + ')' })
-    } catch (e) { setLauf({ art, fehler: String(e && e.message || e) }) }
+      const r = await rest('/aktion', { method: 'POST', body: { mandant: MANDANT, art, von: { quelle: from.quelle, pfad: from.pfad }, nach: { quelle: to.quelle, pfad: to.pfad }, namen: art === 'sync' ? [] : names }, timeoutMs: 3600000 })
+      setRun({ art, ergebnis: r.ergebnis, lauf: r.lauf }); setReload((n) => n + 1); setSelL([]); setSelR([])
+      host.notify({ kind: 'info', message: 'Trove: ' + t('actionDone', t('act_' + art), r.lauf) })
+    } catch (e) { setRun({ art, fehler: errText(e) }) }
   }
-  const seiteL = jsx(Seite, { seite: 'links', quellen, remotes, zustand: links, setZustand: setLinks, auswahl: auswahlL, setAuswahl: setAuswahlL, neuLaden, onQuellenGeaendert: quellenLaden })
-  const seiteR = jsx(Seite, { seite: 'rechts', quellen, remotes, zustand: rechts, setZustand: setRechts, auswahl: auswahlR, setAuswahl: setAuswahlR, neuLaden, onQuellenGeaendert: quellenLaden })
-  const mailAbholen = async () => {
-    setLauf({ art: 'mail abholen', laeuft: true })
-    try { const r = await rest('/mail/abholen', { method: 'POST', body: { mandant: MANDANT }, timeoutMs: 7200000 }); setLauf({ art: 'mail abholen', ergebnis: (r.ergebnis || []).map((z) => ({ name: z.postfach, mails: z.mails, neu: z.neu, anhaenge_neu: z.anhaenge_neu, fehler: z.fehler })) }) }
-    catch (e) { setLauf({ art: 'mail abholen', fehler: String(e && e.message || e) }) }
+  // Writing is only allowed into folders marked writable; moving also removes the original, so it needs a writable source AND target.
+  const move = (art, dir, label) => {
+    const from = srcOf(dir === 'lr' ? left : right), to = srcOf(dir === 'lr' ? right : left)
+    const reason = !to ? t('pickTargetFirst') : to.nur_lesen ? t('targetReadOnly') : (art === 'verschieben' && from && from.nur_lesen) ? t('sourceReadOnly') : null
+    const key = art + dir
+    const armed = confirm === key
+    const text = armed ? t('confirmMove') : label
+    return jsx(Button, { size: 'sm', variant: dir === 'rl' ? 'ghost' : undefined, disabled: !!reason, title: reason || (art === 'verschieben' ? t('moveTip') : art === 'sync' ? t('syncTip') : t('copyTip')),
+      onClick: () => art === 'verschieben' && !armed ? setConfirm(key) : doAction(art, dir), children: text }, key)
   }
-  const spiegeln = async () => {
-    setLauf({ art: 'ERPNext-Spiegel', laeuft: true })
-    try { const r = await rest('/spiegeln', { method: 'POST', body: { mandant: MANDANT }, timeoutMs: 3600000 }); setLauf({ art: 'ERPNext-Spiegel', ergebnis: [{ name: MANDANT, ereignisse: r.gespiegelt, bis_nr: r.letzte_nr, belege: r.belege_aktualisiert }] }) }
-    catch (e) { setLauf({ art: 'ERPNext-Spiegel', fehler: String(e && e.message || e) }) }
-  }
-  const unterschriftenHolen = async () => {
-    setLauf({ art: 'Unterschriften holen', laeuft: true })
-    try { const r = await rest('/docuseal/abholen', { method: 'POST', body: { mandant: MANDANT }, timeoutMs: 600000 }); setLauf({ art: 'Unterschriften holen', ergebnis: (r.vorgaenge || []).map((v) => ({ name: 'Vorgang ' + v.vorgang, status: v.status, an: v.an, dateien: (v.dateien || []).length || (v.abgeholt ? 'abgeholt' : 0) })) }) }
-    catch (e) { setLauf({ art: 'Unterschriften holen', fehler: String(e && e.message || e) }) }
-  }
-  const suche = jsx(Suche, {})
-  // Zeile 1: Titel + Mandant links, Suche rechts
-  const kopf = jsxs('div', { 'data-zeile': 'kopf', style: { ...LEISTE, alignItems: 'flex-start', columnGap: 16 }, children: [
+  const mid = !status || status.fehler ? jsx('div', { 'data-mitte': 'wait', className: 'flex flex-col justify-center items-center px-1 text-xs w-28 text-center ' + quiet, children: status ? '–' : t('loading') })
+    : jsxs('div', { className: 'flex flex-col justify-center items-center gap-1 px-1 text-xs w-28 text-center ' + quiet, children: [
+      move('kopieren', 'lr', t('copyRight')), move('verschieben', 'lr', t('moveRight')), move('sync', 'lr', t('syncRight')),
+      jsx('div', { className: 'h-3' }), move('kopieren', 'rl', t('copyLeft')), move('verschieben', 'rl', t('moveLeft')),
+      jsx('div', { className: 'pt-2', children: t('writeHint') })] })
+  const result = run ? jsxs('div', { className: box + ' p-2', children: [
+    jsx('span', { className: 'font-medium', children: t('act_' + run.art) + (run.laeuft ? ' ' + t('running') : run.fehler ? ' ' + t('errorColon') + ' ' : ' ' + t('done') + (run.lauf ? ' · ' + t('runId', run.lauf) : '')) }),
+    run.fehler ? jsx('span', { className: 'text-destructive', children: run.fehler }) : null,
+    run.ergebnis ? jsx('span', { className: 'font-mono ml-2', children: run.ergebnis.map((r) => r.name + ': ' + Object.entries(r).filter(([k]) => k !== 'name').map(([k, v]) => k + '=' + v).join(' ')).join(' | ') }) : null
+  ] }) : null
+  const connection = !status ? t('connecting') : status.fehler ? t('backendDown') : t('backendUp')
+  const header = jsxs('div', { 'data-zeile': 'kopf', style: { ...BAR, alignItems: 'flex-start', columnGap: 16 }, children: [
     jsxs('div', { style: { display: 'flex', alignItems: 'baseline', gap: 8, paddingTop: 2 }, children: [
       jsx('span', { style: { fontSize: 18, fontWeight: 600 }, children: 'Trove' }),
-      jsx('span', { style: LEISE_STIL, children: 'Mandant ' + ((status && status.mandant) || MANDANT || '…') })] }),
-    jsx('div', { style: { flex: '1 1 320px', maxWidth: 720, marginLeft: 'auto', minWidth: 0 }, children: suche })
+      jsx('span', { style: QUIET_STYLE, children: t('clientLabel', (status && status.mandant) || MANDANT || '…') })] }),
+    jsx('div', { style: { flex: '1 1 320px', maxWidth: 720, marginLeft: 'auto', minWidth: 0 }, children: jsx(Search, {}) })
   ] })
-  // Zeile 2: nur Knoepfe in benannten Gruppen; was im Kundenmodus nicht eingerichtet ist, fehlt ganz
-  const werkzeuge = jsxs('div', { 'data-zeile': 'werkzeuge', style: LEISTE, children: [
-    gruppe('Ansicht', [knopf('nur links', () => host.navigate('/trove/links'), { title: 'nur die linke Seite (z. B. im zweiten Fenster)', an: nur === 'links' }),
-      knopf('nur rechts', () => host.navigate('/trove/rechts'), { title: 'nur die rechte Seite (z. B. im zweiten Fenster)', an: nur === 'rechts' }),
-      knopf('beide', () => host.navigate('/trove'), { title: 'beide Seiten nebeneinander', an: !nur })]),
-    gruppe('Holen', [ZEIGE.mail ? knopf('Mail abholen', mailAbholen, { title: 'F5: alle Postfaecher abholen (Mails als .eml, Anhaenge mit Pruefsumme ins Belegprotokoll)' }) : null,
-      ZEIGE.docuseal ? knopf('Unterschriften holen', unterschriftenHolen, { title: 'F7: Stand aller Unterschriften-Vorgänge holen; fertige PDFs + Audit-Log werden abgelegt und protokolliert' }) : null]),
-    gruppe('Abgleich', [ZEIGE.erpnext ? knopf('ERPNext-Spiegel', spiegeln, { title: 'F11: Belegprotokoll nach ERPNext spiegeln' }) : null])
+  const tools = jsxs('div', { 'data-zeile': 'werkzeuge', style: BAR, children: [
+    group(t('view'), [btn(t('onlyLeft'), () => host.navigate('/trove/links'), { title: t('onlyLeftTip'), on: only === 'links' }),
+      btn(t('onlyRight'), () => host.navigate('/trove/rechts'), { title: t('onlyRightTip'), on: only === 'rechts' }),
+      btn(t('both'), () => host.navigate('/trove'), { title: t('bothTip'), on: !only })])
   ] })
-  // Mitte erst nach /status: vorher neutraler Platzhalter (weder Kopier-Knoepfe noch Kundenhinweis blitzen auf)
-  const mitte = !status || status.fehler ? jsx('div', { 'data-mitte': 'wartet', className: 'flex flex-col justify-center items-center px-1 text-xs w-28 text-center ' + leise, children: status ? '–' : 'lädt …' }) : KARTENZIEL === 'wiki' ? jsx('div', { className: 'flex flex-col justify-center items-center px-1 text-xs w-28 text-center ' + leise, children: 'Deine Ablage wird nur gelesen. Kopieren und Verschieben sind hier abgeschaltet.' }) : jsxs('div', { className: 'flex flex-col gap-2 justify-center items-center px-1', children: [
-    jsx(Button, { size: 'sm', title: 'markierte Einträge links verifiziert nach rechts kopieren', onClick: () => aktion('kopieren', 'lr'), children: 'Kopieren →' }),
-    jsx(Button, { size: 'sm', title: 'markierte Einträge links nach rechts verschieben (Quelle erst nach Gegenprobe entfernt)', onClick: () => aktion('verschieben', 'lr'), children: 'Verschieben →' }),
-    jsx(Button, { size: 'sm', title: 'ganzen linken Ordner nach rechts abgleichen (fehlende Dateien kopieren, nichts überschreiben)', onClick: () => aktion('sync', 'lr'), children: 'Sync →' }),
-    jsx('div', { className: 'h-3' }),
-    jsx(Button, { size: 'sm', variant: 'ghost', onClick: () => aktion('kopieren', 'rl'), children: '← Kopieren' }),
-    jsx(Button, { size: 'sm', variant: 'ghost', onClick: () => aktion('verschieben', 'rl'), children: '← Verschieben' })
-  ] })
-  const ergebnis = lauf ? jsxs('div', { className: rahmen + ' p-2', children: [
-    jsx('span', { className: 'font-medium', children: lauf.art + (lauf.laeuft ? ' läuft …' : lauf.fehler ? ' Fehler: ' : ' fertig' + (lauf.lauf ? ' · Lauf ' + lauf.lauf : '')) }),
-    lauf.fehler ? jsx('span', { className: 'text-destructive', children: lauf.fehler }) : null,
-    lauf.ergebnis ? jsx('span', { className: 'font-mono ml-2', children: lauf.ergebnis.map((r) => r.name + ': ' + Object.entries(r).filter(([k]) => k !== 'name').map(([k, v]) => k + '=' + v).join(' ')).join(' | ') }) : null
-  ] }) : null
-  // Zeile 3: Meldungen (Verbindung, Lauf-Ergebnis, Fehler) – nie zwischen den Knoepfen
-  const verbindung = !status ? 'verbinde …' : status.fehler ? 'Backend nicht erreichbar' : 'Backend verbunden'
-  const meldungen = jsxs('div', { 'data-zeile': 'meldungen', role: 'status', style: { display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12 }, children: [
-    jsxs('div', { style: LEISTE, children: [
-      jsx(Badge, { title: status && status.stufe ? 'Stufen: ' + status.stufe : undefined, children: verbindung }),
-      status && status.protokolle ? jsx('span', { style: LEISE_STIL, children: 'Belegprotokoll ' + status.protokolle.map((p) => p.mandant + ': ' + p.zeilen + ' Zeilen').join(' · ') }) : null,
-      status && status.fehler ? jsx(Button, { size: 'sm', variant: 'ghost', onClick: () => { host.notify({ kind: 'info', message: 'Trove: Backend wird neu gestartet …' }); host.restartGateway() }, children: 'Backend neu starten' }) : null
+  const messages = jsxs('div', { 'data-zeile': 'meldungen', role: 'status', style: { display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12 }, children: [
+    jsxs('div', { style: BAR, children: [
+      jsx(Badge, { children: connection }),
+      status && status.protokolle ? jsx('span', { style: QUIET_STYLE, children: t('receiptLogLine', status.protokolle.map((p) => p.mandant + ': ' + p.zeilen).join(' · ')) }) : null,
+      status && status.fehler ? jsx(Button, { size: 'sm', variant: 'ghost', onClick: () => { host.notify({ kind: 'info', message: 'Trove: ' + t('restarting') }); host.restartGateway() }, children: t('restartBackend') }) : null
     ] }),
-    ergebnis
+    result
   ] })
-  const auftraege = jsx(Auftraege, {})
-  // Wurzel scrollt selbst (Host-Wrapper ist display:contents); Mittelteil schrumpft nie unter seinen Inhalt, sonst laeuft er ueber den Auftragsbereich
-  const wurzel = 'flex h-full min-h-0 w-full min-w-0 flex-col gap-2 p-3 overflow-auto'
-  const feld = (inhalt) => jsx('div', { className: 'flex-1 flex flex-col min-w-0', style: { minHeight: 560 }, children: inhalt })
-  const spalte = (inhalt) => jsx('div', { style: { flex: '1 1 300px', minWidth: 0, display: 'flex', flexDirection: 'column' }, children: inhalt })
-  if (nur === 'links') return jsxs('div', { className: wurzel, children: [kopf, werkzeuge, meldungen, feld(seiteL), auftraege] })
-  if (nur === 'rechts') return jsxs('div', { className: wurzel, children: [kopf, werkzeuge, meldungen, feld(seiteR), auftraege] })
-  return jsxs('div', { className: wurzel, children: [kopf, werkzeuge, meldungen,
-    // Spalten brechen bei schmalem Fenster untereinander um, statt seitlich ueber den Rand zu laufen
-    jsxs('div', { 'data-spalten': true, style: { flex: '1 0 auto', display: 'flex', flexWrap: 'wrap', gap: 8, minWidth: 0, minHeight: 560 }, children: [spalte(seiteL), mitte, spalte(seiteR)] }), auftraege] })
+  const sideL = jsx(Side, { side: 'links', sources, state: left, setState: setLeft, selection: selL, setSelection: setSelL, reload, onSourcesChanged: loadSources })
+  const sideR = jsx(Side, { side: 'rechts', sources, state: right, setState: setRight, selection: selR, setSelection: setSelR, reload, onSourcesChanged: loadSources })
+  const tasks = jsx(Tasks, {})
+  const rootCls = 'flex h-full min-h-0 w-full min-w-0 flex-col gap-2 p-3 overflow-auto'
+  const field = (inner) => jsx('div', { className: 'flex-1 flex flex-col min-w-0', style: { minHeight: 560 }, children: inner })
+  const column = (inner) => jsx('div', { style: { flex: '1 1 300px', minWidth: 0, display: 'flex', flexDirection: 'column' }, children: inner })
+  if (only === 'links') return jsxs('div', { className: rootCls, children: [header, tools, messages, field(sideL), tasks] })
+  if (only === 'rechts') return jsxs('div', { className: rootCls, children: [header, tools, messages, field(sideR), tasks] })
+  return jsxs('div', { className: rootCls, children: [header, tools, messages,
+    // columns wrap below each other in a narrow window instead of overflowing sideways
+    jsxs('div', { 'data-spalten': true, style: { flex: '1 0 auto', display: 'flex', flexWrap: 'wrap', gap: 8, minWidth: 0, minHeight: 560 }, children: [column(sideL), mid, column(sideR)] }), tasks] })
 }
 
 export default {
   id: ID,
   name: 'Trove',
-  description: 'Datei-Zentrale: Quellen einbinden, zwei Seiten mit Vorschau, kopieren/verschieben/sync über das Belegprotokoll.',
+  description: 'File hub: two panes with preview; copy/move/sync through a hash-chained receipt log; read, split and trace files; build knowledge cards in your wiki.',
   register(ctx) {
-    rest = ctx.rest; storage = ctx.storage
+    rest = ctx.rest; storage = ctx.storage; files = ctx.files || null
+    T = (k, ...a) => ctx.i18n.t(k, ...a)
+    ctx.i18n.register({ en: EN, de: DE })
     ctx.registerMany([
       { id: 'page', area: ROUTES_AREA, data: { path: '/trove' }, render: () => jsx(TrovePage, {}) },
-      { id: 'page-links', area: ROUTES_AREA, data: { path: '/trove/links' }, render: () => jsx(TrovePage, { nur: 'links' }) },
-      { id: 'page-rechts', area: ROUTES_AREA, data: { path: '/trove/rechts' }, render: () => jsx(TrovePage, { nur: 'rechts' }) },
+      { id: 'page-links', area: ROUTES_AREA, data: { path: '/trove/links' }, render: () => jsx(TrovePage, { only: 'links' }) },
+      { id: 'page-rechts', area: ROUTES_AREA, data: { path: '/trove/rechts' }, render: () => jsx(TrovePage, { only: 'rechts' }) },
       { id: 'nav', area: SIDEBAR_NAV_AREA, order: 71, data: { codicon: 'archive', label: 'Trove', path: '/trove' } },
-      { id: 'open', area: PALETTE_AREA, data: { id: 'trove.open', label: 'Trove: Datei-Zentrale öffnen', keywords: ['trove', 'datei', 'beleg'], run: () => host.navigate('/trove') } }
+      { id: 'open', area: PALETTE_AREA, data: { id: 'trove.open', label: T('paletteOpen'), keywords: ['trove', 'files', 'receipts'], run: () => host.navigate('/trove') } }
     ])
   }
 }
+
+// ---------------------------------------------------------------- strings (English is the default; German is the second language)
+// Keys used in code: t("key", ...args). Function values are interpolators. Resolution: active locale -> en -> raw key.
+// <i18n:en>
+const EN = {
+  paletteOpen: 'Trove: open the file hub',
+  connecting: 'connecting …', backendUp: 'Backend connected', backendDown: 'Backend not reachable', restartBackend: 'Restart backend', restarting: 'Restarting the backend …',
+  receiptLogLine: (s) => 'Receipt log ' + s, clientLabel: (n) => 'Client ' + n,
+  view: 'View', onlyLeft: 'left only', onlyRight: 'right only', both: 'both',
+  onlyLeftTip: 'Show only the left pane (e.g. in a second window)', onlyRightTip: 'Show only the right pane (e.g. in a second window)', bothTip: 'Show both panes side by side',
+  loading: 'loading …', running: 'running …', done: 'done', errorColon: 'error:', runId: (id) => 'run ' + id, actionDone: (what, id) => what + ' finished (' + id + ')',
+  act_kopieren: 'Copy', act_verschieben: 'Move', act_sync: 'Sync', act_lesen: 'Read', act_stapel: 'Split', act_spur: 'Trace',
+  needBothSides: 'both sides need a source.', markFirst: 'tick some entries first.',
+  copyRight: 'Copy →', moveRight: 'Move →', syncRight: 'Sync →', copyLeft: '← Copy', moveLeft: '← Move',
+  copyTip: 'Copy the ticked entries to the other side, verified by checksum read-back', moveTip: 'Move the ticked entries; the original is deleted only after the copy is verified',
+  syncTip: 'Compare the whole left folder with the right one: copy missing files, never overwrite',
+  confirmMove: 'Click again: delete originals after copy',
+  pickTargetFirst: 'choose a target source first', targetReadOnly: 'the target is read-only (mark it writable first)', sourceReadOnly: 'moving deletes originals, so the source must be writable too',
+  writeHint: 'Trove only writes into folders you marked writable.',
+  sourceLeft: 'Source (left)', targetRight: 'Target (right)', chooseSource: '– choose a source –', readOnlyTag: '(read-only)', writableTag: '(writable)',
+  removeSource: 'Remove this source from Trove (files stay untouched)',
+  makeWritable: 'Make writable', makeWritableTip: 'Allow Trove to write into this folder (copy, move, sync, knowledge twins)', makeReadOnly: 'Make read-only', makeReadOnlyTip: 'Stop Trove from writing into this folder',
+  writableWarn: (n) => 'Allow Trove to write into "' + n + '"? Copy, move (deletes originals after verification) and sync will work there.', yesWritable: 'Yes, make writable',
+  addFolder: '+ Folder', addHint: 'Add a folder from this computer. Folders are read-only until you mark them writable.', pathPlaceholder: 'Folder path, e.g. ~/Documents/Receipts', namePlaceholder: 'Name (optional)',
+  browse: 'Browse …', writableCheck: 'Writable (Trove may copy/move into it)', addBtn: 'Add folder', checking: 'checking …', cancel: 'Cancel',
+  noSource: 'No source chosen.', pickSourceFirst: 'choose a source first', sourceLoading: 'source loading …', notNow: (r) => 'Not possible right now: ' + r,
+  indexed: 'Index ✓', indexFiles: 'Index files', indexTip: 'Compute checksums (detects duplicates)', registerDone: (n, g) => 'index: ' + n + ' new, ' + g + ' total',
+  checkChanges: 'Check changes', checkChangesTip: 'Take a snapshot and compare it with the last run (new / gone / moved / changed outside Trove)',
+  checkingChanges: 'Checking changes …', changesRun: (id) => 'Run ' + id, baselineTaken: '(baseline recorded)',
+  fAll: 'all', fDup: 'duplicates only', fNoDup: 'without duplicates', foundNTimes: (n) => 'found ' + n + '×',
+  intoKnowledge: 'Into knowledge', intoKnowledgeAll: 'Into knowledge (whole folder)', intoKnowledgeN: (n) => 'Into knowledge (' + n + ' ticked)',
+  intoKnowledgeTip: 'Ticked files (otherwise the whole folder) into your knowledge wiki: one markdown twin per file, bound to the original by checksum. Originals stay unchanged.',
+  entriesMarked: (n, m) => n + ' entries, ' + m + ' ticked', read: 'Read', split: 'Split', all: 'all', clearSelection: 'Clear selection',
+  readTip: 'Reading ladder (e-invoice, text layer, otherwise local OCR) and fixed plausibility checks; writes a twin and a receipt-log entry',
+  splitTip: 'Split a multi-page PDF into single documents (needs Stirling-PDF)', clickFileFirst: 'click a file first',
+  clickForPreview: 'Click a file for a preview. Double-click shows its trace; double-click a folder opens it.', folderLabel: (n) => 'Folder ' + n, loadingPreview: 'loading preview …',
+  pageOf: (p, n) => 'page ' + p + ' / ' + n, truncated: '… (truncated)', noPreview: 'No preview',
+  wholeFolder: (f, n) => 'WHOLE folder "' + f + '" (' + n + ' files, including subfolders)', selectedFiles: (n, names) => n + ' selected file(s): ' + names,
+  knowledgeExplain: 'into knowledge: one markdown twin per file (bound to the original by checksum) plus one knowledge card in your wiki (status: to-review) that records the original path. Originals stay unchanged.',
+  affiliationPlaceholder: 'Affiliation (optional, e.g. My company)', affiliationTip: 'Optional. Empty = "offen" (open).', makeCards: 'Create knowledge cards',
+  noMandatory: (c, a) => 'No mandatory fields: without input the collection is "' + c + '" and the affiliation "' + a + '".',
+  intoWhole: 'Into knowledge (whole folder)', yesWhole: (n) => 'Yes, whole folder (' + n + ' files)', intoSelected: (n) => 'Into knowledge (' + n + ' selected)',
+  more: 'More …', less: 'Less', collectionPlaceholder: (c) => 'Collection (empty = ' + c + ')', followCheck: 'Remember folder for the continuous run',
+  followTip: 'Writes the folder to Trove\'s watch list. Only an optional scheduler job (tools/installieren.py --dauerlauf) ever uses it; see the README.',
+  wholeWarn: (n) => 'Nothing ticked: the WHOLE folder will be processed (' + n + ' files, with subfolders). Tick files to process only those.',
+  readingNow: 'reading, writing markdown, building the index … (OCR takes a few seconds per page)',
+  summary: (f, n, s, d, k, e) => f + ' files: ' + n + ' new, ' + s + ' already there, ' + d + ' duplicates, ' + k + ' cards, ' + e + ' errors',
+  followed: 'folder remembered for the continuous run', qmdState: (s) => 'index: ' + s, qmdSkipped: 'skipped (qmd not installed)', inIndex: 'in index',
+  errorWord: 'ERROR', cardWord: 'card', noCard: 'no card', stNew: 'new', stThere: 'already there', stDup: 'duplicate', stError: 'error',
+  runningOcr: 'running … (OCR can take a few seconds per page)', method: 'Method', nPages: (n) => n + ' pages', verification: 'Verification',
+  passedSure: 'passed (sure)', passed: 'passed', needsReview: 'needs review', twin: 'Twin', batch: 'Batch', splitSummary: (n, p, s) => n + ' documents from ' + p + ' pages, ' + s + ' s',
+  pagesRange: (r) => 'pages ' + r, bookingVersion: 'booking version without attachments', backToPreview: 'back to preview',
+  traceTitle: (f) => 'Trace (receipt log): ' + f, art_lesen: 'Read', art_stapel: 'Split',
+  trace_direkt: 'direct', trace_rueckwaerts: 'backwards', trace_vorwaerts: 'forwards', trace_gleicher_inhalt: 'same content elsewhere',
+  searchPlaceholder: 'Search the index and the receipt log: file name, invoice number, sender, sha256 …', search: 'Search', collapse: 'hide', expand: 'show', searching: 'searching …',
+  foundUnder: (w, n) => 'located ' + w + ' (' + n + '):', receiptLogN: (n) => 'Receipt log (' + n + '):',
+  tasksTitle: 'Tasks for your agents (Hermes Kanban)', nOpen: (n) => n + ' open', close: 'close', newTask: '+ Task',
+  taskTitlePlaceholder: 'Title (e.g. review the batch in the left source and list duplicates)', taskTextPlaceholder: 'Task text: what exactly should be done. The card stays blocked until you release it.',
+  agent: 'Agent:', defaultAgent: '(Hermes default)', creating: 'creating …', titleFirst: 'enter a title or text first', createCard: 'Create card (blocked)',
+  startsAfterRelease: 'The agent starts only after you press "Release" in the list.', release: 'Release', archive: 'Archive'
+}
+// </i18n:en>
+// <i18n:de>
+const DE = {
+  paletteOpen: 'Trove: Datei-Zentrale öffnen',
+  connecting: 'verbinde …', backendUp: 'Backend verbunden', backendDown: 'Backend nicht erreichbar', restartBackend: 'Backend neu starten', restarting: 'Backend wird neu gestartet …',
+  receiptLogLine: (s) => 'Belegprotokoll ' + s, clientLabel: (n) => 'Mandant ' + n,
+  view: 'Ansicht', onlyLeft: 'nur links', onlyRight: 'nur rechts', both: 'beide',
+  onlyLeftTip: 'Nur die linke Seite zeigen (z. B. im zweiten Fenster)', onlyRightTip: 'Nur die rechte Seite zeigen (z. B. im zweiten Fenster)', bothTip: 'Beide Seiten nebeneinander',
+  loading: 'lädt …', running: 'läuft …', done: 'fertig', errorColon: 'Fehler:', runId: (id) => 'Lauf ' + id, actionDone: (what, id) => what + ' fertig (' + id + ')',
+  act_kopieren: 'Kopieren', act_verschieben: 'Verschieben', act_sync: 'Sync', act_lesen: 'Lesen', act_stapel: 'Zerlegen', act_spur: 'Spur',
+  needBothSides: 'beide Seiten brauchen eine Quelle.', markFirst: 'erst Einträge markieren.',
+  copyRight: 'Kopieren →', moveRight: 'Verschieben →', syncRight: 'Sync →', copyLeft: '← Kopieren', moveLeft: '← Verschieben',
+  copyTip: 'Markierte Einträge auf die andere Seite kopieren, per Prüfsummen-Gegenprobe verifiziert', moveTip: 'Markierte Einträge verschieben; das Original wird erst nach verifizierter Kopie gelöscht',
+  syncTip: 'Ganzen linken Ordner mit dem rechten abgleichen: fehlende Dateien kopieren, nie überschreiben',
+  confirmMove: 'Nochmal klicken: Originale nach Kopie löschen',
+  pickTargetFirst: 'erst eine Ziel-Quelle wählen', targetReadOnly: 'das Ziel ist schreibgeschützt (erst „schreibbar“ machen)', sourceReadOnly: 'Verschieben löscht Originale, also muss auch die Quelle schreibbar sein',
+  writeHint: 'Trove schreibt nur in Ordner, die du als schreibbar markiert hast.',
+  sourceLeft: 'Quelle (links)', targetRight: 'Ziel (rechts)', chooseSource: '– Quelle wählen –', readOnlyTag: '(nur lesen)', writableTag: '(schreibbar)',
+  removeSource: 'Diese Quelle aus Trove entfernen (Dateien bleiben unberührt)',
+  makeWritable: 'Schreibbar machen', makeWritableTip: 'Trove erlauben, in diesen Ordner zu schreiben (Kopieren, Verschieben, Sync, Wissens-Zwillinge)', makeReadOnly: 'Nur lesen', makeReadOnlyTip: 'Trove das Schreiben in diesen Ordner verbieten',
+  writableWarn: (n) => 'Trove erlauben, in „' + n + '“ zu schreiben? Kopieren, Verschieben (löscht Originale nach Prüfung) und Sync funktionieren dort dann.', yesWritable: 'Ja, schreibbar machen',
+  addFolder: '+ Ordner', addHint: 'Ordner von diesem Rechner hinzufügen. Ordner sind schreibgeschützt, bis du sie als schreibbar markierst.', pathPlaceholder: 'Ordnerpfad, z. B. ~/Dokumente/Belege', namePlaceholder: 'Name (optional)',
+  browse: 'Durchsuchen …', writableCheck: 'Schreibbar (Trove darf hineinkopieren/-verschieben)', addBtn: 'Ordner hinzufügen', checking: 'prüfe …', cancel: 'Abbrechen',
+  noSource: 'Keine Quelle gewählt.', pickSourceFirst: 'erst Quelle wählen', sourceLoading: 'Quelle lädt …', notNow: (r) => 'Gerade nicht möglich: ' + r,
+  indexed: 'Index ✓', indexFiles: 'Indexieren', indexTip: 'Prüfsummen rechnen (erkennt Dubletten)', registerDone: (n, g) => 'Index: ' + n + ' neu, ' + g + ' gesamt',
+  checkChanges: 'Änderungen prüfen', checkChangesTip: 'Stand aufnehmen und mit dem letzten Lauf vergleichen (neu / weg / verschoben / außerhalb von Trove geändert)',
+  checkingChanges: 'Änderungen werden geprüft …', changesRun: (id) => 'Lauf ' + id, baselineTaken: '(Grundstand aufgenommen)',
+  fAll: 'alle', fDup: 'nur Dubletten', fNoDup: 'ohne Dubletten', foundNTimes: (n) => n + '× vorhanden',
+  intoKnowledge: 'Ins Wissen', intoKnowledgeAll: 'Ins Wissen (ganzer Ordner)', intoKnowledgeN: (n) => 'Ins Wissen (' + n + ' angehakt)',
+  intoKnowledgeTip: 'Angehakte Dateien (sonst den ganzen Ordner) ins Wissens-Wiki: je Datei ein Markdown-Zwilling, per Prüfsumme ans Original gebunden. Originale bleiben unverändert.',
+  entriesMarked: (n, m) => n + ' Einträge, ' + m + ' markiert', read: 'Lesen', split: 'Zerlegen', all: 'alle', clearSelection: 'Auswahl leeren',
+  readTip: 'Lese-Treppe (E-Rechnung, Textlayer, sonst lokale OCR) und feste Plausibilitätsprüfung; schreibt Zwilling und Belegprotokoll-Eintrag',
+  splitTip: 'Mehrseitiges PDF in einzelne Belege zerlegen (braucht Stirling-PDF)', clickFileFirst: 'erst eine Datei anklicken',
+  clickForPreview: 'Datei anklicken für die Vorschau. Doppelklick zeigt die Spur, Doppelklick auf einen Ordner öffnet ihn.', folderLabel: (n) => 'Ordner ' + n, loadingPreview: 'Vorschau lädt …',
+  pageOf: (p, n) => 'Seite ' + p + ' / ' + n, truncated: '… (gekürzt)', noPreview: 'Keine Vorschau',
+  wholeFolder: (f, n) => 'GANZER Ordner „' + f + '“ (' + n + ' Dateien, auch Unterordner)', selectedFiles: (n, names) => n + ' ausgewählte Datei(en): ' + names,
+  knowledgeExplain: 'ins Wissen: je Datei ein Markdown-Zwilling (per Prüfsumme ans Original gebunden) plus eine Wissenskarte im Wiki (Status: to-review) mit dem Originalpfad. Originale bleiben unverändert.',
+  affiliationPlaceholder: 'Zugehörigkeit (optional, z. B. Meine Firma)', affiliationTip: 'Optional. Leer = „offen“.', makeCards: 'Wissenskarten erzeugen',
+  noMandatory: (c, a) => 'Keine Pflichtfelder: ohne Angaben Sammlung „' + c + '“, Zugehörigkeit „' + a + '“.',
+  intoWhole: 'Ins Wissen (ganzer Ordner)', yesWhole: (n) => 'Ja, ganzen Ordner (' + n + ' Dateien)', intoSelected: (n) => 'Ins Wissen (' + n + ' ausgewählt)',
+  more: 'Mehr …', less: 'Weniger', collectionPlaceholder: (c) => 'Sammlung (leer = ' + c + ')', followCheck: 'Ordner für den Dauerlauf vormerken',
+  followTip: 'Trägt den Ordner in Troves Beobachtungsliste ein. Nur ein optionaler Zeitplan-Job (tools/installieren.py --dauerlauf) nutzt sie; siehe README.',
+  wholeWarn: (n) => 'Nichts angehakt: der GANZE Ordner wird verarbeitet (' + n + ' Dateien, mit Unterordnern). Häkchen setzen, um nur diese zu verarbeiten.',
+  readingNow: 'liest, schreibt Markdown, baut den Index … (OCR braucht je Seite einige Sekunden)',
+  summary: (f, n, s, d, k, e) => f + ' Dateien: ' + n + ' neu, ' + s + ' schon da, ' + d + ' Dubletten, ' + k + ' Karten, ' + e + ' Fehler',
+  followed: 'Ordner für den Dauerlauf vorgemerkt', qmdState: (s) => 'Index: ' + s, qmdSkipped: 'übersprungen (qmd nicht installiert)', inIndex: 'im Index',
+  errorWord: 'FEHLER', cardWord: 'Karte', noCard: 'keine Karte', stNew: 'neu', stThere: 'schon da', stDup: 'Dublette', stError: 'Fehler',
+  runningOcr: 'läuft … (OCR kann je Seite einige Sekunden brauchen)', method: 'Methode', nPages: (n) => n + ' Seiten', verification: 'Verprobung',
+  passedSure: 'bestanden (sicher)', passed: 'bestanden', needsReview: 'Prüfliste', twin: 'Zwilling', batch: 'Stapel', splitSummary: (n, p, s) => n + ' Belege aus ' + p + ' Seiten, ' + s + ' s',
+  pagesRange: (r) => 'Seiten ' + r, bookingVersion: 'Buchungsfassung ohne Anhang', backToPreview: 'zurück zur Vorschau',
+  traceTitle: (f) => 'Spur (Belegprotokoll): ' + f, art_lesen: 'Lesen', art_stapel: 'Zerlegen',
+  trace_direkt: 'direkt', trace_rueckwaerts: 'rückwärts', trace_vorwaerts: 'vorwärts', trace_gleicher_inhalt: 'gleicher Inhalt anderswo',
+  searchPlaceholder: 'Index und Belegprotokoll durchsuchen: Dateiname, Rechnungsnummer, Absender, sha256 …', search: 'Suchen', collapse: 'zu', expand: 'auf', searching: 'suche …',
+  foundUnder: (w, n) => 'liegt ' + w + ' (' + n + '):', receiptLogN: (n) => 'Belegprotokoll (' + n + '):',
+  tasksTitle: 'Aufträge an deine Agenten (Hermes Kanban)', nOpen: (n) => n + ' offen', close: 'schließen', newTask: '+ Auftrag',
+  taskTitlePlaceholder: 'Titel (z. B. Belegstapel in der linken Quelle sichten und Dubletten listen)', taskTextPlaceholder: 'Auftragstext: was genau getan werden soll. Die Karte bleibt gesperrt, bis du sie freigibst.',
+  agent: 'Agent:', defaultAgent: '(Hermes-Standard)', creating: 'lege an …', titleFirst: 'erst Titel oder Text eingeben', createCard: 'Karte anlegen (gesperrt)',
+  startsAfterRelease: 'Der Agent startet erst nach „Freigeben“ in der Liste.', release: 'Freigeben', archive: 'Archivieren'
+}
+// </i18n:de>

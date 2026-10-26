@@ -63,7 +63,7 @@ def nachfuehren(e, embed=True, mandant=None, log=True):
     z = {"ordner": e["ordner"], "sammlung": e["sammlung"], "neu": [], "uebernommen": 0, "geaendert": [], "weg": [], "umbenannt": [], "unveraendert": 0,
          "nur_in_wolke": 0, "fehler": []}
     if not os.path.isdir(e["ordner"]):
-        z["fehler"].append("Ordner nicht erreichbar (nichts als weg markiert): " + e["ordner"])
+        z["fehler"].append("Folder not reachable (nothing marked as gone): " + e["ordner"])
         return z
     sp = _stand_pfad(mandant, e["sammlung"])
     with gm.laufsperre(mandant):
@@ -138,7 +138,7 @@ def nachfuehren(e, embed=True, mandant=None, log=True):
             elif os.path.exists(qmd_offen):
                 os.remove(qmd_offen)
         if aenderungen:
-            w._notiz(l, werkzeug="dauerlauf.py", meldung="Dauerlauf %s: %d neu, %d geaendert, %d weg, %d unveraendert, %d Fehler" % (
+            w._notiz(l, werkzeug="dauerlauf.py", meldung="Continuous run %s: %d new, %d changed, %d gone, %d unchanged, %d errors" % (
                 e["ordner"], len(z["neu"]), len(z["geaendert"]), len(z["weg"]), z["unveraendert"], len(z["fehler"])))
         gm.schreibe_atomar(sp, json.dumps(stand, ensure_ascii=False, indent=1))
     if log:
@@ -153,7 +153,7 @@ def qmd_text(q):
         v = q.get(k)
         if isinstance(v, (list, tuple)) and len(v) == 2 and v[0] != 0:
             teile.append("%s rc %s: %s" % (k, v[0], str(v[1])[-200:].replace("\n", " ")))
-    if isinstance(q.get("index_yml"), str) and q.get("update") == "nicht ausgefuehrt (index.yml)":
+    if isinstance(q.get("index_yml"), str) and q.get("update") == "not run (index.yml)":
         teile.append("index.yml " + q["index_yml"])
     return "; ".join(teile) or "Fehler (ohne Text)"
 
@@ -170,7 +170,7 @@ def lauf(liste, embed=True):
         try:
             out.append(nachfuehren(e, embed=embed, log=False))
         except bp.LaufLaeuft:
-            out.append({"ordner": e.get("ordner"), "uebersprungen": "Lauf laeuft bereits"})
+            out.append({"ordner": e.get("ordner"), "uebersprungen": "a run is already active"})
         except Exception as ex:  # auch ProtokollGesperrt/-Defekt, fehlender Wiki-Ordner, volle Platte: dieser Ordner Fehler, die anderen laufen
             out.append({"ordner": e.get("ordner"), "neu": [], "geaendert": [], "weg": [], "unveraendert": 0,
                         "fehler": ["%s: %s" % (type(ex).__name__, str(ex)[:300])]})
@@ -188,14 +188,14 @@ def lauf(liste, embed=True):
     try:
         gm.schreibe_atomar(marker_pfad(), json.dumps(marker, ensure_ascii=False, indent=1))
     except OSError as ex:
-        marker["fehler"].append("Marker nicht geschrieben: %s" % ex)
+        marker["fehler"].append("Marker not written: %s" % ex)
     return out, marker
 
 
 def logzeilen(out, marker):
     t = time.strftime("%Y-%m-%d %H:%M:%S")
     if not out:
-        return ["%s | nichts zu tun (trove.json ueberwacht leer)" % t] + ["%s | FEHLER %s" % (t, f) for f in marker["fehler"]]
+        return ["%s | nothing to do (trove.json ueberwacht is empty)" % t] + ["%s | ERROR %s" % (t, f) for f in marker["fehler"]]
     zeilen = []
     for z in out:
         if z.get("uebersprungen"):
@@ -204,7 +204,7 @@ def logzeilen(out, marker):
         zeilen.append("%s | %s: %d neu, %d geaendert, %d weg, %d unveraendert, %d Fehler%s" % (
             t, z.get("ordner"), len(z["neu"]), len(z["geaendert"]), len(z["weg"]), z["unveraendert"], len(z["fehler"]),
             "".join(" | FEHLER " + f for f in z["fehler"]) + "".join(" | HINWEIS " + h for h in z.get("hinweise") or [])))
-    return zeilen + ["%s | FEHLER %s" % (t, f) for f in marker["fehler"] if not any(f.startswith(str(z.get("ordner")) + ": ") for z in out)]
+    return zeilen + ["%s | ERROR %s" % (t, f) for f in marker["fehler"] if not any(f.startswith(str(z.get("ordner")) + ": ") for z in out)]
 
 
 def main():
@@ -216,7 +216,7 @@ def main():
     try:
         liste = konfig.lesen().get("ueberwacht", [])
     except Exception as ex:
-        liste, kaputt = [], "trove.json nicht lesbar: %s" % ex
+        liste, kaputt = [], "trove.json not readable: %s" % ex
     else:
         kaputt = None
     out, marker = lauf(liste, embed=not a.ohne_embed)

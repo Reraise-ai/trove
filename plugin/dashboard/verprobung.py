@@ -69,21 +69,21 @@ def verproben(felder, zweite=None):
         regeln["R7_zwei_lesungen"] = None
     gruende = []
     if not regeln["R1_datum"]:
-        gruende.append("Datum fehlt oder unplausibel")
+        gruende.append("date missing or implausible")
     if not regeln["R2_brutto"]:
-        gruende.append("Bruttobetrag fehlt")
+        gruende.append("gross amount missing")
     if regeln["R3_summen"] is False:
-        gruende.append("Summen stimmen nicht (netto+steuer != brutto)")
+        gruende.append("totals do not add up (net+tax != gross)")
     if regeln["R4_cuit"] is False:
-        gruende.append("CUIT-Pruefziffer falsch")
+        gruende.append("CUIT check digit wrong")
     if regeln["R5_iban"] is False:
-        gruende.append("IBAN-Pruefziffer falsch")
+        gruende.append("IBAN check digits wrong")
     if regeln["R6_ustid"] is False:
-        gruende.append("USt-IdNr unvollstaendig")
+        gruende.append("VAT ID incomplete")
     if regeln["R7_zwei_lesungen"] is False:
-        gruende.append("zwei Auslesungen widersprechen sich beim Brutto")
+        gruende.append("two readings disagree on the gross amount")
     if regeln["R3_summen"] is None and regeln["R2_brutto"]:
-        gruende.append("Summen nicht pruefbar (netto/steuer nicht gefunden)")
+        gruende.append("totals cannot be checked (net/tax not found)")
     bestanden = regeln["R1_datum"] and regeln["R2_brutto"] and regeln["R3_summen"] is not False and regeln["R4_cuit"] is not False and regeln["R5_iban"] is not False and regeln["R6_ustid"] is not False and regeln["R7_zwei_lesungen"] is not False
     sicher = bestanden and regeln["R3_summen"] is True
     return {"bestanden": bool(bestanden), "sicher": bool(sicher), "regeln": regeln, "gruende": gruende}
@@ -100,7 +100,7 @@ def verproben_zwilling(mandant, zwilling_pfad, protokollieren=True):
         f.write(json.dumps(zeile, ensure_ascii=False) + "\n")
     if protokollieren:
         bp.schreiben(bp.pfad_fuer(mandant), ereignis="verprobt", quelle=z.get("datei", ""), ziel=zwilling_pfad, sha256=z.get("sha256", ""), werkzeug="verprobung.py", mandant=mandant,
-                     meldung=("bestanden" + (" (sicher)" if v["sicher"] else "")) if v["bestanden"] else ("Prueflist: " + "; ".join(v["gruende"])), bestanden=v["bestanden"], sicher=v["sicher"], regeln=v["regeln"])
+                     meldung=("bestanden" + (" (sicher)" if v["sicher"] else "")) if v["bestanden"] else ("Needs review: " + "; ".join(v["gruende"])), bestanden=v["bestanden"], sicher=v["sicher"], regeln=v["regeln"])
     return zeile
 
 

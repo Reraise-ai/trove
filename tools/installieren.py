@@ -1,12 +1,14 @@
-"""Trove-Plugin in Hermes installieren: Plugin-Dateien + alle Laufzeit-Module + trove.json nach <HERMES_HOME>/plugins/trove/dashboard,
-Desktop-Oberflaeche nach <HERMES_HOME>/desktop-plugins/trove, Eintrag in config.yaml (plugins.enabled), ohne PyYAML. Idempotent.
-HERMES_HOME wie Hermes selbst: Umgebungsvariable, sonst Windows %LOCALAPPDATA%\\hermes, sonst ~/.hermes.
+"""Developer/offline installer: copy the Trove plugin (all runtime modules + trove.json) to <HERMES_HOME>/plugins/trove/dashboard,
+the desktop UI to <HERMES_HOME>/desktop-plugins/trove, and add the entry to config.yaml (plugins.enabled), without PyYAML. Idempotent.
+Not needed when Hermes installs the plugin from the catalog (that covers the plugin files); this script adds the optional parts:
+a private Python venv, the continuous-run scheduler job and the config file.
+HERMES_HOME like Hermes itself: environment variable, else Windows %LOCALAPPDATA%\\hermes, else ~/.hermes.
 Usage:   python installieren.py --mandant kunde --datenwurzel ~/Trove
          With an existing knowledge wiki: ... --wiki-wurzel ~/Wissen/wiki --qmd-standardsuche
-         python installieren.py --pruefen                                  (Gesundheitscheck der Installation)
-Python (Mac Standard, sonst mit --venv): eigenes venv ~/.trove-venv aus /opt/homebrew/bin/python3.12 (oder 3.13, oder --python),
-Pakete pypdfium2 pikepdf numpy pillow (Pflicht) + onnxruntime rapidocr-onnxruntime (Texterkennung, darf scheitern); offline: --wheels <ordner>.
-Nie pip --user. Windows bleibt beim bisherigen Weg (--python oder Suche), ausser --venv wird ausdruecklich gesetzt.
+         python installieren.py --pruefen                                  (health check of the installation)
+Python (Mac default, otherwise with --venv): private venv ~/.trove-venv from /opt/homebrew/bin/python3.12 (or 3.13, or --python),
+packages pypdfium2 pikepdf numpy pillow (required) + onnxruntime rapidocr-onnxruntime (OCR, may fail); offline: --wheels <folder>.
+Never pip --user. Windows keeps the previous way (--python or search) unless --venv is set explicitly.
 """
 import argparse, json, os, re, shutil, subprocess, sys, time
 
@@ -26,7 +28,7 @@ VENV_STANDARD = os.path.join("~", ".trove-venv")
 
 
 def plugins_enabled_setzen(txt):
-    """Fuegt 'trove' in plugins.enabled ein (nur Zeilenarbeit, Rest byteidentisch). Liefert (neuer_text, geaendert)."""
+    """Adds 'trove' to plugins.enabled (line editing only, the rest stays byte-identical). Returns (new_text, changed)."""
     nl = "\r\n" if "\r\n" in txt else "\n"
     z = txt.splitlines(keepends=True)
     ende = lambda s: s.rstrip("\r\n")
@@ -76,19 +78,19 @@ def venv_python(ziel):
 
 
 def basis_python_waehlen(wunsch=None):
-    """Python, aus dem das venv entsteht: --python, sonst Homebrew/usr-local python3.12, dann 3.13, dann python3.12/3.13 im PATH."""
+    """Python the venv is built from: --python, else Homebrew/usr-local python3.12, then 3.13, then python3.12/3.13 on PATH."""
     if wunsch:
         w = os.path.expanduser(wunsch)
         if not os.path.isfile(w):
-            raise SystemExit("FEHLER: Python nicht gefunden: %s" % w)
+            raise SystemExit("ERROR: Python not found: %s" % w)
         return w
     for p in BASIS_PYTHON + tuple(shutil.which(n) or "" for n in ("python3.12", "python3.13")):
         if p and os.path.isfile(p):
             return p
-    raise SystemExit("FEHLER: Kein Python 3.12 oder 3.13 gefunden. Bitte im Terminal ausfuehren:\n"
+    raise SystemExit("ERROR: No Python 3.12 or 3.13 found. Please run in a terminal:\n"
                      "    brew install python@3.12\n"
-                     "und danach den Installer erneut starten. (Mit --python /opt/homebrew/bin/python3.14 geht es auch, "
-                     "dann aber ohne Texterkennung fuer eingescannte Belege.)")
+                     "and then start the installer again. (--python /opt/homebrew/bin/python3.14 works too, "
+                     "but then without OCR for scanned documents.)")
 
 
 def venv_einrichten(basis, ziel, wheels=None, ausgabe=print):
@@ -98,9 +100,9 @@ def venv_einrichten(basis, ziel, wheels=None, ausgabe=print):
     vpy = venv_python(ziel)
     soll = _py_version(basis)
     if not soll:
-        raise SystemExit("FEHLER: %s startet nicht. Anderes Python mit --python angeben oder: brew install python@3.12" % basis)
+        raise SystemExit("ERROR: %s does not start. Give another Python with --python or: brew install python@3.12" % basis)
     if tuple(int(x) for x in soll.split(".")) < (3, 9):
-        raise SystemExit("FEHLER: %s ist Python %s, Trove braucht mindestens 3.9 (empfohlen 3.12): brew install python@3.12" % (basis, soll))
+        raise SystemExit("ERROR: %s is Python %s, Trove needs at least 3.9 (3.12 recommended): brew install python@3.12" % (basis, soll))
     ist = _py_version(vpy) if os.path.isfile(vpy) else None
     if ist != soll:
         if os.path.exists(ziel):  # anderes oder kaputtes venv: beiseitelegen, nicht loeschen
@@ -109,8 +111,8 @@ def venv_einrichten(basis, ziel, wheels=None, ausgabe=print):
             ausgabe("Altes venv beiseitegelegt: %s" % alt)
         r = subprocess.run([basis, "-m", "venv", ziel], capture_output=True, text=True, errors="replace")
         if r.returncode != 0 or not os.path.isfile(vpy):
-            raise SystemExit("FEHLER: venv konnte nicht angelegt werden (%s -m venv %s): %s" % (basis, ziel, (r.stdout + r.stderr).strip()[-400:]))
-        ausgabe("venv angelegt: %s (Python %s)" % (ziel, soll))
+            raise SystemExit("ERROR: could not create the venv (%s -m venv %s): %s" % (basis, ziel, (r.stdout + r.stderr).strip()[-400:]))
+        ausgabe("venv created: %s (Python %s)" % (ziel, soll))
     else:
         ausgabe("venv vorhanden: %s (Python %s)" % (ziel, soll))
     env = dict(os.environ, PIP_USER="0", PIP_DISABLE_PIP_VERSION_CHECK="1")
@@ -118,17 +120,17 @@ def venv_einrichten(basis, ziel, wheels=None, ausgabe=print):
     pip = [vpy, "-m", "pip", "install"] + quelle
     r = subprocess.run(pip + PAKETE_PFLICHT, capture_output=True, text=True, errors="replace", env=env, timeout=3600)
     if r.returncode != 0:
-        tipp = "Wheel-Ordner pruefen (passend zu Python %s)." % soll if wheels else "Internet pruefen oder offline mit --wheels <ordner>."
-        raise SystemExit("FEHLER: Pakete %s liessen sich nicht installieren. %s\n%s" % (" ".join(PAKETE_PFLICHT), tipp, (r.stdout + r.stderr).strip()[-600:]))
+        tipp = "Check the wheel folder (it must match Python %s)." % soll if wheels else "Check the internet connection or go offline with --wheels <folder>."
+        raise SystemExit("ERROR: packages %s could not be installed. %s\n%s" % (" ".join(PAKETE_PFLICHT), tipp, (r.stdout + r.stderr).strip()[-600:]))
     r = subprocess.run(pip + PAKETE_OCR, capture_output=True, text=True, errors="replace", env=env, timeout=3600)
     ocr = r.returncode == 0
     if not ocr:
-        ausgabe("HINWEIS: Texterkennung (%s) nicht installiert - eingescannte Belege werden ohne Texterkennung aufgenommen, "
-                "Text-PDFs und Textdateien gehen normal. (Python %s; die Texterkennung braucht Python 3.12.)" % (" ".join(PAKETE_OCR), soll))
+        ausgabe("NOTE: OCR (%s) is not installed - scanned documents are taken in without text recognition, "
+                "text PDFs and text files work normally. (Python %s; OCR needs Python 3.12.)" % (" ".join(PAKETE_OCR), soll))
     r = subprocess.run([vpy, "-c", "import pypdfium2, pikepdf, numpy, PIL"], capture_output=True, text=True, errors="replace", timeout=120)
     if r.returncode != 0:
-        raise SystemExit("FEHLER: Pakete installiert, aber nicht ladbar in %s: %s" % (vpy, (r.stdout + r.stderr).strip()[-400:]))
-    ausgabe("Pakete im venv: %s%s" % (" ".join(PAKETE_PFLICHT), (" + " + " ".join(PAKETE_OCR)) if ocr else " (ohne Texterkennung)"))
+        raise SystemExit("ERROR: packages installed but not importable in %s: %s" % (vpy, (r.stdout + r.stderr).strip()[-400:]))
+    ausgabe("Packages in the venv: %s%s" % (" ".join(PAKETE_PFLICHT), (" + " + " ".join(PAKETE_OCR)) if ocr else " (without OCR)"))
     return vpy, ocr
 
 
@@ -140,17 +142,17 @@ def plist_text(label, python, skript, minuten, log, home, pfad=None):
 
 
 def qmd_eintragen(k, ausgabe=print):
-    """Absoluten qmd-Pfad als umgebung.TROVE_QMD in trove.json (nicht auf Windows: dort bleibt die bisherige Suche). Liefert den Pfad oder None."""
+    """Absolute qmd path as umgebung.TROVE_QMD in trove.json (not on Windows: the previous search stays there). Returns the path or None."""
     if sys.platform == "win32":
         return None
     um = k.setdefault("umgebung", {})
     q = gesundheit.qmd_finden() or (um.get("TROVE_QMD") if um.get("TROVE_QMD") and os.path.isfile(um["TROVE_QMD"]) else None)
     if q:
         um["TROVE_QMD"] = q
-        ausgabe("qmd gefunden: %s (in trove.json als TROVE_QMD)" % q)
+        ausgabe("qmd found: %s (stored in trove.json as TROVE_QMD)" % q)
     else:
-        ausgabe("WARNUNG: qmd nicht gefunden (gesucht: PATH, %s). \"Ins Wissen\" und der Card-Pusher brauchen qmd; "
-                "nach der Installation von qmd den Installer erneut starten." % ", ".join(gesundheit.qmd_ordner()))
+        ausgabe("WARNING: qmd not found (searched: PATH, %s). \"Into knowledge\" indexes with qmd (without it files are still read and cards written, the index step is skipped); "
+                "after installing qmd, run the installer again." % ", ".join(gesundheit.qmd_ordner()))
     return q
 
 
@@ -163,9 +165,9 @@ def launchagent_laden(label, plist, uid=None, lc=_lc, warte=time.sleep):
     dom = "gui/%d" % (os.getuid() if uid is None else uid)
     ziel = dom + "/" + label
     if lc("print", dom).returncode != 0:
-        return False, ("Keine Bildschirmanmeldung fuer dieses Konto (launchctl-Bereich %s fehlt), z. B. Installation per SSH ohne angemeldeten Bildschirm. "
-                       "Der Dauerlauf ist eingetragen (%s), aber NICHT gestartet. Am Mac mit diesem Konto anmelden und den Installer mit --dauerlauf "
-                       "erneut starten." % (dom, plist))
+        return False, ("No graphical login for this account (launchctl domain %s is missing), e.g. installation over SSH without a logged-in screen. "
+                       "The continuous run is written (%s) but NOT started. Log in at the Mac with this account and run the installer with --dauerlauf "
+                       "again." % (dom, plist))
     r = None
     for versuch in range(2):
         lc("bootout", ziel)  # tolerant: war evtl. nicht geladen
@@ -176,9 +178,9 @@ def launchagent_laden(label, plist, uid=None, lc=_lc, warte=time.sleep):
         r = lc("bootstrap", dom, plist)
         if r.returncode == 0 and lc("print", ziel).returncode == 0:
             lc("kickstart", ziel)  # erster Lauf jetzt statt erst nach dem Intervall
-            return True, "LaunchAgent geladen und erster Lauf gestartet: %s" % ziel
+            return True, "LaunchAgent loaded and first run started: %s" % ziel
         warte(2)
-    return False, ("LaunchAgent konnte nicht geladen werden (launchctl bootstrap %s %s: rc %d %s). Der Dauerlauf laeuft NICHT."
+    return False, ("LaunchAgent could not be loaded (launchctl bootstrap %s %s: rc %d %s). The continuous run is NOT running."
                    % (dom, plist, r.returncode, (r.stdout + r.stderr).strip()[:200]))
 
 
@@ -205,20 +207,20 @@ def dauerlauf_einrichten(minuten, dash, k, home):
             weg = launchagent_entladen(label)
             if os.path.exists(plist):
                 os.replace(plist, plist + ".aus")
-            return weg, ("Dauerlauf abgeschaltet (%s)" % plist) if weg else "Dauerlauf liess sich nicht stoppen (launchctl bootout %s)" % label
+            return weg, ("Continuous run switched off (%s)" % plist) if weg else "The continuous run could not be stopped (launchctl bootout %s)" % label
         os.makedirs(os.path.dirname(plist), exist_ok=True)
         q = (k.get("umgebung") or {}).get("TROVE_QMD")
         with open(plist, "wb") as f:
             f.write(plist_text(label, python, skript, minuten, log, home, gesundheit.such_pfad(q)))
         ok, txt = launchagent_laden(label, plist)
-        return ok, ("Dauerlauf alle %d Min: %s" % (minuten, txt)) if ok else txt
+        return ok, ("Continuous run every %d min: %s" % (minuten, txt)) if ok else txt
     if sys.platform == "win32":
         if minuten == 0:
             r = subprocess.run(["schtasks", "/delete", "/tn", label, "/f"], capture_output=True, text=True, errors="replace")
         else:
             r = subprocess.run(["schtasks", "/create", "/tn", label, "/tr", '"%s" "%s"' % (python, skript), "/sc", "minute", "/mo", str(minuten), "/f"],
                                capture_output=True, text=True, errors="replace")
-        return r.returncode == 0, "Dauerlauf (%s) %s: rc %d %s" % ("aus" if minuten == 0 else "alle %d Min" % minuten, label, r.returncode, (r.stdout + r.stderr).strip()[:200])
+        return r.returncode == 0, "Continuous run (%s) %s: rc %d %s" % ("off" if minuten == 0 else "every %d min" % minuten, label, r.returncode, (r.stdout + r.stderr).strip()[:200])
     return True, "cron-Zeile: */%d * * * * %s %s >> %s 2>&1" % (minuten, python, skript, log)
 
 
@@ -244,13 +246,13 @@ def selbsttest_config():
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--mandant"); ap.add_argument("--datenwurzel"); ap.add_argument("--python"); ap.add_argument("--register-db")
-    ap.add_argument("--wiki-wurzel", help="Ordner wiki/ des Wissenssystems (Standard ~/Wissen/wiki)")
-    ap.add_argument("--qmd-standardsuche", action="store_true", help="QMD-Sammlungen mit includeByDefault true (Standardsuche findet sie)")
-    ap.add_argument("--hermes-home", help="statt HERMES_HOME/Standard"); ap.add_argument("--pruefen", action="store_true")
-    ap.add_argument("--dauerlauf", nargs="?", const=30, type=int, metavar="MINUTEN", help="ueberwachte Ordner alle N Minuten nachfuehren (Standard 30; 0 = abschalten): LaunchAgent (Mac) / geplante Aufgabe (Windows)")
-    ap.add_argument("--venv", nargs="?", const=VENV_STANDARD, metavar="ORDNER", help="eigenes venv anlegen/nutzen (Mac: Standard ~/.trove-venv); --python ist dann das Basis-Python")
-    ap.add_argument("--kein-venv", action="store_true", help="kein venv (Mac); --python wird dann direkt genommen")
-    ap.add_argument("--wheels", metavar="ORDNER", help="Pakete offline aus diesem Ordner (pip --no-index --find-links)")
+    ap.add_argument("--wiki-wurzel", help="wiki/ folder of your knowledge system (default ~/Wissen/wiki)")
+    ap.add_argument("--qmd-standardsuche", action="store_true", help="QMD collections with includeByDefault true (the default search finds them)")
+    ap.add_argument("--hermes-home", help="instead of HERMES_HOME/default"); ap.add_argument("--pruefen", action="store_true")
+    ap.add_argument("--dauerlauf", nargs="?", const=30, type=int, metavar="MINUTEN", help="follow the watched folders every N minutes (default 30; 0 = switch off): LaunchAgent (Mac) / scheduled task (Windows)")
+    ap.add_argument("--venv", nargs="?", const=VENV_STANDARD, metavar="ORDNER", help="create/use a private venv (Mac default ~/.trove-venv); --python is then the base Python")
+    ap.add_argument("--kein-venv", action="store_true", help="no venv (Mac); --python is then used directly")
+    ap.add_argument("--wheels", metavar="ORDNER", help="install packages offline from this folder (pip --no-index --find-links)")
     ap.add_argument("--selbsttest", action="store_true")
     a = ap.parse_args()
     dl_ok, dl_text = True, ""
@@ -260,7 +262,7 @@ def main():
     ziel = os.path.join(home, "plugins", "trove"); dash = os.path.join(ziel, "dashboard")
     if a.pruefen:
         if not os.path.isfile(os.path.join(dash, "gesundheit.py")):
-            sys.exit("Nicht installiert: %s fehlt. Erst installieren." % dash)
+            sys.exit("Not installed: %s is missing. Install first." % dash)
         sys.exit(subprocess.run([sys.executable, os.path.join(dash, "gesundheit.py")], env=dict(os.environ, HERMES_HOME=home)).returncode)
     # Copy the whole plugin directory (modules live in plugin/dashboard); the desktop half goes to desktop-plugins/ below.
     module = sorted(n[:-3] for n in os.listdir(os.path.join(QUELLE, "dashboard")) if n.endswith(".py"))
@@ -315,14 +317,14 @@ def main():
     if geaendert:
         bak = None
         if txt:
-            bak = cfg + ".bak-vor-trove-" + time.strftime("%Y%m%d-%H%M%S")
+            bak = cfg + ".bak-before-trove-" + time.strftime("%Y%m%d-%H%M%S")
             shutil.copyfile(cfg, bak)
         open(cfg, "w", encoding="utf-8", newline="").write(neu)
-        print("config.yaml: plugins.enabled += trove (Sicherung %s)" % bak)
+        print("config.yaml: plugins.enabled += trove (backup %s)" % bak)
     print(json.dumps({"hermes_home": home, "ziel": ziel, "desktop_root": droot, "module": module, "trove_json": k, "config_geaendert": geaendert}, ensure_ascii=False))
-    print("Naechster Schritt: Hermes neu starten; Gesundheitscheck: python %s --pruefen" % os.path.abspath(__file__))
+    print("Next step: restart Hermes; health check: python %s --pruefen" % os.path.abspath(__file__))
     if not dl_ok:
-        sys.exit("FEHLER Dauerlauf: " + dl_text)
+        sys.exit("ERROR continuous run: " + dl_text)
 
 
 if __name__ == "__main__":

@@ -124,7 +124,7 @@ def python_finden(modul=None):
     fest = os.environ.get("TROVE_PYTHON")
     if fest:
         if not os.path.exists(fest):
-            raise RuntimeError("Python aus TROVE_PYTHON/trove.json nicht gefunden: %s. Pfad in trove.json (\"python\") korrigieren." % fest)
+            raise RuntimeError("Python from TROVE_PYTHON/trove.json not found: %s. Correct the path in trove.json (\"python\")." % fest)
         return fest
     if modul in _python_cache:
         return _python_cache[modul]

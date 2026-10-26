@@ -148,7 +148,7 @@ def zerlegen(pfad, mandant="haus", ocr="rapidocr", ausgabe=None, protokollieren=
             manifest["belege"].append(eintrag)
             if prot:
                 prot.schreiben("zerlegt", quelle=pfad, ziel=p, sha256=eintrag["sha256"], bytes_=os.path.getsize(p), werkzeug="stapel.py/stirling", mandant=mandant, lauf="stapel-" + stapel_sha[:12],
-                               meldung="Beleg %d von %d: Seiten %d-%d, Arten %s%s" % (i, len(gruppen), g["von"], g["bis"], "/".join(eintrag["arten"]), (", Buchungsfassung ohne Anhangseiten %s" % g["anhangseiten"]) if buch_pfad else ""),
+                               meldung="Document %d of %d: pages %d-%d, kinds %s%s" % (i, len(gruppen), g["von"], g["bis"], "/".join(eintrag["arten"]), (", booking version without attachment pages %s" % g["anhangseiten"]) if buch_pfad else ""),
                                stapel_sha256=stapel_sha, seiten=eintrag["seiten"], nummer=g.get("nummer"), buchungsfassung=buch_pfad, buchungsfassung_sha256=eintrag["buchungsfassung_sha256"])
         manifest["dauer_s"] = round(time.time() - t0, 2)
         with open(os.path.join(ziel, "manifest.json"), "w", encoding="utf-8") as f:

@@ -1,7 +1,7 @@
 """Trove: knowledge card for a wiki (raw/ = sources, wiki/ = maintained pages).
 The text twin (derived, not a copy of the original; its head carries the original path + sha256) lives under <wiki>/../raw/trove/<collection>/;
-the card is wiki/quellen/trove-<sha16>-<slug>.md with page head typ/quellen/stand/status (status: zu-pruefen, "to review", with umlaut).
-wiki/log.md: ONE line per run (log_lauf), "YYYY-MM-DD HH:MM | Trove | <n> Karten / Seiten | Widersprüche: 0", before the closing ``` of the
+the card is wiki/quellen/trove-<sha16>-<slug>.md with page head typ/quellen/stand/status (status: to-review; override with TROVE_CARD_STATUS).
+wiki/log.md: ONE line per run (log_lauf), "YYYY-MM-DD HH:MM | Trove | <n> cards / pages | contradictions: 0", before the closing ``` of the
 code block; appended if there is no code block. Never a double card: file exists = card existed.
 Setting: wiki_wurzel in trove.json / TROVE_WIKI (default <data root>/knowledge/wiki, created on demand; a custom path must exist).
 Author (new cards only): head lines created_by (which agent wrote the card: TROVE_AGENT, default "trove") and source (original file).
@@ -15,6 +15,7 @@ import unicodedata
 import gemeinsam as gm
 import konfig
 
+STATUS_NEU = os.environ.get("TROVE_CARD_STATUS", "to-review")  # status line of a new card; a human changes it after review
 GEAENDERT = []  # Wiki-Seiten, die dieser Lauf neu geschrieben oder markiert hat (log_lauf schreibt daraus eine Zeile)
 
 
@@ -63,9 +64,9 @@ def karte_schreiben(sammlung, md, sha, titel, inhalt, quelle=None, zugehoerigkei
     src = " ".join(str(quelle or rel).split())
     ordner = " ".join(os.path.dirname(str(quelle)).split()) if quelle else ""
     zug = " ".join(str(zugehoerigkeit or "offen").split())
-    seite = ("---\ntyp: quelle\nquellen: [%s]\nstand: %s\nstatus: zu-prüfen\ncreated_by: %s\nsource: %s\n%szugehoerigkeit: %s\n---\n\n# %s\n\n%s\n\n"
-             "%sZwilling: `%s` (Prüfsumme sha256 `%s`)\n" % (rel, heute, urheber(), src, ("ordner: %s\n" % ordner) if ordner else "", zug, titel,
-                                                              inhalt.strip(), ("Ordner bei dir: `%s`  \n" % ordner) if ordner else "", rel, sha))
+    seite = ("---\ntyp: quelle\nquellen: [%s]\nstand: %s\nstatus: %s\ncreated_by: %s\nsource: %s\n%szugehoerigkeit: %s\n---\n\n# %s\n\n%s\n\n"
+             "%sTwin: `%s` (checksum sha256 `%s`)\n" % (rel, heute, STATUS_NEU, urheber(), src, ("ordner: %s\n" % ordner) if ordner else "", zug, titel,
+                                                              inhalt.strip(), ("Source folder: `%s`  \n" % ordner) if ordner else "", rel, sha))
     os.makedirs(os.path.dirname(pfad), exist_ok=True)
     gm.schreibe_atomar(pfad, seite)
     GEAENDERT.append(pfad)
@@ -79,7 +80,7 @@ def kopf_setzen(pfad, key, wert):
         text = fh.read()
     roh, ende = gm.kopf_grenzen(text)
     if ende < 0:
-        raise ValueError("Datei ohne Kopfdaten: " + pfad)
+        raise ValueError("File has no head data: " + pfad)
     zeilen = roh.split("\n")
     neu = "%s: %s" % (key, wert)
     i = next((k for k, z in enumerate(zeilen) if z.startswith(key + ":")), None)
@@ -108,12 +109,12 @@ def log_einfuegen(alt, zeile):
 
 
 def log_lauf(widersprueche=0):
-    """EINE Zeile je Lauf in wiki/log.md, nur wenn der Lauf Wiki-Seiten geschrieben/markiert hat. Liefert die Zeile oder None."""
+    """ONE line per run in wiki/log.md, only if the run wrote or marked wiki pages. Returns the line or None."""
     n = len(set(GEAENDERT))
     GEAENDERT.clear()
     if not n:
         return None
-    zeile = "%s | Trove | %d Karten / Seiten | Widersprüche: %d" % (time.strftime("%Y-%m-%d %H:%M"), n, widersprueche)
+    zeile = "%s | Trove | %d cards / pages | contradictions: %d" % (time.strftime("%Y-%m-%d %H:%M"), n, widersprueche)
     logp = os.path.join(wiki_wurzel(), "log.md")
     alt = open(logp, encoding="utf-8").read() if os.path.exists(logp) else ""
     gm.schreibe_atomar(logp, log_einfuegen(alt, zeile))
@@ -122,9 +123,9 @@ def log_lauf(widersprueche=0):
 
 def selbsttest():
     import tempfile
-    blk = "# Log\n\n```\n2026-10-01 09:00 | Einrichtung | index.md | Widersprüche: 0\n```\n\nNachsatz\n"
+    blk = "# Log\n\n```\n2026-10-01 09:00 | Setup | index.md | contradictions: 0\n```\n\nAfterword\n"
     neu = log_einfuegen(blk, "Z")
-    assert neu == "# Log\n\n```\n2026-10-01 09:00 | Einrichtung | index.md | Widersprüche: 0\nZ\n```\n\nNachsatz\n", repr(neu)
+    assert neu == "# Log\n\n```\n2026-10-01 09:00 | Setup | index.md | contradictions: 0\nZ\n```\n\nAfterword\n", repr(neu)
     assert log_einfuegen("", "Z") == "Z\n" and log_einfuegen("a", "Z") == "a\nZ\n"
     assert log_einfuegen("```\noffen\n", "Z") == "```\noffen\nZ\n"  # offener Block: anhaengen
     with tempfile.TemporaryDirectory() as t:
@@ -133,9 +134,9 @@ def selbsttest():
         assert log_lauf() is None  # nichts geaendert: keine Zeile
         GEAENDERT.extend(["a", "b", "a"])
         z = log_lauf()
-        assert re.fullmatch(r"\d{4}-\d\d-\d\d \d\d:\d\d \| Trove \| 2 Karten / Seiten \| Widersprüche: 0", z), z
+        assert re.fullmatch(r"\d{4}-\d\d-\d\d \d\d:\d\d \| Trove \| 2 cards / pages \| contradictions: 0", z), z
         text = open(os.path.join(t, "log.md"), encoding="utf-8").read()
-        assert text.count(z) == 1 and text.index(z) < text.rindex("```") and text.endswith("```\n\nNachsatz\n"), text
+        assert text.count(z) == 1 and text.index(z) < text.rindex("```") and text.endswith("```\n\nAfterword\n"), text
         assert not GEAENDERT
 
 

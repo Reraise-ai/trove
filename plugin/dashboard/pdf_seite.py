@@ -8,9 +8,9 @@ try:
     doc = pdfium.PdfDocument(sys.argv[1])
     n = len(doc)
 except Exception:
-    sys.exit("PDF ist verschluesselt oder leer")
+    sys.exit("PDF is encrypted or empty")
 if n == 0:
-    sys.exit("PDF ist verschluesselt oder leer")
+    sys.exit("PDF is encrypted or empty")
 seite = min(max(int(sys.argv[2]), 0), n - 1)
 bild = doc[seite].render(scale=1.6).to_pil()
 buf = io.BytesIO(); bild.save(buf, format="PNG"); png = buf.getvalue()

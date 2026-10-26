@@ -16,8 +16,8 @@ sys.path.insert(0, HIER)
 import konfig  # noqa: E402
 
 PAKETE = (("pypdfium2", "pypdfium2"), ("pikepdf", "pikepdf"), ("numpy", "numpy"), ("PIL", "pillow"))
-OCR = (("onnxruntime", "onnxruntime"), ("rapidocr_onnxruntime", "rapidocr-onnxruntime"))  # fehlt -> nur Hinweis "Scans ohne Texterkennung"
-SCHLECHT = ("fehlt", "offen")  # GESAMT "in Ordnung" nur ohne diese
+OCR = (("onnxruntime", "onnxruntime"), ("rapidocr_onnxruntime", "rapidocr-onnxruntime"))  # missing -> only a note "scans are not read"
+SCHLECHT = ("missing", "pending")  # overall ok only without these
 
 
 def qmd_ordner():
@@ -138,10 +138,10 @@ def plugins_liste(txt):
 
 def _alter_text(sek):
     if sek < 120:
-        return "vor %d s" % sek
+        return "%d s ago" % sek
     if sek < 7200:
-        return "vor %d Min." % (sek // 60)
-    return "vor %.1f Std." % (sek / 3600)
+        return "%d min ago" % (sek // 60)
+    return "%.1f h ago" % (sek / 3600)
 
 
 def _zeit(t):
@@ -164,30 +164,30 @@ def _anzahl(x):
 def letzter_lauf(pfad, minuten=None, jetzt=None):
     """Punkt 'Letzter Dauerlauf' aus dem Marker {zeit, ordner, neu, geaendert, weg, fehler:[...]} (dauerlauf.py)."""
     import datetime
-    name = "Letzter Dauerlauf"
+    name = "Last continuous run"
     if not os.path.isfile(pfad):
-        return _punkt(name, "offen", "noch kein Lauf (%s fehlt)" % pfad, "Kommt nach dem ersten Lauf des Dauerlaufs von selbst. Sofort: launchctl kickstart gui/$(id -u)/<Label> (Mac).")
+        return _punkt(name, "pending", "no run yet (%s is missing)" % pfad, "Appears after the first continuous run. Immediately: launchctl kickstart gui/$(id -u)/<label> (Mac).")
     try:
         m = json.load(open(pfad, encoding="utf-8"))
     except (OSError, ValueError) as ex:
-        return _punkt(name, "fehlt", "Marker nicht lesbar: %s" % ex)
+        return _punkt(name, "missing", "marker not readable: %s" % ex)
     z = _zeit(m.get("zeit"))
     alter = None
     if z is not None:
         jetzt = jetzt or (datetime.datetime.now(z.tzinfo) if z.tzinfo else datetime.datetime.now())
         alter = max(0, int((jetzt - z).total_seconds()))
     ordner = m.get("ordner")
-    detail = "%s (%s): %d Ordner, %d neu, %d geaendert, %d weg" % (m.get("zeit"), _alter_text(alter) if alter is not None else "Zeit unbekannt",
+    detail = "%s (%s): %d folders, %d new, %d changed, %d gone" % (m.get("zeit"), _alter_text(alter) if alter is not None else "time unknown",
                                                                 _anzahl(ordner), _anzahl(m.get("neu")), _anzahl(m.get("geaendert")), _anzahl(m.get("weg")))
     fehler = m.get("fehler") or []
     if fehler:
-        mehr = " (+%d weitere)" % (len(fehler) - 3) if len(fehler) > 3 else ""
-        hilfe = "Steht dort 'Ordner nicht lesbar': siehe Punkt 'Ueberwachte Ordner lesbar'. Volles Protokoll: dauerlauf.log in der Datenwurzel."
-        return _punkt(name, "fehlt", detail + "; %d Fehler: %s%s" % (len(fehler), " | ".join(str(f) for f in fehler[:3]), mehr), hilfe)
+        mehr = " (+%d more)" % (len(fehler) - 3) if len(fehler) > 3 else ""
+        hilfe = "If it says 'Folder not readable': see the 'Folder readable' lines. Full log: dauerlauf.log in the data root."
+        return _punkt(name, "missing", detail + "; %d errors: %s%s" % (len(fehler), " | ".join(str(f) for f in fehler[:3]), mehr), hilfe)
     if minuten and alter is not None and alter > (3 * minuten + 5) * 60:
-        return _punkt(name, "fehlt", detail + "; zu alt (Takt alle %d Min.) - der Dauerlauf laeuft offenbar nicht" % minuten,
-                      "Installer erneut mit --dauerlauf %d starten (am Mac angemeldet), dann Gesundheitscheck wiederholen." % minuten)
-    return _punkt(name, "ok", detail + ", keine Fehler")
+        return _punkt(name, "missing", detail + "; too old (interval %d min) - the continuous run does not seem to be running" % minuten,
+                      "Run the installer again with --dauerlauf %d (logged in on the Mac), then repeat the health check." % minuten)
+    return _punkt(name, "ok", detail + ", no errors")
 
 
 def _dienst_geladen(label):
@@ -197,14 +197,14 @@ def _dienst_geladen(label):
             plist = os.path.join(os.path.expanduser("~"), "Library", "LaunchAgents", label + ".plist")
             r = subprocess.run(["launchctl", "print", "gui/%d/%s" % (os.getuid(), label)], capture_output=True, text=True, errors="replace", timeout=20)
             if r.returncode == 0:
-                return True, "geladen (%s)" % plist
-            return False, ("nicht geladen; %s" % ("plist liegt da: " + plist if os.path.isfile(plist) else "keine plist " + plist))
+                return True, "loaded (%s)" % plist
+            return False, ("not loaded; %s" % ("plist exists: " + plist if os.path.isfile(plist) else "no plist " + plist))
         if sys.platform == "win32":
             r = subprocess.run(["schtasks", "/query", "/tn", label], capture_output=True, text=True, errors="replace", timeout=20)
-            return r.returncode == 0, "geplante Aufgabe %s %s" % (label, "vorhanden" if r.returncode == 0 else "fehlt")
+            return r.returncode == 0, "scheduled task %s %s" % (label, "exists" if r.returncode == 0 else "is missing")
     except (OSError, subprocess.SubprocessError) as ex:
-        return False, "nicht pruefbar: %s" % ex
-    return None, "kein LaunchAgent auf diesem System (cron)"
+        return False, "cannot check: %s" % ex
+    return None, "no LaunchAgent on this system (cron)"
 
 
 
@@ -228,21 +228,21 @@ def bericht():
         p.append(_punkt("Python for Trove", "ok", py + (" (from trove.json)" if os.environ.get("TROVE_PYTHON") else " (with pypdfium2)")))
     except RuntimeError as ex:
         py = None
-        p.append(_punkt("Python for Trove", "fehlt", str(ex), "Install the packages listed in plugin.yaml (pip install pypdfium2 pikepdf numpy pillow)."))
+        p.append(_punkt("Python for Trove", "missing", str(ex), "Install the packages listed in plugin.yaml (pip install pypdfium2 pikepdf numpy pillow)."))
     try:
         exe = py or konfig.python_finden(None)
         code = "import importlib,json;r={}\nfor m in %r:\n  try: importlib.import_module(m); r[m]=1\n  except Exception: r[m]=0\nprint(json.dumps(r))" % ([m for m, _ in PAKETE + OCR],)
         erg = json.loads(subprocess.run([exe, "-c", code], capture_output=True, text=True, timeout=120, env=konfig.kind_env()).stdout.strip().splitlines()[-1])
         pip = '"%s" -m pip install ' % exe
         for m, name in PAKETE:
-            p.append(_punkt("Package " + name, "ok" if erg.get(m) else "fehlt", "importable" if erg.get(m) else "not installed (needed for reading, splitting and Into knowledge)",
+            p.append(_punkt("Package " + name, "ok" if erg.get(m) else "missing", "importable" if erg.get(m) else "not installed (needed for reading, splitting and Into knowledge)",
                             "" if erg.get(m) else pip + name))
         fehlt_ocr = [name for m, name in OCR if not erg.get(m)]
-        p.append(_punkt("Text recognition (scans)", "hinweis" if fehlt_ocr else "ok",
+        p.append(_punkt("Text recognition (scans)", "note" if fehlt_ocr else "ok",
                         ("scans are not read (missing: %s); text PDFs and text files work normally" % ", ".join(fehlt_ocr)) if fehlt_ocr else "rapidocr importable",
                         (pip + " ".join(fehlt_ocr)) if fehlt_ocr else ""))
     except (RuntimeError, OSError, ValueError, IndexError, subprocess.SubprocessError) as ex:
-        p.append(_punkt("Packages", "fehlt", "cannot check: %s" % ex))
+        p.append(_punkt("Packages", "missing", "cannot check: %s" % ex))
     w = konfig.datenwurzel()
     try:
         os.makedirs(w, exist_ok=True)
@@ -251,19 +251,19 @@ def bericht():
         os.remove(t)
         p.append(_punkt("Data root writable", "ok", w))
     except OSError as ex:
-        p.append(_punkt("Data root writable", "fehlt", "%s: %s" % (w, ex), "Set a writable data folder (TROVE_DATEN or datenwurzel in trove.json)."))
+        p.append(_punkt("Data root writable", "missing", "%s: %s" % (w, ex), "Set a writable data folder (TROVE_DATEN or datenwurzel in trove.json)."))
     api = _plugin_api()
     if api:
         soll = laufzeit_module(api, HIER)
         fehlt = [n for n in soll if not os.path.isfile(os.path.join(HIER, n + ".py"))]
-        p.append(_punkt("Modules complete", "fehlt" if fehlt else "ok", ("missing: " + ", ".join(fehlt)) if fehlt else "%d modules" % len(soll), "Reinstall the plugin." if fehlt else ""))
+        p.append(_punkt("Modules complete", "missing" if fehlt else "ok", ("missing: " + ", ".join(fehlt)) if fehlt else "%d modules" % len(soll), "Reinstall the plugin." if fehlt else ""))
     qmd = qmd_finden()
     if not qmd:
         p.append(_punkt("Search tool qmd", "optional", "not found - Into knowledge still writes twins and cards, it just skips the search index",
                         "Optional: npm install -g @tobilu/qmd"))
     else:
         rc, aus = _qmd_lauf(qmd, "--version", timeout=30)
-        p.append(_punkt("Search tool qmd", "ok" if rc == 0 else "fehlt", ("%s, %s" % (qmd, aus.splitlines()[0] if aus else "?")) if rc == 0 else "%s does not start: %s" % (qmd, aus[-200:]),
+        p.append(_punkt("Search tool qmd", "ok" if rc == 0 else "missing", ("%s, %s" % (qmd, aus.splitlines()[0] if aus else "?")) if rc == 0 else "%s does not start: %s" % (qmd, aus[-200:]),
                         "" if rc == 0 else "Is node installed? Reinstall qmd."))
     try:
         import wissenskarte as wk
@@ -271,7 +271,7 @@ def bericht():
         p.append(_punkt("Knowledge folder (wiki)", "ok" if os.path.isdir(ww) else "optional", ww + (" exists" if os.path.isdir(ww) else " will be created on the first Into knowledge run"),
                         ""))
     except ValueError as ex:
-        p.append(_punkt("Knowledge folder (wiki)", "fehlt", str(ex), "Fix wiki_wurzel in trove.json or unset TROVE_WIKI."))
+        p.append(_punkt("Knowledge folder (wiki)", "missing", str(ex), "Fix wiki_wurzel in trove.json or unset TROVE_WIKI."))
     ueberwacht = k.get("ueberwacht") or []
     minuten = k.get("dauerlauf_minuten")
     noetig = bool(ueberwacht) or bool(minuten)
@@ -280,7 +280,7 @@ def bericht():
     if geladen is None:
         p.append(_punkt("Continuous run (scheduler)", "optional", det))
     else:
-        p.append(_punkt("Continuous run (scheduler)", "ok" if geladen else ("fehlt" if noetig else "optional"),
+        p.append(_punkt("Continuous run (scheduler)", "ok" if geladen else ("missing" if noetig else "optional"),
                         det if noetig or geladen else "not set up (no watched folders)",
                         "" if geladen else "Optional: python tools/installieren.py ... --dauerlauf 30 (installs an OS scheduler job)"))
     for e in ueberwacht:
@@ -290,7 +290,7 @@ def bericht():
             p.append(_punkt("Folder readable: " + o, "ok", "%d entries visible" % n))
         except OSError as ex:
             nicht_da = not os.path.exists(o)
-            p.append(_punkt("Folder readable: " + o, "fehlt", "folder does not exist" if nicht_da else "folder not readable (%s)" % ex.strerror,
+            p.append(_punkt("Folder readable: " + o, "missing", "folder does not exist" if nicht_da else "folder not readable (%s)" % ex.strerror,
                             "Moved or renamed? Add it to Into knowledge again." if nicht_da else
                             ("macOS blocks reading: System Settings > Privacy & Security > Full Disk Access > add %s." % (k.get("python") or "the Python used by Trove")) if mac else ""))
     if noetig or os.path.isfile(os.path.join(w, "dauerlauf_letzter_lauf.json")):
@@ -307,7 +307,7 @@ def text(b):
     z = ["Trove health: client %s, data %s" % (b["mandant"], b["datenwurzel"])]
     for x in b["punkte"]:
         z.append("  [%-8s] %s: %s%s" % (x["status"], x["name"], x["detail"], ("  ->  " + x["hilfe"]) if x["hilfe"] else ""))
-    z.append("OVERALL: " + ("ok" if b["ok"] else "something is missing (see lines marked [fehlt] or [offen])"))
+    z.append("OVERALL: " + ("ok" if b["ok"] else "something is missing (see lines marked [missing] or [pending])"))
     return "\n".join(z)
 
 

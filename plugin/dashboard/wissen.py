@@ -165,7 +165,7 @@ def docx_text(pfad):
     with zipfile.ZipFile(pfad) as z:
         info = z.getinfo("word/document.xml")
         if info.file_size > 8 * MAX_TEXT_BYTES:
-            raise ValueError("Word-Datei zu gross (document.xml %d Bytes)" % info.file_size)
+            raise ValueError("Word file too large (document.xml %d bytes)" % info.file_size)
         wurzel = ET.fromstring(z.read(info))
     return "\n".join("".join(t.text or "" for t in p.iter(w + "t")) for p in wurzel.iter(w + "p"))[:MAX_TEXT_BYTES]
 
@@ -182,8 +182,8 @@ def _lesen(pfad, max_seiten, sha):
         return {"text": text, "methode": methode, "seiten": 1, "gelesene_seiten": 1, "dauer_s": 0.0,
                 "felder": lt.felder_aus_text(text), "sha256": sha}
     if not fitz_da():
-        raise FitzFehlt("PDF/Bild nicht gelesen: Paket pypdfium2 fehlt im Python %s (Gesundheitscheck nennt den Befehl). "
-                        "Text-, Markdown- und Word-Dateien werden gelesen." % sys.executable)
+        raise FitzFehlt("PDF/image not read: package pypdfium2 is missing in Python %s (the health check names the command). "
+                        "Text, markdown and Word files are read." % sys.executable)
     if klein.endswith(UMWANDELN):
         return _umgewandelt_lesen(pfad, max_seiten, sha)
     return lt.lesen(pfad, "rapidocr", False, max_seiten)
@@ -208,20 +208,20 @@ def _umgewandelt_lesen(pfad, max_seiten, sha):
             try:
                 r = subprocess.run(["sips", "-s", "format", "jpeg", pfad, "--out", ziel], capture_output=True, text=True, timeout=120)
             except FileNotFoundError:
-                raise ValueError(".heic nicht gelesen: die Umwandlung braucht das macOS-Werkzeug sips")
+                raise ValueError(".heic not read: conversion needs the macOS tool sips")
             if r.returncode or not os.path.isfile(ziel):
-                raise ValueError(".heic nicht gelesen: sips meldet %s" % ((r.stderr or r.stdout).strip()[:200] or "Fehler %d" % r.returncode))
+                raise ValueError(".heic not read: sips reports %s" % ((r.stderr or r.stdout).strip()[:200] or "error %d" % r.returncode))
             art = "heic->jpeg"
         else:
             if not zipfile.is_zipfile(pfad):
-                raise ValueError("%s nicht gelesen: keine Ein-Datei-Ablage (beschaedigt oder anderes Format)" % typ)
+                raise ValueError("%s not read: not a single-file package (damaged or other format)" % typ)
             with zipfile.ZipFile(pfad) as z:
                 namen = {n.lower(): n for n in z.namelist()}
                 treffer = next((namen[k] for k in IWORK_VORSCHAU if k in namen), None)
                 if not treffer:
-                    raise ValueError("%s nicht gelesen: keine eingebettete Vorschau im Dokument (im Programm als PDF exportieren)" % typ)
+                    raise ValueError("%s not read: no embedded preview in the document (export it as PDF from the app)" % typ)
                 if z.getinfo(treffer).file_size > MAX_VORSCHAU_BYTES:
-                    raise ValueError("%s nicht gelesen: Vorschau zu gross" % typ)
+                    raise ValueError("%s not read: preview too large" % typ)
                 ziel = os.path.join(tmp, "vorschau" + os.path.splitext(treffer)[1].lower())
                 with open(ziel, "wb") as fh:
                     fh.write(z.read(treffer))
@@ -231,13 +231,14 @@ def _umgewandelt_lesen(pfad, max_seiten, sha):
     return erg
 
 
-LESEKOPIE = "Dies ist eine Lesekopie, nicht die Datei selbst."
-KEIN_TEXT = "(kein Text erkannt)"
+LESEKOPIE = "This is a reading copy, not the file itself."
+KEIN_TEXT = "(no text recognised)"
+KEIN_TEXT_ALT = "(kein Text erkannt)"  # twins written by earlier versions
 
 
 def original_zeile(pfad):
     """Erste Textzeile jedes Zwillings: wo das Original liegt (absolut). Der Agent soll diesen Pfad nennen, nicht den Zwilling."""
-    return "Original liegt bei dir unter: %s" % pfad
+    return "Original is located at: %s" % pfad
 
 
 def hinweis_kopf(pfad):
@@ -247,7 +248,7 @@ def hinweis_kopf(pfad):
 def lesbarer_text(md_text):
     """Text des Zwillings (Abschnitt '## Text') oder "", wenn nichts Lesbares darin steht (leer, Platzhalter, nur Zeichen ohne Buchstabe/Ziffer)."""
     text = md_text.split("\n## Text\n", 1)[1].strip() if "\n## Text\n" in md_text else ""
-    return text if text != KEIN_TEXT and re.search(r"\w", text) else ""
+    return text if text not in (KEIN_TEXT, KEIN_TEXT_ALT) and re.search(r"\w", text) else ""
 
 
 def inhaltszeile_mit_titel(md_text, n=200):
@@ -255,7 +256,7 @@ def inhaltszeile_mit_titel(md_text, n=200):
     anfang = inhaltszeile(md_text, n) if lesbarer_text(md_text) else ""
     if not anfang:
         return ""
-    return ("Inhalt (Anfang): " if anfang.endswith(" …") else "Inhalt: ") + anfang
+    return ("Content (start): " if anfang.endswith(" …") else "Content: ") + anfang
 
 
 def inhaltszeile(md_text, n=200):
@@ -281,9 +282,9 @@ def markdown_erzeugen(l, pfad):
     if vorhanden:
         kopf, text = zwilling_lesen(vorhanden[0])
         if kopf.get("pruefsumme") != sha:
-            raise ValueError("Zwilling %s gehoert nicht zu sha256 %s (Kopf: %s)" % (vorhanden[0], sha, kopf.get("pruefsumme")))
+            raise ValueError("Twin %s does not belong to sha256 %s (head: %s)" % (vorhanden[0], sha, kopf.get("pruefsumme")))
         if kopf.get("sichtbarkeit") != regel["sichtbarkeit"]:
-            raise ValueError("Sichtbarkeit weicht ab (vorhanden: %s) in %s" % (kopf.get("sichtbarkeit"), vorhanden[0]))
+            raise ValueError("Visibility differs (existing: %s) in %s" % (kopf.get("sichtbarkeit"), vorhanden[0]))
         roh, ende = gm.kopf_grenzen(text)
         if any(c in roh for c in "\u2028\u2029\u0085"):
             gm.schreibe_atomar(vorhanden[0], "---\n" + "\n".join("%s: %s" % (k, gm.yaml_wert(w)) for k, w in kopf.items()) + text[ende:])
@@ -305,13 +306,13 @@ def markdown_erzeugen(l, pfad):
     gruende = (" (" + "; ".join(gruende) + ")") if gruende else ""
     zeilen = ["---"] + ["%s: %s" % (k, gm.yaml_wert(w)) for k, w in kopf.items()] + ["---", "", original_zeile(pfad) + "  ", LESEKOPIE, "",
               "# " + os.path.basename(pfad), "",
-              "Original: `%s`  " % pfad, "Pruefsumme (sha256): `%s`  " % sha,
-              "Gelesen: %s, %s Seiten, Verprobung %s%s" % (erg["methode"], erg["seiten"], verprobung, gruende), "",
+              "Original: `%s`  " % pfad, "Checksum (sha256): `%s`  " % sha,
+              "Read: %s, %s pages, verification %s%s" % (erg["methode"], erg["seiten"], verprobung, gruende), "",
               "## Felder", ""]
     zeilen += ["- %s: %s" % (k, w) for k, w in f.items() if w not in (None, "")]
     zeilen += ["", "## Text", "", (erg.get("text") or "").strip() or KEIN_TEXT, ""]
     inhalt = "\n".join(zeilen)
-    meldung = "Markdown-Zwilling fuer das Wissen (%s, %s Seiten, Verprobung %s, Sichtbarkeit %s)"
+    meldung = "Markdown twin for the knowledge base (%s, %s pages, verification %s, visibility %s)"
     with _prot(l.mandant) as prot:
         prot.schreiben("gelesen", quelle=pfad, ziel=md, sha256=sha, bytes_=os.path.getsize(pfad), werkzeug="wissen.py",
                        mandant=l.mandant, lauf=l.name, meldung=meldung % (erg["methode"], erg["seiten"], verprobung, l.sichtbarkeit),
@@ -324,7 +325,7 @@ def markdown_erzeugen(l, pfad):
 
 def _qmd_pruefen(ordner):
     if QMD_VERBOTEN & set(ordner):
-        raise ValueError("Ordnerpfad enthaelt fuer qmd.cmd verbotene Zeichen (&|<>^%%\"!): %r" % ordner)
+        raise ValueError("Folder path contains characters forbidden for qmd.cmd (&|<>^%%\"!): %r" % ordner)
 
 
 def _qmd_da():
@@ -347,7 +348,7 @@ def _qmd(*args, timeout=300):
             p.communicate(timeout=30)
         except subprocess.TimeoutExpired:
             pass
-        raise RuntimeError("qmd %s: Zeit abgelaufen (%d s), Prozessbaum beendet" % (args[0], timeout))
+        raise RuntimeError("qmd %s: timed out (%d s), process tree terminated" % (args[0], timeout))
     return p.returncode, (out or "").strip()
 
 
@@ -384,15 +385,15 @@ def kartentext(kopf, md_text, md, l):
     """Private Karte: voller Zwilling (gekuerzt) mit Verweis auf Zwilling und Sammlung."""
     _, ende = gm.kopf_grenzen(md_text)
     body = md_text[ende + 5:] if ende >= 0 else md_text
-    kurz = body[:6000] + ("\n\n(gekuerzt; Volltext im Markdown-Zwilling)\n" if len(body) > 6000 else "")
-    kopfzeile = "**Markdown-Zwilling:** `%s`  \n**Trove-Sammlung:** `trove-%s-%s` (QMD, `-c`)  \n**Verprobung:** %s\n\n"
+    kurz = body[:6000] + ("\n\n(shortened; full text in the markdown twin)\n" if len(body) > 6000 else "")
+    kopfzeile = "**Markdown twin:** `%s`  \n**Trove collection:** `trove-%s-%s` (qmd, `-c`)  \n**Verification:** %s\n\n"
     return kopfzeile % (md, l.mandant, l.sammlung, kopf.get("verprobung")) + kurz
 
 
 def privat_titel(kopf):
     """Titel privater Karten, nur aus dem Zwilling-Kopf: [Belegdatum ]titel[ — Brutto Waehrung]."""
     if not kopf.get("titel"):
-        raise ValueError("Zwilling ohne titel im Kopf")
+        raise ValueError("Twin has no title in its head")
     t = ("%s " % kopf["belegdatum"] if kopf.get("belegdatum") else "") + str(kopf["titel"])
     if kopf.get("brutto") is not None:
         t += " — %s %s" % (kopf["brutto"], kopf.get("waehrung") or "")
@@ -404,7 +405,7 @@ def _karte_im_kopf(md, kid):
         text = fh.read()
     _, ende = gm.kopf_grenzen(text)
     if ende < 0:
-        raise ValueError("Zwilling ohne Kopfdaten: " + md)
+        raise ValueError("Twin has no head data: " + md)
     gm.schreibe_atomar(md, text[:ende] + "\nkarte: " + gm.yaml_wert(kid) + text[ende:])
 
 
@@ -432,13 +433,13 @@ def quelle_umziehen(l, md, neu):
         if os.path.exists(cp):
             with open(cp, encoding="utf-8") as fh:
                 ct = fh.read()
-            nt = ct.replace("Liegt bei dir unter `%s`." % alt, "Liegt bei dir unter `%s`." % neu)
+            nt = ct.replace("Located at `%s`." % alt, "Located at `%s`." % neu)
             nt = nt.replace("\nsource: %s\n" % " ".join(alt.split()), "\nsource: %s\n" % " ".join(neu.split()), 1)  # Urheber-Kopf (19.10.)
             if nt != ct:
                 gm.schreibe_atomar(cp, nt)
                 wk.GEAENDERT.append(cp)
     _notiz(l, werkzeug="wissen.py", quelle=neu, ziel=md, sha256=kopf.get("pruefsumme"),
-           meldung="Original umbenannt/verschoben: %s -> %s (Zwilling und Karte nachgezogen)" % (alt, neu))
+           meldung="Original renamed/moved: %s -> %s (twin and card updated)" % (alt, neu))
     return alt
 
 
@@ -456,39 +457,39 @@ def karte_erzeugen(l, md_erg, min_zeichen=1):
     md, sha = md_erg["md"], md_erg["sha256"]
     kopf, md_text = zwilling_lesen(md)
     if kopf.get("karte"):
-        return {"karte": kopf["karte"], "grund": "Karte bestand schon"}
+        return {"karte": kopf["karte"], "grund": "card already existed"}
     zugehoerigkeit, traeger = kopf.get("zugehoerigkeit") or ZUG_OFFEN, kopf.get("traeger") or ZUG_OFFEN
     if regel["sichtbarkeit"] == "oeffentlich":
         privat = oe.privat_irgendwo(os.path.dirname(l.ordner), sha, l.index)
         if privat:
-            return {"karte": None, "grund": "in Sammlung %s privat" % ", ".join(privat)}
+            return {"karte": None, "grund": "private in collection %s" % ", ".join(privat)}
         k = oe.kartenfelder(sha, kopf)
         titel, quelle, inhalt, datum = k["titel"], k["quelle"], k["body"], k["datum"]
     else:
         text = lesbarer_text(md_text)  # jede Datei mit lesbarem Text bekommt eine Karte, auch eine Ein-Zeilen-Notiz
         if not text or len(text) < min_zeichen:
-            return {"karte": None, "grund": "kein lesbarer Text" if not text else "zu wenig Text (%d Zeichen)" % len(text)}
+            return {"karte": None, "grund": "no readable text" if not text else "too little text (%d characters)" % len(text)}
         titel, quelle, inhalt = privat_titel(kopf), str(kopf.get("quelle") or ""), kartentext(kopf, md_text, md, l)
         datum = oe.iso_datum(kopf.get("belegdatum"))
     import wissenskarte as wk
     if regel["sichtbarkeit"] == "privat":  # Karte verweist nur auf die Quelle (raw/trove/...), der Volltext steht dort einmal -> keine Doppeltreffer
         felder = md_text.split("\n## Felder", 1)[1].split("\n## Text", 1)[0].strip() if "\n## Felder" in md_text and "\n## Text" in md_text else ""
         anfang = inhaltszeile_mit_titel(md_text)  # kurze Datei: voller Text ("Inhalt: ..."), sonst Anfang
-        inhalt = "Liegt bei dir unter `%s`.\n\n%sGelesen als Beleg-Zwilling (Verprobung: %s). Volltext in der Quelle.%s" % (
+        inhalt = "Located at `%s`.\n\n%sRead as a document twin (verification: %s). Full text in the source.%s" % (
             kopf.get("quelle"), (anfang + "\n\n") if anfang else "", kopf.get("verprobung"),
             ("\n\n" + felder) if felder else "")
     kid, neu = wk.karte_schreiben(l.sammlung, md, sha, titel, inhalt, kopf.get("quelle"), zugehoerigkeit)
     _karte_im_kopf(md, kid)
     _notiz(l, quelle=md, ziel=kid, sha256=sha, werkzeug="wissen.py/wiki", karte=kid, sichtbarkeit=l.sichtbarkeit, md_sha256=bp.datei_sha(md),
-           meldung="Wissenskarte %s (%s, %s)" % (kid, "neu" if neu else "bestand schon, Kopfzeile nachgetragen", titel[:80]))
+           meldung="Knowledge card %s (%s, %s)" % (kid, "new" if neu else "existed, head line added", titel[:80]))
     return {"karte": kid, "grund": None, "karte_neu": neu}
 
 
-FREIGABE = "macOS-Freigabe nötig (Systemeinstellungen → Datenschutz & Sicherheit → Festplattenvollzugriff)"
+FREIGABE = "macOS permission needed (System Settings > Privacy & Security > Full Disk Access)"
 
 
 def unlesbar_meldung(pfad):
-    return "Ordner nicht lesbar: %s – %s" % (pfad, FREIGABE)
+    return "Folder not readable: %s - %s" % (pfad, FREIGABE)
 
 
 def unter_einem(p, ordner):
@@ -523,9 +524,9 @@ def nicht_gelesen_hinweis(liste):
         return None
     typen = {}
     for p in liste:
-        t = (os.path.splitext(p)[1].lower() or "(ohne Endung)") + (" (Paket-Ordner)" if os.path.isdir(p) else "")
+        t = (os.path.splitext(p)[1].lower() or "(no extension)") + (" (package folder)" if os.path.isdir(p) else "")
         typen[t] = typen.get(t, 0) + 1
-    return "nicht gelesen: %d %s, Typen %s" % (len(liste), "Datei" if len(liste) == 1 else "Dateien",
+    return "not read: %d %s, types %s" % (len(liste), "file" if len(liste) == 1 else "files",
                                                ", ".join("%s (%d)" % (t, n) for t, n in sorted(typen.items())))
 
 
@@ -543,7 +544,7 @@ def dateien_sammeln(mandant, wurzel, unlesbar=None, hinweise=None, nicht_gelesen
     sperren = []
     for n, anzeige, art in eigene_ablagen(mandant):
         if _unter(w_echt, n) and art == "wissen":
-            warn.append("Der gewählte Ordner ist dein Wissensspeicher (%s) – Trove liest ihn nicht ein, sonst läse es seine eigenen Karten." % anzeige)
+            warn.append("The chosen folder is your knowledge folder (%s) - Trove does not read it in, otherwise it would read its own cards." % anzeige)
             return dateien, zwillinge, wolke
         if _unter(w_echt, n):  # in der Datenwurzel gewaehlt: ausdruecklich, nur die Ablagen darin bleiben gesperrt
             continue
@@ -559,7 +560,7 @@ def dateien_sammeln(mandant, wurzel, unlesbar=None, hinweise=None, nicht_gelesen
             n = _echt(os.path.join(r, x))
             treffer = next((a for s, a in sperren if _unter(n, s)), None)
             if treffer:
-                warn.append("Übersprungen: %s ist Trove-eigene Ablage (%s) und wird nie eingelesen." % (os.path.join(r, x), treffer))
+                warn.append("Skipped: %s is Trove's own storage (%s) and is never read in." % (os.path.join(r, x), treffer))
                 continue
             bleiben.append(x)
         d[:] = bleiben
@@ -589,13 +590,13 @@ def dateien_auswahl(mandant, wurzel, pfade, hinweise, nicht_gelesen):
     for p in pfade:
         p = os.path.abspath(p)
         if not _unter(_echt(p), w_echt):
-            raise ValueError("Datei liegt nicht im gewählten Ordner: %s" % p)
+            raise ValueError("File is not inside the chosen folder: %s" % p)
         if not os.path.isfile(p):
-            hinweise.append("Nicht gefunden oder kein Dateiinhalt: %s" % p)
+            hinweise.append("Not found or no file content: %s" % p)
             continue
         treffer = next((a for s, a in sperren if _unter(_echt(p), s)), None)
         if treffer:
-            hinweise.append("Übersprungen: %s ist Trove-eigene Ablage (%s) und wird nie eingelesen." % (p, treffer))
+            hinweise.append("Skipped: %s is Trove's own storage (%s) and is never read in." % (p, treffer))
             continue
         fn = os.path.basename(p)
         name = os.path.basename(gm.wolke_original(p))
@@ -622,11 +623,11 @@ def ordner_ins_wissen(mandant, wurzel, sammlung, sichtbarkeit, zugehoerigkeit, t
              traeger=traeger or traeger_auto(zugehoerigkeit), karten=karten,
              max_dateien=max_dateien, max_seiten=max_seiten, embed=embed, nur_dateien=list(nur_dateien) if nur_dateien else None)
     if regel["sichtbarkeit"] == "oeffentlich" and zugehoerigkeit == ZUG_OFFEN:
-        raise ValueError("oeffentlich braucht eine Zugehoerigkeit (nicht offen) — abgebrochen")
+        raise ValueError("visibility oeffentlich (public) needs an affiliation (not offen) - aborted")
     if regel["sichtbarkeit"] == "oeffentlich" and "privat" in zugehoerigkeit.lower():
-        raise ValueError("oeffentlich mit privater Zugehoerigkeit (%s) — abgebrochen" % zugehoerigkeit)
+        raise ValueError("oeffentlich (public) with a private affiliation (%s) - aborted" % zugehoerigkeit)
     if not os.path.isdir(wurzel):
-        raise ValueError("kein Ordner: %s" % wurzel)
+        raise ValueError("not a folder: %s" % wurzel)
     os.makedirs(l.ordner, exist_ok=True)
     with gm.laufsperre(l.mandant):
         for muster in ("*.md.teil", "*.md.karte.tmp"):
@@ -645,15 +646,15 @@ def schon_oeffentlich(l, sha, md):
         if anderer == md or kopf.get("pruefsumme") != sha or kopf.get("sichtbarkeit") != "oeffentlich":
             continue
         if kopf.get("karte"):
-            funde.append("Sammlung %s (Karte %s)" % (s, kopf["karte"]))
-    return ("bereits oeffentlich: " + "; ".join(funde)) if funde else None
+            funde.append("collection %s (card %s)" % (s, kopf["karte"]))
+    return ("already public: " + "; ".join(funde)) if funde else None
 
 
 def wolke_hinweis(n):
     """Meldung fuer den Tab nach 'Ins Wissen': Dateien, die macOS nur in der Wolke haelt (dataless/.icloud), wurden nicht gelesen."""
     if not n:
         return None
-    return "%d %s nur in der Cloud – im Finder ‚Jetzt laden‘, dann erneut „Ins Wissen“." % (n, "Datei" if n == 1 else "Dateien")
+    return "%d %s only in the cloud - in Finder choose Download Now, then run Into knowledge again." % (n, "file" if n == 1 else "files")
 
 
 def _lauf(l):
@@ -674,8 +675,8 @@ def _lauf(l):
     import wissenskarte as wk
     wk.GEAENDERT.clear()
     erste = {}  # erste: sha256 -> erste Fundstelle in diesem Lauf
-    _notiz(l, werkzeug="wissen.py", meldung="%s ins Wissen Start: %s -> Sammlung %s (%d Dateien, Sichtbarkeit %s, %s, "
-           ")" % ("Auswahl (%d gewählt)" % len(l.nur_dateien) if l.nur_dateien else "Ordner", l.wurzel, l.sammlung,
+    _notiz(l, werkzeug="wissen.py", meldung="%s into knowledge starts: %s -> collection %s (%d files, visibility %s, %s"
+           ")" % ("Selection (%d chosen)" % len(l.nur_dateien) if l.nur_dateien else "Folder", l.wurzel, l.sammlung,
                                  len(dateien), l.sichtbarkeit, l.zugehoerigkeit))
     if ng_hinweis:
         _notiz(l, werkzeug="wissen.py", meldung=ng_hinweis, nicht_gelesen=nicht_gelesen[:200])
@@ -699,7 +700,7 @@ def _lauf(l):
             e["fehler"] = str(ex)[:200]
             if isinstance(ex, FitzFehlt):
                 z["ohne_pymupdf"] = z.get("ohne_pymupdf", 0) + 1
-            _notiz(l, "fehler", quelle=p, werkzeug="wissen.py", meldung="Lesen/Markdown: " + str(ex)[:300])
+            _notiz(l, "fehler", quelle=p, werkzeug="wissen.py", meldung="Reading/markdown: " + str(ex)[:300])
             z["eintraege"].append(e)
             continue
         z[e["zustand"]] += 1
@@ -711,17 +712,17 @@ def _lauf(l):
                 raise
             except Exception as ex:
                 z["fehler_karte"] += 1
-                e["fehler"] = "Karte: " + str(ex)[:200]
-                _notiz(l, "fehler", quelle=p, werkzeug="wissen.py/wiki", meldung="Karte: " + str(ex)[:300])
+                e["fehler"] = "Card: " + str(ex)[:200]
+                _notiz(l, "fehler", quelle=p, werkzeug="wissen.py/wiki", meldung="Card: " + str(ex)[:300])
         if l.sichtbarkeit == "privat":
             grund = schon_oeffentlich(l, e["sha256"], e["md"])
             if grund:
                 e.update(zustand="schon_oeffentlich", grund=grund + ("; " + e["grund"] if e.get("grund") else ""))
                 z["schon_oeffentlich"] += 1
                 z["fehler_datei"] += 1
-                _notiz(l, "fehler", quelle=p, sha256=e["sha256"], werkzeug="wissen.py", meldung="Privat eingelesen, " + grund)
+                _notiz(l, "fehler", quelle=p, sha256=e["sha256"], werkzeug="wissen.py", meldung="Read in privately, " + grund)
         z["eintraege"].append(e)
-    _notiz(l, anker=True, werkzeug="wissen.py", meldung="Dateien fertig, QMD folgt: %d neu, %d schon da, %d Karten"
+    _notiz(l, anker=True, werkzeug="wissen.py", meldung="Files done, qmd next: %d new, %d already there, %d cards"
            % (z["neu"], z["schon_da"], z["karten"]))
     try:
         z["qmd"] = qmd_sammlung(l)
@@ -731,14 +732,14 @@ def _lauf(l):
         z["fehler_qmd"] += 1
     z["fehler"] = z["fehler_datei"] + z["fehler_karte"] + z["fehler_qmd"] + len(unlesbar)
     if z.get("ohne_pymupdf"):
-        z["hinweise"].append("%d PDF-/Bild-Datei(en) nicht gelesen: Paket pypdfium2 fehlt (Python %s). Text-, Markdown- und Word-Dateien "
-                             "wurden gelesen; nach dem Einrichten von pypdfium2 erneut „Ins Wissen“ starten." % (z["ohne_pymupdf"], sys.executable))
+        z["hinweise"].append("%d PDF/image file(s) not read: package pypdfium2 is missing (Python %s). Text, markdown and Word files "
+                             "were read; install pypdfium2 and run Into knowledge again." % (z["ohne_pymupdf"], sys.executable))
     zusammen = json.dumps({k: v for k, v in z.items() if k not in ("eintraege", "qmd")}, ensure_ascii=False)
     with _prot(l.mandant) as prot:
         prot.schreiben("notiz" if not z["fehler_qmd"] else "fehler", werkzeug="wissen.py/qmd", mandant=l.mandant, lauf=l.name,
-                       ziel=l.ordner, meldung="QMD-Sammlung %s: %s Dateien im Index" % (z["qmd"].get("sammlung"),
+                       ziel=l.ordner, meldung="qmd collection %s: %s files in the index" % (z["qmd"].get("sammlung"),
                        z["qmd"].get("dateien_im_index")), qmd=json.loads(json.dumps(z["qmd"], default=str)))
-        prot.schreiben("notiz", werkzeug="wissen.py", mandant=l.mandant, lauf=l.name, meldung="Ordner ins Wissen Ende: " + zusammen)
+        prot.schreiben("notiz", werkzeug="wissen.py", mandant=l.mandant, lauf=l.name, meldung="Folder into knowledge finished: " + zusammen)
         prot.anker_setzen(l.mandant, l.name)
     try:
         z["log"] = wk.log_lauf()  # one line per run in wiki/log.md
@@ -787,17 +788,17 @@ def main():
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
-    ap = argparse.ArgumentParser(description="Trove F16 Ordner ins Wissen (Markdown, QMD, Karten)")
+    ap = argparse.ArgumentParser(description="Trove: folder into knowledge (markdown twins, qmd index, cards)")
     ap.add_argument("ordner", nargs="?")
     ap.add_argument("--mandant", default=bp.konfig.mandant())
-    ap.add_argument("--sammlung", default=SAMMLUNG_STANDARD, help="Name der Sammlung (a-z 0-9 - _), Standard quellen")
+    ap.add_argument("--sammlung", default=SAMMLUNG_STANDARD, help="collection name (a-z 0-9 - _), default quellen")
     ap.add_argument("--sichtbarkeit", default="privat", help="privat = own use, oeffentlich = card limited to the public allow-list")
-    ap.add_argument("--zugehoerigkeit", help="z. B. 'Meine Firma GmbH' oder 'Mein privat'")
+    ap.add_argument("--zugehoerigkeit", help="e.g. 'My Company Ltd' or 'Mine private'")
     ap.add_argument("--traeger", choices=["Person", "Firma", "Projekt", "Kunde", "Behoerde"],
                     help="ohne Angabe: Person, wenn 'privat' in der Zugehoerigkeit steht, sonst Firma")
     ap.add_argument("--karten", action="store_true", help="write a knowledge card per file into the wiki")
-    ap.add_argument("--max", type=int, help="hoechstens so viele Dateien (Probe)")
-    ap.add_argument("--datei", action="append", default=[], help="nur diese Datei(en) unter ordner (mehrfach); sonst ganzer Ordner")
+    ap.add_argument("--max", type=int, help="at most this many files (trial)")
+    ap.add_argument("--datei", action="append", default=[], help="only these file(s) under the folder (repeatable); default: the whole folder")
     ap.add_argument("--max-seiten", type=int, default=30)
     ap.add_argument("--ohne-embed", action="store_true")
     ap.add_argument("--json", action="store_true")
@@ -809,14 +810,14 @@ def main():
         print("selbsttest ok")
         return 0
     if not a.ordner:
-        ap.error("ordner angeben (--sammlung, --sichtbarkeit, --zugehoerigkeit optional)")
+        ap.error("give a folder (--sammlung, --sichtbarkeit, --zugehoerigkeit optional)")
     if a.max is not None and a.max < 1:
         ap.error("--max: mindestens 1")  # 0 hiesse sonst "alle"
     try:
         z = ordner_ins_wissen(a.mandant, a.ordner, a.sammlung, a.sichtbarkeit, a.zugehoerigkeit, a.traeger, a.karten, a.max,
                               a.max_seiten, not a.ohne_embed, a.datei or None)
     except bp.LaufLaeuft as ex:  # JSON, rc 2; plugin_api macht daraus 409
-        print(json.dumps({"abbruch": str(ex)[:300], "lauf_laeuft": True}, ensure_ascii=False) if a.json else "Lauf laeuft bereits: %s" % ex)
+        print(json.dumps({"abbruch": str(ex)[:300], "lauf_laeuft": True}, ensure_ascii=False) if a.json else "A run is already active: %s" % ex)
         return 2
     except (bp.ProtokollGesperrt, bp.ProtokollDefekt, ValueError) as ex:
         print(json.dumps({"fehler": str(ex)}, ensure_ascii=False))
