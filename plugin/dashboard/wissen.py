@@ -753,7 +753,7 @@ Fecha 01/03/2026
 Ejemplo SA  CUIT 30-11111111-1  Ingresos Brutos 901-000000-0
 Cliente: Juan Perez, Av. Rivadavia 1234, Piso 3, CABA
 CUIT 20-12345678-9  DNI N.º 12.345.678  Tel 11 4567-8901
-Alias juan.perez.mp  CBU 0170099220000067797370  juan@example.com
+Alias juan.perez.mp  CBU 0000000000000000000000  juan@example.com
 Detalle: servicio de consultoria mensual segun contrato
 Subtotal 1.000,00  IVA 21% 210,00  Total $ 1.210,00
 """
@@ -773,7 +773,7 @@ Detalle: clases particulares de piano, cuatro encuentros en marzo
 Lugar: domicilio de la alumna, horario de tarde, material incluido
 Total $ 500,00
 """
-GEHEIM = ("Juan", "Perez", "Rivadavia", "Piso", "12345678", "12.345.678", "4567", "juan.perez", "0170099", "example", "@",
+GEHEIM = ("Juan", "Perez", "Rivadavia", "Piso", "12345678", "12.345.678", "4567", "juan.perez", "0000000000", "example", "@",
           "Muster", "Bochum", "0234", "1234567", "7654321", "350/123", "12 345 678 901", "1234567890", "43050001", "3704",
           "Maria", "Lopez", "Falsa", "27-23456789-4", "20-12345678-9", "901-000000-0", "consultoria", "Beratung", "piano",
           "0003-00012345", "30-11111111-1", "RE-2026-0042", "DE298765430", "factura", "rechnung", "recibo", ".txt", "eingang")
