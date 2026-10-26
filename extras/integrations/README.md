@@ -16,3 +16,8 @@ If you still want them, run them by hand from a checkout of this repository, for
 
 Inside Hermes, do not use these. Let a Hermes agent fetch mail attachments or drive files with Hermes's own connectors and drop them
 into a source folder that Trove watches. Trove never asks for or stores your passwords.
+
+## `extras/legacy/`
+
+Old one-off scripts from the standalone repository (register migration, a Windows copy runner that reads an SSH key path, measurement
+scripts). They are kept only for history, are **not part of the plugin or the catalog build**, and nothing imports them.
