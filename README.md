@@ -10,19 +10,19 @@
 <p>
   <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-7c6fe0?style=flat-square"></a>
   <img alt="Status: early alpha" src="https://img.shields.io/badge/status-early%20alpha-f0a35e?style=flat-square">
-  <a href="https://hermes-agent.nousresearch.com/desktop"><img alt="Hermes Desktop plugin" src="https://img.shields.io/badge/Hermes%20Desktop-plugin%20%E2%89%A5%200.19-5b4fd0?style=flat-square"></a>
+  <img alt="Hermes Desktop plugin" src="https://img.shields.io/badge/Hermes%20Desktop-plugin%20%E2%89%A5%200.19-5b4fd0?style=flat-square">
   <img alt="Local-first" src="https://img.shields.io/badge/local--first-no%20telemetry-3fb68b?style=flat-square">
   <img alt="Python" src="https://img.shields.io/badge/python-3-3776ab?style=flat-square&logo=python&logoColor=white">
   <img alt="Receipts: DE and AR" src="https://img.shields.io/badge/receipts-DE%20%C2%B7%20AR-555?style=flat-square">
 </p>
 
 <p>
-  <a href="#-why-trove">Why Trove</a> ·
-  <a href="#-how-it-works">How it works</a> ·
-  <a href="#-what-works-today">What works today</a> ·
-  <a href="#-use-cases">Use cases</a> ·
-  <a href="#-quick-start">Quick start</a> ·
-  <a href="#-faq">FAQ</a> ·
+  <a href="#why-trove">Why Trove</a> ·
+  <a href="#how-it-works">How it works</a> ·
+  <a href="#safety-and-what-trove-does-on-your-machine">Safety</a> ·
+  <a href="#what-works-today">What works today</a> ·
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#faq">FAQ</a> ·
   <a href="README.de.md">Deutsch</a>
 </p>
 
@@ -30,23 +30,19 @@
 
 ---
 
-Trove puts your mailboxes, cloud drives and folders side by side on one desk. You look at a document, check it, compare it and put it where it belongs, and your AI agents help with the same files. Anything an agent is asked to do waits until you approve it. Every copy, move and check is written to an append-only, hash-chained log, so you can always trace where a document came from and what happened to it.
+Trove puts folders side by side on one desk. You look at a document, check it, compare it and put it where it belongs, and your
+Hermes agents help with the same files. Anything an agent is asked to do starts as a blocked task card and runs only after you approve it.
 
 It runs on your machine. Your files stay where they are.
 
-## 🖥️ Screenshot
+> **Trove never asks for or stores your passwords.**
+> It has no mail login, no cloud-drive login and no API-token screens. Mail attachments and drive files reach Trove the same way
+> everything else does: your Hermes agents fetch them with Hermes's own connections and drop the files into a folder that Trove looks at.
 
-<div align="center">
-  <img src="docs/assets/trove-ui-empty-state.png" alt="Trove inside Hermes Desktop: two panes (source and target) with copy, move and sync in the middle, search bar, mail and signature actions, previews and the AI task board" width="860">
-  <br>
-  <sub>Current UI (German), empty state. Dashed lines mark where empty pane space was shortened. <a href="docs/assets/trove-ui-empty-state-full.png">Full-height screenshot</a>.</sub>
-</div>
+## Why Trove
 
-<!-- TODO: replace or complement with a short GIF: pick a mail source, preview a receipt, copy it to a folder, show the log entry. -->
-
-## ✨ Why Trove
-
-Most document tools are archives: files go in, the tool manages them. The hard part comes earlier. Invoices sit in three mailboxes, contracts in someone's Google Drive, scans on a desktop, duplicates everywhere. Trove is built for that part.
+Most document tools are archives: files go in, the tool manages them. The hard part comes earlier. Invoices sit in three mailboxes,
+contracts in someone's drive, scans on a desktop, duplicates everywhere. Trove is the place where you and your agents sort this out together.
 
 <table>
   <tr>
@@ -56,21 +52,21 @@ Most document tools are archives: files go in, the tool manages them. The hard p
     </td>
     <td width="33%" valign="top">
       <h3>✅ Nothing happens without you</h3>
-      A task for an agent starts as a blocked card. It runs only after you approve it, and the result lands in the log.
+      A task for an agent starts as a blocked card. It runs only after you release it, and the result lands in the log.
     </td>
     <td width="33%" valign="top">
       <h3>🔗 Every step on the record</h3>
-      Append-only, hash-chained log with an outside anchor. Each copy is read back and checked before it counts.
+      Append-only, hash-chained log. Each copy is read back and checked before it counts.
     </td>
   </tr>
   <tr>
     <td width="33%" valign="top">
       <h3>🏠 Local-first</h3>
-      Runs on your machine. No telemetry. Network calls only to services you set up yourself.
+      Runs on your machine. No telemetry, no self-update, no network calls unless you point it at a service of your own.
     </td>
     <td width="33%" valign="top">
-      <h3>🛡️ Never overwrites</h3>
-      Conflicts are logged, not resolved silently. A move deletes the source only after the copy is verified.
+      <h3>🛡️ Read-only unless you say otherwise</h3>
+      Every folder is read-only until you mark it writable. Nothing is overwritten. A move deletes the source only after the copy is verified.
     </td>
     <td width="33%" valign="top">
       <h3>🧾 Understands receipts</h3>
@@ -79,92 +75,104 @@ Most document tools are archives: files go in, the tool manages them. The hard p
   </tr>
 </table>
 
-## 🧭 How it works
+## How it works
 
 ```mermaid
 flowchart LR
-  subgraph S["Sources"]
-    M["📬 Mail<br/>Gmail · IMAP"]
-    D["☁️ Drives<br/>Google Drive · WebDAV · SFTP · Mega · iCloud"]
-    F["📁 Local folders"]
+  subgraph S["Your folders"]
+    F["📁 Source folders<br/>(watched)"]
   end
-
+  subgraph AG["Hermes agents (their own connections)"]
+    M["📬 fetch mail attachments<br/>☁️ fetch drive files"]
+  end
   subgraph T["Trove desk"]
     H["🧑 You<br/>see · click · approve"]
-    A["🤖 AI agents<br/>do the work after approval"]
+    A["🤖 Hermes agents<br/>work after approval"]
     H <--> A
   end
-
   subgraph Z["Destinations"]
-    O["📂 Sorted folders"]
-    K["🧠 Knowledge<br/>wiki · board"]
-    E["📊 ERPNext mirror"]
-    X["🤝 Exchange with<br/>tax advisor (planned)"]
+    O["📂 Writable folders"]
+    K["🧠 Knowledge wiki<br/>twins + cards"]
   end
-
-  M --> T
-  D --> T
+  M -- "drop files into" --> F
   F --> T
   T --> O
   T --> K
-  T --> E
-  T -.-> X
-
   L[("🔗 Tamper-evident log<br/>append-only · sha256 per file · hash chain")]
   T --- L
 ```
 
-## 📋 What works today
+## Safety and what Trove does on your machine
 
-Trove is early, and the interface is currently in German. Here is what exists and what is next.
+Trove is a file tool, so it is explicit about what it touches. Everything below is the complete list.
+
+**Passwords and connections.** Trove never asks for or stores your passwords, tokens or keys, and it reads no credential files.
+The plugin contains no mail, cloud-drive, signing or accounting integrations. To get mail attachments or drive files into Trove, let a Hermes
+agent fetch them with Hermes's own connections and save them into a source folder. (Old standalone integrations that did read credential files
+live in [`extras/`](extras/integrations/README.md), outside the plugin, and are not part of the catalog build.)
+
+**Write permission is per folder.** A folder you add is **read-only**. You switch it to writable per folder, with a confirmation, and can switch
+it back. Trove only writes into writable folders (copy, move, sync, and the twin files of "Into knowledge" if they land in one):
+- *Copy* is verified by reading the copy back and comparing the sha256 checksum. Existing files are never overwritten (conflicts are logged).
+- *Move* copies, verifies, and **then deletes the original**. It needs the source and the target to be writable, and asks for a second click.
+- *Sync* copies missing files from the left folder to the right folder and never overwrites.
+
+**What Trove writes outside your folders** (all under your control):
+- Its own data folder (`TROVE_DATEN`, default `~/Trove`): the receipt log (`belegprotokoll`), the file register (`register.db`), the list of sources, the task list.
+- "Into knowledge" writes markdown twins and knowledge cards as twins under `<wiki>/../raw/trove/` and cards under `<wiki>/quellen/`, where the wiki folder is `<TROVE_DATEN>/knowledge/wiki` by default (or the folder in `TROVE_WIKI`), and one
+  line per run into `<wiki>/log.md`. Cards carry the status `to-review` (override with `TROVE_CARD_STATUS`). Originals are never modified.
+- Adding a folder to the optional continuous run (checkbox "Remember folder for the continuous run") writes it to Trove's watch list in `trove.json`.
+
+**Programs Trove starts** (no shell, fixed argument lists):
+- Its own helper scripts (reading, OCR, PDF pages, knowledge) in a separate Python process: the Python from `TROVE_PYTHON`/`trove.json`, or the first
+  system Python that has the packages. They run in the background of a click and are killed on timeout.
+- The `hermes` command line (`hermes kanban …`) to create, release and list task cards. Cards are created **blocked**; nothing runs until you release it.
+- If installed: `qmd update` / `qmd embed` to refresh your search index after "Into knowledge". Without `qmd` that step is skipped and reported.
+- Optional, only when you use them: Stirling-PDF over HTTP to `TROVE_STIRLING` (default `http://127.0.0.1:8090`) for splitting PDFs, and Ollama at `TROVE_OLLAMA` (default `http://127.0.0.1:11434`) only if you choose an Ollama-based OCR model (page images are sent to that URL).
+- macOS only: `sips` to convert HEIC images for OCR.
+
+**Optional installer and scheduler (not part of a catalog install).** `python tools/installieren.py` is a developer/offline helper. It can create a private
+Python environment, write `trove.json`, add `trove` to `plugins.enabled` in Hermes's `config.yaml` (after backing the file up), and, only with
+`--dauerlauf`, register a LaunchAgent (macOS) or a Scheduled Task (Windows) that re-reads your watched folders. None of this happens unless you run it.
+
+**Network and telemetry.** No telemetry, no analytics, no auto-update. Trove itself makes no outgoing connections except to the local services above if you run them.
+
+**Language.** The interface is English by default and German through Hermes's plugin i18n (it follows your Hermes language setting). Backend messages are in English.
+
+## What works today
+
+Trove is early alpha. Here is what exists and what is next.
 
 | Area | Feature | Status |
 | --- | --- | :---: |
 | **Desk** | Two panes with folder navigation and duplicate filter | ✅ |
-| | Copy · move · sync, verified by read-back, never overwrites | ✅ ¹ |
-| | Preview of PDFs (page by page) and images | ✅ |
-| | Side by side, also in two windows (e.g. second monitor) | ✅ |
+| | Copy · move · sync, verified by read-back, never overwrites, per-folder write permission | ✅ |
+| | Preview of PDFs (page by page), images and text | ✅ |
+| | Side by side, or one pane per window (e.g. second monitor) | ✅ |
 | | Check changes: new, gone, moved, changed from outside | ✅ |
-| | Search across folders, log, ERPNext and Paperless-ngx | ✅ |
+| | Search the file register and the receipt log | ✅ |
 | | Split PDF stacks into single documents (via [Stirling-PDF](https://github.com/Stirling-Tools/Stirling-PDF)) | ✅ |
 | | Rename, new folder, sort | 🔜 |
-| | Comment on a PDF, notes and corrections with a "verified" tick | 🔜 |
 | | Print, merge PDFs, compare file contents | 🔜 |
-| **Sources** | Gmail (read-only) and IMAP, attachments logged with checksum | ✅ |
-| | Drives via [rclone](https://rclone.org/): Google Drive, WebDAV, SFTP, Mega, iCloud (read-only) | ✅ |
-| | Local folders, local iCloud Drive on macOS | ✅ |
-| **Agents** | Tasks for AI agents, blocked until you approve | ✅ |
+| **Agents** | Tasks for Hermes agents (Kanban), blocked until you release them | ✅ |
 | | MCP access, so other agent systems use the same desk and approval step | 🔜 |
-| **Log & receipts** | Tamper-evident, append-only log with outside anchor | ✅ |
+| **Log & receipts** | Tamper-evident, append-only log | ✅ |
 | | Read receipts: e-invoice XML (ZUGFeRD / Factur-X) → PDF text → local OCR | ✅ |
 | | Rule-based checks: totals, VAT rates, CUIT, IBAN, German VAT ID | ✅ |
 | | Argentina: CAE and QR check for ARCA e-invoices | 💡 |
-| **Automation** | Watched folders kept in sync with your knowledge base on a schedule | ✅ |
+| **Knowledge** | "Into knowledge": markdown twin per file, bound to the original by checksum, plus a knowledge card in your wiki | ✅ |
+| **Automation** | Watched folders kept in sync with your knowledge wiki on a schedule (optional scheduler job) | ✅ |
 | | Rules: source → action → target on a schedule, optional approval | 🔜 |
-| **Setup** | One mode for everyone, write permission per folder | 🔜 |
-| | Automated tests, sample folder with demo receipts, demo video | 🔜 |
-| **Optional** | ERPNext mirror, signing via [DocuSeal](https://github.com/docusealco/docuseal), knowledge cards | ✅ ¹ |
 
 ✅ works today · 🔜 planned next · 💡 idea
 
-<sub>¹ With the default setting, Trove currently runs in a read-only "customer mode": copy, move and DocuSeal are switched off. Removing that mode is the first item on the roadmap.</sub>
-
-## 🧩 Use cases
-
-**🧹 Clean up with your agents.** Hook up an inbox and a drive, look through what is there, spot duplicates, and move the keepers into a clean folder structure. Ask an agent to do the tedious part, approve it, and check the result in the log.
-
-**🧠 Turn documents into knowledge.** Send a folder "into knowledge": each file gets a plain-text twin bound to the original by its checksum, plus a knowledge card for your wiki or board. Watched folders stay up to date on their own.
-
-**🤝 Hand documents over traceably.** Clients and tax advisors exchange receipts through connected cloud folders, and the log shows who handed over what, and when. The building blocks are there today. A dedicated exchange flow is on the roadmap.
-
-## 🚀 Quick start
-
-<details open>
-<summary><strong>Install as a Hermes Desktop plugin</strong></summary>
-
-<br>
+## Quick start
 
 **Requirements:** [Hermes Desktop](https://hermes-agent.nousresearch.com/desktop) 0.19 or newer, Python 3.
+
+**From the Hermes plugin catalog** (once listed): `hermes plugins install reraise-trove`, then enable the plugin and reload Hermes. A **Trove** tab appears in the sidebar.
+
+**From this repository** (developer / offline path):
 
 ```bash
 git clone https://github.com/Reraise-ai/trove.git
@@ -172,98 +180,101 @@ cd trove
 python tools/installieren.py
 ```
 
-Reload Hermes (or restart it). A **Trove** tab appears in the sidebar.
-
-- The installer finds the Hermes home on Windows, macOS and Linux. If it can't, set `HERMES_HOME` or pass `--hermes-home` and run it again.
-- It creates `config.yaml` if missing and enables the plugin. An existing `config.yaml` is backed up first. Running it twice is safe.
-- OCR packages (`onnxruntime`, `rapidocr-onnxruntime`) are optional. Without them, Trove works without OCR.
+- The installer finds the Hermes home on Windows, macOS and Linux. If it can't, set `HERMES_HOME` or pass `--hermes-home`.
+- An existing `config.yaml` is backed up before it is changed. Running the installer twice is safe.
+- OCR packages (`onnxruntime`, `rapidocr-onnxruntime`) are optional. Without them Trove still works, minus OCR of scans.
 - Health check: `python tools/installieren.py --pruefen` (installs nothing, tells you what is missing).
 
-| Option | What it does |
+First steps: **+ Folder** → pick a folder (read-only by default) → click a file for a preview → **Read** for the receipt fields and checks →
+tick files → **Into knowledge**. To copy into a folder, switch it to **Make writable** first.
+
+| Installer option | What it does |
 | --- | --- |
 | `--mandant <name> --datenwurzel <folder>` | client ("Mandant") name and Trove's data folder |
 | `--venv [folder]` | separate Python environment (macOS default `~/.trove-venv`) |
 | `--wheels <folder>` | install Python packages offline |
-| `--dauerlauf [minutes]` | keep watched folders up to date (default 30, `0` = off) |
-| `--kartenziel wiki\|brett` | knowledge cards go to a wiki folder (default) or the board |
+| `--dauerlauf [minutes]` | optional scheduler job that keeps watched folders up to date (default 30, `0` = off) |
+| `--wiki-wurzel <folder>` | wiki folder for knowledge cards |
 
-</details>
+### Configuration
 
-<details>
-<summary><strong>Configuration</strong></summary>
-
-<br>
-
-Trove has no fixed paths. Settings come from environment variables first, then `trove.json` (written by the installer), then defaults.
+Trove has no fixed paths. Settings come from environment variables first, then `trove.json`, then defaults.
 
 | Variable | Meaning |
 | --- | --- |
 | `TROVE_DATEN` | data folder, one sub-folder per client (default `~/Trove`) |
 | `TROVE_MANDANT` | active client name |
-| `TROVE_REPO` | location of this repository for the Hermes plugin |
+| `TROVE_KONFIG` | path of `trove.json` |
+| `TROVE_PYTHON` | Python for the helper processes |
+| `TROVE_WIKI` | wiki folder for knowledge cards (default `<TROVE_DATEN>/knowledge/wiki`, created on demand) |
+| `TROVE_CARD_STATUS` | status written into new knowledge cards (default `to-review`) |
+| `TROVE_AGENT` | author label written into new cards (default `trove`) |
+| `TROVE_QMD` | path of the optional `qmd` search tool |
+| `TROVE_HERMES` | path of the `hermes` command (if not on `PATH`) |
+| `TROVE_ASSIGNEE` | default Hermes profile for task cards (empty = Hermes default) |
+| `TROVE_SKILL` | optional Hermes skill attached to task cards (none by default) |
+| `TROVE_ARBEITSORDNER` | working folder for task cards (default: a scratch workspace) |
+| `TROVE_STIRLING`, `TROVE_OLLAMA` | URLs of the optional local services (see above) |
 | `TROVE_REGISTER_DB` | optional read-only register of an earlier source |
-| `TROVE_STIRLING` | Stirling-PDF URL (default `http://127.0.0.1:8090`) |
-| `TROVE_OLLAMA` | Ollama URL for optional OCR models (default `http://127.0.0.1:11434`) |
-| `TROVE_PAPERLESS`, `TROVE_PAPERLESS_TOKEN` | Paperless-ngx URL and token file |
-| `TROVE_DOCUSEAL`, `TROVE_DOCUSEAL_SCHLUESSEL` | DocuSeal URL and key file |
-| `TROVE_ERPNEXT`, `TROVE_ERPNEXT_KEYS` | ERPNext URL and folder with `api_key.txt` / `api_secret.txt` |
-| `TROVE_KARTENZIEL`, `TROVE_WIKI` | knowledge card target (`wiki` / `brett`) and wiki folder |
-| `TROVE_QUELLORT` | register column `ort` read by `gegenprobe.py` and `trove_laeufer.sh` (default `quelle`) |
 
-`trove_laeufer.sh` also needs `TROVE_SERVER`, `TROVE_REGISTER_WIN`, `TROVE_ZIEL_WIN` and `TROVE_REPO_WIN` (see the script header). Secrets are read from files or environment variables you set and are never stored in this repository.
+The `TROVE_` prefix is shared with other tools called "trove"; if another plugin in your setup uses it, set the variables per process or via `trove.json`.
 
-</details>
-
-<details>
-<summary><strong>Network access and background jobs</strong></summary>
-
-<br>
-
-- No telemetry.
-- All network calls are optional and only happen when you configure them: your own ERPNext, DocuSeal or Paperless-ngx instance, Gmail (read-only, via your existing Hermes Google token), and reraise.ai for publishing public knowledge cards (only with a stored Reraise key).
-- OCR and PDF splitting run as a separate local Python process (`TROVE_PYTHON`).
-- The optional background job (`--dauerlauf`) runs as a LaunchAgent on macOS or a Scheduled Task on Windows. It is off unless you enable it.
-- Before a release, `bash tools/spuren-pruefen.sh` checks that no trace of a private installation is left in tracked files.
-
-</details>
-
-## ❓ FAQ
+## FAQ
 
 <details>
 <summary><strong>Is Trove compliant with GoBD (or other record-keeping rules)?</strong></summary>
 
 <br>
-Trove helps with orderly record-keeping: nothing is overwritten, every movement is logged, and the log is tamper-evident. <strong>It is not a certified compliance solution.</strong> It does not replace your procedural documentation (Verfahrensdokumentation), your tax advisor or your accounting system.
+Trove helps with orderly record-keeping: nothing is overwritten, every movement is logged, and the log is tamper-evident. <strong>It is not a certified compliance solution.</strong>
+It does not replace your procedural documentation (Verfahrensdokumentation) or advice from your tax advisor.
 </details>
 
 <details>
 <summary><strong>Does my data leave my machine?</strong></summary>
 
 <br>
-Not by default. Trove reads and writes locally and has no telemetry. Data only goes where you point it: your own ERPNext, DocuSeal or Paperless-ngx, a cloud drive you connect, or reraise.ai if you choose to publish a public knowledge card (which never contains receipt text or file names).
+No. Trove reads and writes locally and has no telemetry. The only network addresses it can talk to are the optional local services listed above
+(Stirling-PDF, Ollama) if you run them. Your agents' own connections are outside Trove.
+</details>
+
+<details>
+<summary><strong>How do mails and cloud files get into Trove?</strong></summary>
+
+<br>
+Through your Hermes agents. Let an agent fetch the attachments or files with Hermes's own connections and save them into a source folder. Trove
+never needs your mail or drive passwords. Once the files are in the folder, Trove previews, reads, checks, logs and files them.
 </details>
 
 <details>
 <summary><strong>Which AI agents can work with Trove?</strong></summary>
 
 <br>
-Today, the agents in Hermes: tasks go to the Hermes task board and wait for your approval there. MCP access for other agent systems (Claude, Cursor and others) is planned.
+Today, the agents in Hermes: tasks go to the Hermes Kanban board and wait for your release there. MCP access for other agent systems is planned.
 </details>
 
 <details>
 <summary><strong>Does it need the cloud or paid AI tokens to read receipts?</strong></summary>
 
 <br>
-No. Trove first uses the e-invoice data embedded in the PDF, then the PDF's text layer, and only then local OCR. Whether a receipt passes is decided by fixed rules, not by an AI model.
+No. Trove first uses the e-invoice data embedded in the PDF, then the PDF's text layer, and only then local OCR. Whether a receipt passes is decided
+by fixed rules, not by an AI model.
 </details>
 
-## 🤝 Contributing
+## Tests
+
+```bash
+python tools/run_tests.py        # self-tests, knowledge flow, UI strings, backend smoke test
+TROVE_UI_NODE_MODULES=/path/to/node_modules python tools/run_tests.py   # additionally the UI render test (needs react, react-dom, react-test-renderer 18)
+```
+
+## Contributing
 
 Issues and pull requests are welcome, in English or German.
 
-The code comments and many identifiers are in German. A small glossary: *Beleg* = receipt or document · *Mandant* = client · *Belegprotokoll* = document log · *Quelle / Ziel* = source / target · *Verprobung* = rule-based check. Ask in an issue if something is unclear.
+The code comments and many identifiers are in German. A small glossary: *Beleg* = receipt or document · *Mandant* = client · *Belegprotokoll* = receipt log ·
+*Quelle / Ziel* = source / target · *Verprobung* = rule-based check · *Ins Wissen* = into knowledge. Ask in an issue if something is unclear.
 
-## 📄 License
+## License
 
 [Apache-2.0](LICENSE)
 
@@ -271,5 +282,5 @@ The code comments and many identifiers are in German. A small glossary: *Beleg* 
 
 <div align="center">
   <img src="docs/assets/trove-logo.svg" alt="Trove logo" width="48"><br>
-  <sub>Built by <a href="https://reraise.ai">Reraise</a> · powered by Private Executive</sub>
+  <sub>Built by <a href="https://reraise.ai">Reraise</a></sub>
 </div>
