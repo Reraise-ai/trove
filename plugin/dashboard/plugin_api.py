@@ -1,4 +1,4 @@
-"""Trove — Backend des Hermes-Desktop-Tabs. Mount: /api/plugins/trove/
+"""Trove — Backend des Hermes-Desktop-Tabs. Mount: /api/plugins/reraise-trove/
 
 Sources (local folders), two panes (list + preview), actions copy / move / sync. Every action goes through the
 receipt log (F8) with a read-back check (sha256 of the file as written to disk). Duplicates via the register (F1, SQLite per client).

@@ -8,7 +8,7 @@ import { host, Button, Badge, Input, SandboxedFrame, ROUTES_AREA, SIDEBAR_NAV_AR
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
-const ID = 'trove'
+const ID = 'reraise-trove'
 let rest = null
 let storage = null
 let files = null          // ctx.files (the app's folder picker); may be missing on older Hermes builds

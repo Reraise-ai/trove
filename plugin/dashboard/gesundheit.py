@@ -1,6 +1,6 @@
 """Trove health check: Python and packages, data root, qmd (optional search index), wiki folder (knowledge target), hermes CLI (optional,
 for agent tasks), Stirling-PDF (optional), continuous run (scheduler, watched folders, last run). Installs nothing, only names the command.
-Run: python gesundheit.py. Also GET /api/plugins/trove/gesundheit."""
+Run: python gesundheit.py. Also GET /api/plugins/reraise-trove/gesundheit."""
 import ast
 import json
 import os

@@ -1,12 +1,12 @@
-name: trove
-version: "0.1.0"
-description: "Trove (Datei-Zentrale) — Tab in Hermes Desktop: Belegprotokoll, Register, Quellen."
+name: reraise-trove
+version: "0.2.0rc1"
+description: "Trove — cleanup desk for you and your agents: two-pane file desk, tamper-evident log, receipt reading, knowledge cards."
 author: Reraise maintainers
 kind: standalone
 requires_hermes: ">=0.19"
 platforms: []
 python_dependencies:
   - "pypdfium2>=4,<5"
-  - "pikepdf>=8"
+  - "pikepdf>=8,<11"
   - "numpy>=1.26,<3"
   - "pillow>=10,<13"

@@ -14,7 +14,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 def main():
     tmp = tempfile.mkdtemp(prefix="trove-pkg-")
     try:
-        plugin = os.path.join(tmp, "plugins", "trove")
+        plugin = os.path.join(tmp, "plugins", "reraise-trove")
         shutil.copytree(os.path.join(REPO, "plugin"), plugin, ignore=shutil.ignore_patterns("__pycache__"))  # ONLY the plugin dir
         os.environ["TROVE_DATEN"] = os.path.join(tmp, "data")
         os.environ["HOME"] = os.environ["USERPROFILE"] = os.path.join(tmp, "home")
@@ -28,9 +28,9 @@ def main():
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
         app = FastAPI()
-        app.include_router(mod.router, prefix="/api/plugins/trove")
+        app.include_router(mod.router, prefix="/api/plugins/reraise-trove")
         c = TestClient(app)
-        u = "/api/plugins/trove"
+        u = "/api/plugins/reraise-trove"
         st = c.get(u + "/status")
         assert st.status_code == 200 and st.json()["ok"], st.text
         for name in ("konfig", "belegprotokoll", "aenderungen", "gesundheit", "gemeinsam"):

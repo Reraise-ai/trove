@@ -1,8 +1,8 @@
 {
-  "name": "trove",
+  "name": "reraise-trove",
   "label": "Trove",
-  "description": "Datei-Zentrale: Belegprotokoll, Register, Quellen einbinden.",
+  "description": "Cleanup desk for you and your AI agents: files, tamper-evident log, receipts, knowledge.",
   "icon": "Database",
-  "version": "0.1.0",
+  "version": "0.2.0rc1",
   "api": "plugin_api.py"
 }

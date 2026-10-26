@@ -1,5 +1,5 @@
-"""Developer/offline installer: copy the Trove plugin (all runtime modules + trove.json) to <HERMES_HOME>/plugins/trove/dashboard,
-the desktop UI to <HERMES_HOME>/desktop-plugins/trove, and add the entry to config.yaml (plugins.enabled), without PyYAML. Idempotent.
+"""Developer/offline installer: copy the Trove plugin (all runtime modules + trove.json) to <HERMES_HOME>/plugins/reraise-trove/dashboard,
+the desktop UI to <HERMES_HOME>/desktop-plugins/reraise-trove, and add the entry to config.yaml (plugins.enabled), without PyYAML. Idempotent.
 Not needed when Hermes installs the plugin from the catalog (that covers the plugin files); this script adds the optional parts:
 a private Python venv, the continuous-run scheduler job and the config file.
 HERMES_HOME like Hermes itself: environment variable, else Windows %LOCALAPPDATA%\\hermes, else ~/.hermes.
@@ -25,17 +25,18 @@ PAKETE_PFLICHT = ["pypdfium2", "pikepdf", "numpy", "pillow"]
 PAKETE_OCR = ["onnxruntime", "rapidocr-onnxruntime"]  # rapidocr-onnxruntime verlangt Python < 3.13
 BASIS_PYTHON = ("/opt/homebrew/bin/python3.12", "/usr/local/bin/python3.12", "/opt/homebrew/bin/python3.13", "/usr/local/bin/python3.13")
 VENV_STANDARD = os.path.join("~", ".trove-venv")
+PLUGIN_NAME = "reraise-trove"  # must match plugin.yaml / manifest.json / plugin.js ID
 
 
 def plugins_enabled_setzen(txt):
-    """Adds 'trove' to plugins.enabled (line editing only, the rest stays byte-identical). Returns (new_text, changed)."""
+    """Adds 'reraise-trove' to plugins.enabled (line editing only, the rest stays byte-identical). Returns (new_text, changed)."""
     nl = "\r\n" if "\r\n" in txt else "\n"
     z = txt.splitlines(keepends=True)
     ende = lambda s: s.rstrip("\r\n")
     start = next((i for i, s in enumerate(z) if re.match(r"plugins:\s*(#.*)?$", ende(s)) or re.match(r"plugins:\s*\{\s*\}\s*(#.*)?$", ende(s))), None)
     if start is None:
         pre = "" if not txt or txt.endswith(("\n", "\r")) else nl
-        return txt + pre + "plugins:" + nl + "  enabled:" + nl + "    - trove" + nl, True
+        return txt + pre + "plugins:" + nl + "  enabled:" + nl + "    - " + PLUGIN_NAME + nl, True
     if "{" in z[start]:
         z[start] = "plugins:" + nl
     blk_ende = len(z)
@@ -47,24 +48,24 @@ def plugins_enabled_setzen(txt):
     ein = re.match(r"\s*", kind).group() if kind else "  "
     en = next((i for i in range(start + 1, blk_ende) if re.match(re.escape(ein) + r"enabled:\s*(\[.*\])?\s*(#.*)?$", ende(z[i]))), None)
     if en is None:
-        z[start + 1:start + 1] = [ein + "enabled:" + nl, ein + "  - trove" + nl]
+        z[start + 1:start + 1] = [ein + "enabled:" + nl, ein + "  - " + PLUGIN_NAME + nl]
         return "".join(z), True
     m = re.match(re.escape(ein) + r"enabled:\s*\[(.*)\]\s*(#.*)?$", ende(z[en]))
     if m:  # Inline-Liste -> Blockliste
         alt = [x.strip().strip("'\"") for x in m.group(1).split(",") if x.strip()]
-        if "trove" in alt:
+        if PLUGIN_NAME in alt:
             return txt, False
-        z[en:en + 1] = [ein + "enabled:" + nl] + [ein + "  - %s%s" % (x, nl) for x in alt + ["trove"]]
+        z[en:en + 1] = [ein + "enabled:" + nl] + [ein + "  - %s%s" % (x, nl) for x in alt + [PLUGIN_NAME]]
         return "".join(z), True
     j, letzter, item_ein = en + 1, en, ein + "  "
     while j < blk_ende and (re.match(r"\s*-\s", z[j]) or re.match(r"\s*-\s*$", ende(z[j])) or not ende(z[j]).strip() or z[j].lstrip().startswith("#")):
         mm = re.match(r"(\s*)-\s*(.*?)\s*(#.*)?$", ende(z[j]))
         if mm and z[j].lstrip().startswith("-"):
-            if mm.group(2).strip("'\"") == "trove":  # exakte Zeilenpruefung, nicht "trove-xyz"
+            if mm.group(2).strip("'\"") == PLUGIN_NAME:  # exakte Zeilenpruefung, nicht "trove-xyz"
                 return txt, False
             item_ein, letzter = mm.group(1), j
         j += 1
-    z.insert(letzter + 1, item_ein + "- trove" + nl)
+    z.insert(letzter + 1, item_ein + "- " + PLUGIN_NAME + nl)
     return "".join(z), True
 
 
@@ -232,14 +233,14 @@ def selbsttest_config():
     assert {"/opt/homebrew/bin", "/usr/local/bin", os.path.expanduser("~/.local/bin"), os.path.expanduser("~/.bun/bin"), "/usr/bin"} <= set(pfad), pfad
     assert gesundheit.such_pfad("/x/qmd").split(":")[0] == "/x" and len(pfad) == len(set(pfad)), pfad
     f = plugins_enabled_setzen
-    assert f("plugins:\n  clone_timeout_seconds: 5\nx: 1\n") == ("plugins:\n  enabled:\n    - trove\n  clone_timeout_seconds: 5\nx: 1\n", True)
-    assert f("a: 1\n") == ("a: 1\nplugins:\n  enabled:\n    - trove\n", True)
-    assert f("plugins:\n  enabled:\n    - trove-xyz\n  other: 1\n") == ("plugins:\n  enabled:\n    - trove-xyz\n    - trove\n  other: 1\n", True)
-    assert f("plugins:\n  enabled:\n    - trove\n")[1] is False
-    assert f("plugins:\r\n  enabled: [a, b]\r\n") == ("plugins:\r\n  enabled:\r\n    - a\r\n    - b\r\n    - trove\r\n", True)
-    assert f("plugins:\n  enabled:\n  - a\nnext: 1\n") == ("plugins:\n  enabled:\n  - a\n  - trove\nnext: 1\n", True)
-    assert f("plugins: {}\n") == ("plugins:\n  enabled:\n    - trove\n", True)
-    assert f("")[0] == "plugins:\n  enabled:\n    - trove\n"
+    assert f("plugins:\n  clone_timeout_seconds: 5\nx: 1\n") == ("plugins:\n  enabled:\n    - reraise-trove\n  clone_timeout_seconds: 5\nx: 1\n", True)
+    assert f("a: 1\n") == ("a: 1\nplugins:\n  enabled:\n    - reraise-trove\n", True)
+    assert f("plugins:\n  enabled:\n    - trove-xyz\n  other: 1\n") == ("plugins:\n  enabled:\n    - trove-xyz\n    - reraise-trove\n  other: 1\n", True)
+    assert f("plugins:\n  enabled:\n    - reraise-trove\n")[1] is False
+    assert f("plugins:\r\n  enabled: [a, b]\r\n") == ("plugins:\r\n  enabled:\r\n    - a\r\n    - b\r\n    - reraise-trove\r\n", True)
+    assert f("plugins:\n  enabled:\n  - a\nnext: 1\n") == ("plugins:\n  enabled:\n  - a\n  - reraise-trove\nnext: 1\n", True)
+    assert f("plugins: {}\n") == ("plugins:\n  enabled:\n    - reraise-trove\n", True)
+    assert f("")[0] == "plugins:\n  enabled:\n    - reraise-trove\n"
     print("selbsttest config ok")
 
 
@@ -259,7 +260,7 @@ def main():
     if a.selbsttest:
         return selbsttest_config()
     home = os.path.expanduser(a.hermes_home) if a.hermes_home else konfig.hermes_home()
-    ziel = os.path.join(home, "plugins", "trove"); dash = os.path.join(ziel, "dashboard")
+    ziel = os.path.join(home, "plugins", PLUGIN_NAME); dash = os.path.join(ziel, "dashboard")
     if a.pruefen:
         if not os.path.isfile(os.path.join(dash, "gesundheit.py")):
             sys.exit("Not installed: %s is missing. Install first." % dash)
@@ -295,7 +296,7 @@ def main():
     # Desktop-Haelfte als REINES Disk-Plugin in den App-Root (Hot-Load, standardmaessig AN).
     # KEIN .hermes-package.json: mit Marker gilt in der App "opt-in" (defaultEnabled=false, runtime-loader.ts),
     # dann bleibt der Tab aus, bis jemand ihn unter Capabilities -> Plugins einschaltet (Befund 18.10. 02:55).
-    droot = os.path.join(home, "desktop-plugins", "trove")
+    droot = os.path.join(home, "desktop-plugins", PLUGIN_NAME)
     os.makedirs(droot, exist_ok=True)
     shutil.copyfile(os.path.join(QUELLE, "desktop", "plugin.js"), os.path.join(droot, "plugin.js"))
     for alt in (os.path.join(droot, ".hermes-package.json"), os.path.join(ziel, "desktop", "plugin.js")):
@@ -320,7 +321,7 @@ def main():
             bak = cfg + ".bak-before-trove-" + time.strftime("%Y%m%d-%H%M%S")
             shutil.copyfile(cfg, bak)
         open(cfg, "w", encoding="utf-8", newline="").write(neu)
-        print("config.yaml: plugins.enabled += trove (backup %s)" % bak)
+        print("config.yaml: plugins.enabled += " + PLUGIN_NAME + " (backup %s)" % bak)
     print(json.dumps({"hermes_home": home, "ziel": ziel, "desktop_root": droot, "module": module, "trove_json": k, "config_geaendert": geaendert}, ensure_ascii=False))
     print("Next step: restart Hermes; health check: python %s --pruefen" % os.path.abspath(__file__))
     if not dl_ok:
