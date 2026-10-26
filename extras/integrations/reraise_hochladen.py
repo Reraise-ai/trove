@@ -41,6 +41,7 @@ import urllib.request
 from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "plugin", "dashboard"))  # Trove core modules
 import belegprotokoll as bp
 import gemeinsam as gm
 import oeffentlich as oe

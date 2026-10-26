@@ -1,7 +1,6 @@
-"""Trove-Gesundheitscheck: Python, Pakete, Datenwurzel, Module, qmd + Sammlungen raw/wiki, Wiki-Ordner, Hermes-Plugins trove + card-pusher,
-Dauerlauf (Planer geladen, ueberwachte Ordner lesbar, letzter Lauf aus <datenwurzel>/dauerlauf_letzter_lauf.json), Dienste.
-GESAMT "in Ordnung" nur ohne [fehlt]/[offen]. Pflicht im Kundenmodus (kartenziel wiki): raw/wiki, Wiki-Ordner, card-pusher. Aufruf: python gesundheit.py
-Auch als GET /api/plugins/trove/gesundheit und `python installieren.py --pruefen`. Installiert nichts, nennt nur den Befehl."""
+"""Trove health check: Python and packages, data root, qmd (optional search index), wiki folder (knowledge target), hermes CLI (optional,
+for agent tasks), Stirling-PDF (optional), continuous run (scheduler, watched folders, last run). Installs nothing, only names the command.
+Run: python gesundheit.py. Also GET /api/plugins/trove/gesundheit."""
 import ast
 import json
 import os
@@ -19,8 +18,6 @@ import konfig  # noqa: E402
 PAKETE = (("pypdfium2", "pypdfium2"), ("pikepdf", "pikepdf"), ("numpy", "numpy"), ("PIL", "pillow"))
 OCR = (("onnxruntime", "onnxruntime"), ("rapidocr_onnxruntime", "rapidocr-onnxruntime"))  # fehlt -> nur Hinweis "Scans ohne Texterkennung"
 SCHLECHT = ("fehlt", "offen")  # GESAMT "in Ordnung" nur ohne diese
-DIENSTE = (("Stirling-PDF (Zerlegen)", "TROVE_STIRLING", "http://127.0.0.1:8090"), ("Paperless (Suche)", "TROVE_PAPERLESS", "http://127.0.0.1:8010"),
-           ("DocuSeal (Unterschriften)", "TROVE_DOCUSEAL", "http://127.0.0.1:8091"), ("ERPNext (Spiegel)", "TROVE_ERPNEXT", "http://127.0.0.1:8080"))
 
 
 def qmd_ordner():
@@ -90,27 +87,8 @@ def _punkt(name, status, detail, hilfe=""):
     return {"name": name, "status": status, "detail": detail, "hilfe": hilfe}
 
 
-def _erreichbar(url):
-    try:
-        urllib.request.urlopen(url, timeout=3).close()
-        return True
-    except urllib.error.HTTPError:
-        return True  # Dienst antwortet (z. B. 401/404)
-    except (OSError, ValueError):
-        return False
 
 
-def _erpnext(url):
-    """ERPNext gilt nur als 'antwortet', wenn /api/method/ping {"message": "pong"} liefert (auf 8080 kann z. B. signal-cli lauschen)."""
-    try:
-        with urllib.request.urlopen(url.rstrip("/") + "/api/method/ping", timeout=3) as r:
-            if json.loads(r.read(4096).decode("utf-8", "replace") or "{}").get("message") == "pong":
-                return "ok", url + " antwortet als ERPNext (ping: pong)"
-    except (OSError, ValueError, AttributeError):
-        pass
-    if _erreichbar(url):
-        return "optional", url + " antwortet, aber nicht als ERPNext (anderer Dienst auf dem Port) - ERPNext nicht gefunden (optional)"
-    return "optional", url + " nicht erreichbar (optional, spaetere Stufen)"
 
 
 def _qmd_lauf(qmd, *args, timeout=60):
@@ -229,130 +207,107 @@ def _dienst_geladen(label):
     return None, "kein LaunchAgent auf diesem System (cron)"
 
 
+
+
+def _erreichbar(url):
+    try:
+        urllib.request.urlopen(url, timeout=3).close()
+        return True
+    except urllib.error.HTTPError:
+        return True  # the service answers (e.g. 401/404)
+    except (OSError, ValueError):
+        return False
+
+
 def bericht():
     p = []
     k = konfig.lesen()
-    wiki_modus = konfig.kartenziel() == "wiki"
     mac = sys.platform == "darwin"
-    venv_hilfe = ("Einrichten mit dem Installer (legt %s mit allen Paketen an): python3 tools/installieren.py --mandant <name> --datenwurzel ~/Trove ..."
-                  % os.path.join(os.path.expanduser("~"), ".trove-venv"))
     try:
-        py = konfig.python_finden("pypdfium2")  # TROVE_PYTHON/trove.json gilt ohne Paketpruefung -> Pakete stehen in den Zeilen darunter
-        p.append(_punkt("Python fuer Trove", "ok", py + (" (aus trove.json)" if os.environ.get("TROVE_PYTHON") else " (mit pypdfium2)")))
+        py = konfig.python_finden("pypdfium2")
+        p.append(_punkt("Python for Trove", "ok", py + (" (from trove.json)" if os.environ.get("TROVE_PYTHON") else " (with pypdfium2)")))
     except RuntimeError as ex:
         py = None
-        p.append(_punkt("Python fuer Trove", "fehlt", str(ex), "" if sys.platform == "win32" else venv_hilfe))
+        p.append(_punkt("Python for Trove", "fehlt", str(ex), "Install the packages listed in plugin.yaml (pip install pypdfium2 pikepdf numpy pillow)."))
     try:
         exe = py or konfig.python_finden(None)
         code = "import importlib,json;r={}\nfor m in %r:\n  try: importlib.import_module(m); r[m]=1\n  except Exception: r[m]=0\nprint(json.dumps(r))" % ([m for m, _ in PAKETE + OCR],)
         erg = json.loads(subprocess.run([exe, "-c", code], capture_output=True, text=True, timeout=120, env=konfig.kind_env()).stdout.strip().splitlines()[-1])
         pip = '"%s" -m pip install ' % exe
         for m, name in PAKETE:
-            p.append(_punkt("Paket " + name, "ok" if erg.get(m) else "fehlt", "ladbar" if erg.get(m) else "nicht installiert (noetig fuer Lesen/Zerlegen/Ins Wissen)",
-                            "" if erg.get(m) else (venv_hilfe if mac else pip + name)))
+            p.append(_punkt("Package " + name, "ok" if erg.get(m) else "fehlt", "importable" if erg.get(m) else "not installed (needed for reading, splitting and Into knowledge)",
+                            "" if erg.get(m) else pip + name))
         fehlt_ocr = [name for m, name in OCR if not erg.get(m)]
-        p.append(_punkt("Texterkennung (Scans)", "hinweis" if fehlt_ocr else "ok",
-                        ("Scans ohne Texterkennung (fehlt: %s); Text-PDFs und Textdateien gehen normal" % ", ".join(fehlt_ocr)) if fehlt_ocr else "rapidocr ladbar",
-                        ("braucht Python 3.12: brew install python@3.12, dann Installer erneut" if mac else pip + " ".join(fehlt_ocr)) if fehlt_ocr else ""))
+        p.append(_punkt("Text recognition (scans)", "hinweis" if fehlt_ocr else "ok",
+                        ("scans are not read (missing: %s); text PDFs and text files work normally" % ", ".join(fehlt_ocr)) if fehlt_ocr else "rapidocr importable",
+                        (pip + " ".join(fehlt_ocr)) if fehlt_ocr else ""))
     except (RuntimeError, OSError, ValueError, IndexError, subprocess.SubprocessError) as ex:
-        p.append(_punkt("Pakete", "fehlt", "nicht pruefbar: %s" % ex))
+        p.append(_punkt("Packages", "fehlt", "cannot check: %s" % ex))
     w = konfig.datenwurzel()
     try:
         os.makedirs(w, exist_ok=True)
         t = os.path.join(w, ".schreibtest")
         open(t, "w").close()
         os.remove(t)
-        p.append(_punkt("Datenwurzel schreibbar", "ok", w))
+        p.append(_punkt("Data root writable", "ok", w))
     except OSError as ex:
-        p.append(_punkt("Datenwurzel schreibbar", "fehlt", "%s: %s" % (w, ex), "datenwurzel in trove.json aendern"))
+        p.append(_punkt("Data root writable", "fehlt", "%s: %s" % (w, ex), "Set a writable data folder (TROVE_DATEN or datenwurzel in trove.json)."))
     api = _plugin_api()
     if api:
-        repo = HIER
-        soll = laufzeit_module(api, repo)
-        fehlt = [n for n in soll if not os.path.isfile(os.path.join(repo, n + ".py"))]
-        p.append(_punkt("Module vollstaendig", "fehlt" if fehlt else "ok", ("fehlen: " + ", ".join(fehlt)) if fehlt else "%d Module" % len(soll),
-                        "installieren.py erneut ausfuehren" if fehlt else ""))
-    # Suche (qmd) und Wissenssystem
+        soll = laufzeit_module(api, HIER)
+        fehlt = [n for n in soll if not os.path.isfile(os.path.join(HIER, n + ".py"))]
+        p.append(_punkt("Modules complete", "fehlt" if fehlt else "ok", ("missing: " + ", ".join(fehlt)) if fehlt else "%d modules" % len(soll), "Reinstall the plugin." if fehlt else ""))
     qmd = qmd_finden()
     if not qmd:
-        p.append(_punkt("Suchprogramm qmd", "fehlt", "nicht gefunden (gesucht: TROVE_QMD, PATH, %s)" % ", ".join(qmd_ordner()),
-                        "qmd installieren (npm install -g @tobilu/qmd), dann Installer erneut starten"))
+        p.append(_punkt("Search tool qmd", "optional", "not found - Into knowledge still writes twins and cards, it just skips the search index",
+                        "Optional: npm install -g @tobilu/qmd"))
     else:
         rc, aus = _qmd_lauf(qmd, "--version", timeout=30)
-        p.append(_punkt("Suchprogramm qmd", "ok" if rc == 0 else "fehlt", ("%s, %s" % (qmd, aus.splitlines()[0] if aus else "?")) if rc == 0 else "%s startet nicht: %s" % (qmd, aus[-200:]),
-                        "" if rc == 0 else "node fehlt? which node; qmd neu installieren"))
-        if rc == 0:
-            rc, aus = _qmd_lauf(qmd, "collection", "list", timeout=60)
-            da = sammlungen(aus) if rc == 0 else []
-            noetig = ["raw", "wiki"] if wiki_modus else []
-            fehlt = [s for s in noetig if s not in da]
-            p.append(_punkt("Sammlungen im Wissen", "fehlt" if (fehlt or rc != 0) else "ok",
-                            ("vorhanden: %s%s" % (", ".join(da) or "keine", ("; es fehlen: " + ", ".join(fehlt)) if fehlt else "")) if rc == 0 else "qmd collection list: " + aus[-200:],
-                            ("Das Wissenssystem braucht die Sammlungen raw und wiki (qmd collection add ~/Wissen/raw --name raw, ebenso wiki)" if fehlt else "")))
-    if wiki_modus:
-        ww = os.path.expanduser(os.environ.get("TROVE_WIKI") or k.get("wiki_wurzel") or os.path.join("~", "Wissen", "wiki"))
-        ok = os.path.isdir(ww)
-        p.append(_punkt("Wiki-Ordner", "ok" if ok else "fehlt", ww + (" vorhanden" if ok else " nicht gefunden"), "" if ok else "wiki_wurzel in trove.json pruefen (Installer --wiki-wurzel)"))
-    # Hermes: Plugins eingeschaltet
-    home = konfig.hermes_home()
-    cfg = os.path.join(home, "config.yaml")
+        p.append(_punkt("Search tool qmd", "ok" if rc == 0 else "fehlt", ("%s, %s" % (qmd, aus.splitlines()[0] if aus else "?")) if rc == 0 else "%s does not start: %s" % (qmd, aus[-200:]),
+                        "" if rc == 0 else "Is node installed? Reinstall qmd."))
     try:
-        an, aus_ = plugins_liste(open(cfg, encoding="utf-8").read())
-    except OSError:
-        an, aus_ = [], []
-    for name, pflicht in (("trove", True), ("card-pusher", wiki_modus)):
-        ordner = os.path.isdir(os.path.join(home, "plugins", name))
-        aktiv = name in an and name not in aus_ and ordner
-        p.append(_punkt("Hermes-Plugin " + name, "ok" if aktiv else ("fehlt" if pflicht else "optional"),
-                        "eingeschaltet" if aktiv else "%s%s%s" % ("nicht in plugins.enabled" if name not in an else "", "; in plugins.disabled" if name in aus_ else "",
-                                                                    "; Ordner %s fehlt" % os.path.join(home, "plugins", name) if not ordner else ""),
-                        "" if aktiv else ("Installer erneut ausfuehren" if name == "trove" else "card-pusher nach ~/.hermes/plugins/card-pusher kopieren, dann: hermes plugins enable card-pusher")))
-    # Dauerlauf
+        import wissenskarte as wk
+        ww = wk.wiki_wurzel(anlegen=False)
+        p.append(_punkt("Knowledge folder (wiki)", "ok" if os.path.isdir(ww) else "optional", ww + (" exists" if os.path.isdir(ww) else " will be created on the first Into knowledge run"),
+                        ""))
+    except ValueError as ex:
+        p.append(_punkt("Knowledge folder (wiki)", "fehlt", str(ex), "Fix wiki_wurzel in trove.json or unset TROVE_WIKI."))
     ueberwacht = k.get("ueberwacht") or []
     minuten = k.get("dauerlauf_minuten")
     noetig = bool(ueberwacht) or bool(minuten)
     label = "ai.trove.dauerlauf-" + konfig.mandant()
     geladen, det = _dienst_geladen(label)
     if geladen is None:
-        p.append(_punkt("Dauerlauf (Planer)", "optional", det))
+        p.append(_punkt("Continuous run (scheduler)", "optional", det))
     else:
-        p.append(_punkt("Dauerlauf (Planer)", "ok" if geladen else ("fehlt" if noetig else "optional"),
-                        det if noetig or geladen else "nicht eingerichtet (keine ueberwachten Ordner)",
-                        "" if geladen else "am Mac angemeldet: python3 tools/installieren.py ... --dauerlauf 30"))
+        p.append(_punkt("Continuous run (scheduler)", "ok" if geladen else ("fehlt" if noetig else "optional"),
+                        det if noetig or geladen else "not set up (no watched folders)",
+                        "" if geladen else "Optional: python tools/installieren.py ... --dauerlauf 30 (installs an OS scheduler job)"))
     for e in ueberwacht:
         o = e.get("ordner") or ""
         try:
             n = len(os.listdir(o))
-            p.append(_punkt("Ordner lesbar: " + o, "ok", "%d Eintraege sichtbar" % n))
+            p.append(_punkt("Folder readable: " + o, "ok", "%d entries visible" % n))
         except OSError as ex:
             nicht_da = not os.path.exists(o)
-            p.append(_punkt("Ordner lesbar: " + o, "fehlt", "Ordner nicht vorhanden" if nicht_da else "Ordner nicht lesbar (%s)" % ex.strerror,
-                            "Ordner wurde verschoben/umbenannt? Neu ins Wissen aufnehmen." if nicht_da else
-                            "macOS erlaubt das Lesen nicht: Systemeinstellungen > Datenschutz & Sicherheit > Festplattenvollzugriff > + > %s hinzufuegen "
-                            "(Befehl+Umschalt+G, Pfad einfuegen), dann Gesundheitscheck wiederholen." % (k.get("python") or "das Trove-Python")))
+            p.append(_punkt("Folder readable: " + o, "fehlt", "folder does not exist" if nicht_da else "folder not readable (%s)" % ex.strerror,
+                            "Moved or renamed? Add it to Into knowledge again." if nicht_da else
+                            ("macOS blocks reading: System Settings > Privacy & Security > Full Disk Access > add %s." % (k.get("python") or "the Python used by Trove")) if mac else ""))
     if noetig or os.path.isfile(os.path.join(w, "dauerlauf_letzter_lauf.json")):
         p.append(letzter_lauf(os.path.join(w, "dauerlauf_letzter_lauf.json"), minuten))
-    for name, var, std in DIENSTE:
-        url = os.environ.get(var, std)
-        if var == "TROVE_ERPNEXT":
-            p.append(_punkt(name, *_erpnext(url)))
-            continue
-        ok = _erreichbar(url)
-        p.append(_punkt(name, "ok" if ok else "optional", url + (" antwortet" if ok else " nicht erreichbar (optional, spaetere Stufen)")))
-    rcl = shutil.which("rclone") or next((x for x in ("/opt/homebrew/bin/rclone", "/usr/local/bin/rclone") if os.path.isfile(x)), None) or os.environ.get("TROVE_RCLONE")
-    p.append(_punkt("rclone (Online-Drives)", "ok" if rcl else "optional", rcl or "nicht gefunden",
-                    "" if rcl else "brew install rclone (Mac) bzw. winget install Rclone.Rclone (Windows)"))
-    p.append(_punkt("hermes-Programm (Auftraege)", "ok" if konfig.hermes_exe() else "optional",
-                    konfig.hermes_exe() or "nicht gefunden (PATH, ~/.local/bin; nur fuer Auftraege an die KI)"))
-    return {"ok": all(x["status"] not in SCHLECHT for x in p), "mandant": konfig.mandant(), "datenwurzel": w, "hermes_home": home,
-            "kartenziel": "wiki" if wiki_modus else "brett", "punkte": p}
+    url = os.environ.get("TROVE_STIRLING", "http://127.0.0.1:8090")
+    ok = _erreichbar(url)
+    p.append(_punkt("Stirling-PDF (Split)", "ok" if ok else "optional", url + (" answers" if ok else " not reachable (optional, only for splitting multi-page PDFs)")))
+    p.append(_punkt("hermes CLI (agent tasks)", "ok" if konfig.hermes_exe() else "optional",
+                    konfig.hermes_exe() or "not found (PATH, ~/.local/bin; only needed for tasks to agents)"))
+    return {"ok": all(x["status"] not in SCHLECHT for x in p), "mandant": konfig.mandant(), "datenwurzel": w, "hermes_home": konfig.hermes_home(), "punkte": p}
 
 
 def text(b):
-    z = ["Trove-Gesundheit: Mandant %s, Daten %s" % (b["mandant"], b["datenwurzel"])]
+    z = ["Trove health: client %s, data %s" % (b["mandant"], b["datenwurzel"])]
     for x in b["punkte"]:
         z.append("  [%-8s] %s: %s%s" % (x["status"], x["name"], x["detail"], ("  ->  " + x["hilfe"]) if x["hilfe"] else ""))
-    z.append("GESAMT: " + ("in Ordnung" if b["ok"] else "es fehlt etwas (siehe Zeilen mit [fehlt] oder [offen])"))
+    z.append("OVERALL: " + ("ok" if b["ok"] else "something is missing (see lines marked [fehlt] or [offen])"))
     return "\n".join(z)
 
 

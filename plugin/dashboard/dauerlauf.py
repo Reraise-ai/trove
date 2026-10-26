@@ -42,7 +42,7 @@ def _markieren(l, sha, zustand):
         n += wk.kopf_setzen(md, "trove_zustand", zustand)
         kopf, _ = w.zwilling_lesen(md)
         karte = str(kopf.get("karte") or "")
-        if karte.startswith("wiki:") and wk.kartenziel() == "wiki":
+        if karte.startswith("wiki:"):
             cp = os.path.join(wk.wiki_wurzel(), *karte[5:].split("/")) + ".md"
             if os.path.exists(cp) and wk.kopf_setzen(cp, "trove_zustand", zustand):
                 wk.GEAENDERT.append(cp)
@@ -57,7 +57,7 @@ def nachfuehren(e, embed=True, mandant=None, log=True):
         wk.GEAENDERT.clear()
     zug = (e.get("zugehoerigkeit") or "").strip() or w.ZUG_OFFEN
     sicht = e.get("sichtbarkeit") or "privat"
-    karten = wk.kartenziel() == "wiki" or (bool(e.get("karten")) and sicht == "privat")  # nie stumm oeffentliche Brett-Karten
+    karten = True  # one Trove: a knowledge card per file (the wiki is the knowledge target)
     l = w.Lauf(mandant=mandant, sammlung=e["sammlung"], sichtbarkeit=sicht, zugehoerigkeit=zug, wurzel=e["ordner"],
                traeger=e.get("traeger") or w.traeger_auto(zug), karten=karten, embed=embed)
     z = {"ordner": e["ordner"], "sammlung": e["sammlung"], "neu": [], "uebernommen": 0, "geaendert": [], "weg": [], "umbenannt": [], "unveraendert": 0,
@@ -141,7 +141,7 @@ def nachfuehren(e, embed=True, mandant=None, log=True):
             w._notiz(l, werkzeug="dauerlauf.py", meldung="Dauerlauf %s: %d neu, %d geaendert, %d weg, %d unveraendert, %d Fehler" % (
                 e["ordner"], len(z["neu"]), len(z["geaendert"]), len(z["weg"]), z["unveraendert"], len(z["fehler"])))
         gm.schreibe_atomar(sp, json.dumps(stand, ensure_ascii=False, indent=1))
-    if log and wk.kartenziel() == "wiki":
+    if log:
         z["log"] = wk.log_lauf()
     return z
 
@@ -175,11 +175,10 @@ def lauf(liste, embed=True):
             out.append({"ordner": e.get("ordner"), "neu": [], "geaendert": [], "weg": [], "unveraendert": 0,
                         "fehler": ["%s: %s" % (type(ex).__name__, str(ex)[:300])]})
     allg = []
-    if wk.kartenziel() == "wiki":
-        try:
-            wk.log_lauf()  # EINE Zeile in wiki/log.md fuer den ganzen Lauf
-        except Exception as ex:
-            allg.append("wiki/log.md: %s: %s" % (type(ex).__name__, str(ex)[:200]))
+    try:
+        wk.log_lauf()  # EINE Zeile in wiki/log.md fuer den ganzen Lauf
+    except Exception as ex:
+        allg.append("wiki/log.md: %s: %s" % (type(ex).__name__, str(ex)[:200]))
     marker = {"zeit": bp.jetzt(), "ordner": [z.get("ordner") for z in out],
               "neu": sum(len(z.get("neu") or []) for z in out), "geaendert": sum(len(z.get("geaendert") or []) for z in out),
               "weg": sum(len(z.get("weg") or []) for z in out),

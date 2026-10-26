@@ -1,10 +1,10 @@
 """Trove — Backend des Hermes-Desktop-Tabs. Mount: /api/plugins/trove/
 
-F9: Quellen einbinden (lokaler Ordner oder rclone-Remote), zwei Seiten (Liste + Vorschau), Aktionen
-kopieren / verschieben / synchronisieren — jede Aktion laeuft ueber das Belegprotokoll (F8) mit Gegenprobe
-(sha256 von der Platte zurueckgelesen). Dubletten ueber das Register (F1, SQLite je Mandant).
-Nichts wird ueberschrieben; verschieben loescht die Quelle erst nach bestandener Gegenprobe und nur bei
-lokalen Quellen (Welt A). rclone-Remotes sind nur lesend (Welt B: Spiegel statt Umzug).
+Sources (local folders), two panes (list + preview), actions copy / move / sync. Every action goes through the
+receipt log (F8) with a read-back check (sha256 of the file as written to disk). Duplicates via the register (F1, SQLite per client).
+Nothing is overwritten. Writing is per source folder: a source is read-only unless it was explicitly added as writable.
+Copy needs a writable target; move additionally deletes the source file after the read-back check, so it needs a writable source too.
+Trove never asks for or stores credentials; mail and cloud files reach it as files in a watched folder (put there by Hermes agents).
 """
 from __future__ import annotations
 
@@ -35,14 +35,13 @@ import aenderungen  # noqa: E402
 import gesundheit  # noqa: E402
 import gemeinsam as gm  # noqa: E402
 
-REGISTER_ALT = os.environ.get("TROVE_REGISTER_DB", "")  # optional: Altindex (nur intern); leer = aus
-RCLONE = os.environ.get("TROVE_RCLONE") or shutil.which("rclone") or os.path.join(os.environ.get("LOCALAPPDATA", ""), r"Microsoft\WinGet\Links\rclone.exe")
 
 TROVE_DATEN = bp.WURZEL  # eine Datenwurzel (Umgebungsvariable TROVE_DATEN, siehe belegprotokoll)
 RE_MANDANT = r"[a-z0-9][a-z0-9_-]{0,40}"  # muss gleich gemeinsam.RE_MANDANT sein (Kopie: Plugin laedt ohne F16-Module)
 router = APIRouter()
 BLOCK = 1 << 20
 MANDANT = konfig.mandant()  # trove.json / TROVE_MANDANT
+VERSION = "0.2.0rc1"
 
 
 def _jetzt():
@@ -55,6 +54,15 @@ def _sha(pfad):
         for b in iter(lambda: f.read(BLOCK), b""):
             h.update(b)
     return h.hexdigest()
+
+
+def _wiki_oder_none():
+    """Path of the knowledge target (wiki folder) or None if it cannot be resolved."""
+    import wissenskarte as wk
+    try:
+        return wk.wiki_wurzel(anlegen=False)
+    except ValueError:
+        return None
 
 
 def _mandant_pruefen(mandant):
@@ -97,19 +105,8 @@ def _quelle(mandant, qid):
     raise HTTPException(404, "Quelle %s unbekannt" % qid)
 
 
-def _rclone(*args, timeout=120):
-    if not os.path.exists(RCLONE):
-        raise _fehler(500, "rclone nicht gefunden: " + RCLONE)
-    r = subprocess.run([RCLONE, *args], capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace")
-    if r.returncode != 0:
-        raise HTTPException(502, "rclone: " + (r.stderr.strip()[-400:] or "Fehler %d" % r.returncode))
-    return r.stdout
 
 
-def _kundenmodus():
-    """Kundenmodus: die Ablage des Kunden wird nur gelesen; alles, was in eine Quelle schreibt, ist gesperrt (konfig.kartenziel:
-    nur ein ausdrueckliches brett ist der interne Server)."""
-    return konfig.kartenziel() == "wiki"
 
 
 _LOG = logging.getLogger("trove")
@@ -134,27 +131,12 @@ def _fehler(code, text):
     return HTTPException(code, _ohne_pfade(text))
 
 
-def _postfach_da():
-    """Mindestens ein Postfach eingerichtet (postfaecher.json); der Tab zeigt "Mail abholen" im Kundenmodus nur dann."""
-    import mail_abholer as ma
-    try:
-        return bool(ma.postfaecher(MANDANT))
-    except (OSError, ValueError):
-        return False
 
 
-def _reraise_knopf():
-    """Knopf "zu Reraise" (Upload oeffentlicher Karten zu reraise.ai): im Kundenmodus nur auf ausdruecklichen Wunsch (trove.json reraise_knopf = 1), sonst aus."""
-    return (not _kundenmodus()) or os.environ.get("TROVE_RERAISE_KNOPF", "").strip().lower() in ("1", "true", "an")  # trove.json true -> "True"
 
 
-ICLOUD_DRIVE = os.path.join("~", "Library", "Mobile Documents", "com~apple~CloudDocs")
 
 
-def _icloud_drive():
-    """Lokaler iCloud-Drive-Ordner (Mac, iCloud Drive eingeschaltet) oder None. Kundenmodus: einziger Cloud-Weg (rclone fehlt dort)."""
-    p = os.path.expanduser(ICLOUD_DRIVE)
-    return p if os.path.isdir(p) else None
 
 
 def _unter_real(pfad, wurzel):
@@ -218,21 +200,11 @@ def _dubletten_zaehler(mandant, shas):
     if not shas:
         return {}
     con = _register_con(mandant)
-    alt = None
-    if os.path.exists(REGISTER_ALT):
-        try:
-            alt = sqlite3.connect("file:%s?mode=ro" % REGISTER_ALT.replace("\\", "/"), uri=True)
-        except sqlite3.Error:
-            alt = None
     out = {}
     for s in set(shas):
         n = con.execute("select count(distinct pfad) from datei where sha256=?", (s,)).fetchone()[0]
-        if alt is not None:
-            n += alt.execute("select count(*) from datei where sha256=?", (s,)).fetchone()[0]
         out[s] = n
     con.close()
-    if alt is not None:
-        alt.close()
     return out
 
 
@@ -252,18 +224,9 @@ def status():
             prot.append({"mandant": m, "pfad": pf, "bytes": os.path.getsize(pf), "zeilen": letzte.get("nr") if letzte else 0,
                          "letzte_zeit": letzte.get("zeit") if letzte else None, "letztes_ereignis": letzte.get("ereignis") if letzte else None,
                          "kette_ende": (letzte.get("kette") or "")[:16] if letzte else None, "anker": bp.letzter_anker(m)})
-    reg = {"pfad": REGISTER_ALT, "vorhanden": os.path.exists(REGISTER_ALT)}
-    if reg["vorhanden"]:
-        try:
-            con = sqlite3.connect("file:%s?mode=ro" % REGISTER_ALT.replace("\\", "/"), uri=True)
-            n, b = con.execute("select count(*), coalesce(sum(groesse),0) from datei").fetchone()
-            reg.update({"dateien": n, "bytes": b, "dubletten_gruppen": con.execute("select count(*) from (select sha256 from datei group by sha256 having count(*)>1)").fetchone()[0]})
-            con.close()
-        except sqlite3.Error as ex:
-            reg["fehler"] = str(ex)
-    return {"ok": True, "mandant": MANDANT, "datenwurzel": TROVE_DATEN, "kartenziel": konfig.kartenziel(), "reraise_knopf": _reraise_knopf(), "postfach": _postfach_da(), "erpnext": bool(_sp().einstellung("TROVE_ERPNEXT")), "profile": gesundheit.hermes_profile(), "hermes_cli": _hermes_exe() is not None,
-            "zeit": _jetzt(), "stufe": "F2 F3 F4 F5 F6 F7 F8 F9 F10 F11 F15 F16", "geraet": os.environ.get("COMPUTERNAME", ""),
-            "pid": os.getpid(), "protokolle": prot, "register": reg, "rclone": os.path.exists(RCLONE), "icloud_drive": _icloud_drive(), "wissen_einzeln": True, "wissen_ohne_pflicht": True}
+    return {"ok": True, "mandant": MANDANT, "datenwurzel": TROVE_DATEN, "wiki": _wiki_oder_none(), "profile": gesundheit.hermes_profile(),
+            "hermes_cli": _hermes_exe() is not None, "zeit": _jetzt(), "geraet": os.environ.get("COMPUTERNAME", ""),
+            "pid": os.getpid(), "protokolle": prot, "version": VERSION}
 
 
 @router.get("/gesundheit")
@@ -273,79 +236,40 @@ def gesundheit_route():
 
 @router.get("/quellen")
 def quellen(mandant: str = MANDANT):
-    liste = _quellen(mandant)
-    remotes = []
-    if os.path.exists(RCLONE):
-        try:
-            remotes = [r.strip().rstrip(":") for r in _rclone("listremotes", timeout=20).splitlines() if r.strip()]
-        except HTTPException:
-            remotes = []
-    return {"quellen": liste, "rclone_remotes": remotes}
+    return {"quellen": _quellen(mandant)}
 
 
 @router.post("/quellen")
 def quelle_anlegen(body: dict):
+    """Add a local folder as a source. Read-only unless the caller explicitly sends nur_lesen=false (writable source)."""
     mandant = body.get("mandant") or MANDANT
-    art = body.get("art")
     name = (body.get("name") or "").strip()
-    if art == "auto":  # eingetippter Pfad: "name:unterordner" = rclone-Remote, sonst lokaler Ordner (Laufwerksbuchstabe C: zaehlt nicht)
-        m = re.fullmatch(r"([A-Za-z0-9_][A-Za-z0-9_.-]+):(?![\\/]{2})(.*)", (body.get("pfad") or "").strip())
-        if m:
-            art, body = "rclone", {**body, "remote": m.group(1), "pfad": m.group(2)}
-        else:
-            art = "ordner"
-    if art == "ordner":
-        pfad = os.path.abspath(os.path.expanduser(body.get("pfad") or ""))
-        if not os.path.isdir(pfad):
-            raise HTTPException(400, "Ordner nicht gefunden: " + pfad)
-        q = {"id": hashlib.sha1(("ordner:" + pfad.casefold()).encode()).hexdigest()[:10], "art": "ordner", "name": name or pfad, "pfad": pfad,
-             "nur_lesen": True if _kundenmodus() else bool(body.get("nur_lesen", True))}  # Standard: nur lesen; beschreibbar nur ausdruecklich
-    elif art == "rclone":
-        remote = (body.get("remote") or "").rstrip(":")
-        unter = (body.get("pfad") or "").strip("/")
-        _rclone("lsjson", "%s:%s" % (remote, unter), "--max-depth", "1", timeout=60)  # Erreichbarkeit pruefen
-        q = {"id": hashlib.sha1(("rclone:%s:%s" % (remote, unter)).casefold().encode()).hexdigest()[:10], "art": "rclone", "name": name or (remote + ":" + unter),
-             "remote": remote, "pfad": unter, "nur_lesen": True}
-    else:
-        raise HTTPException(400, "art muss ordner oder rclone sein")
+    if body.get("art") not in (None, "", "auto", "ordner"):
+        raise HTTPException(400, "Only local folders can be added as sources.")
+    pfad = os.path.abspath(os.path.expanduser(body.get("pfad") or ""))
+    if not os.path.isdir(pfad):
+        raise HTTPException(400, "Folder not found: " + pfad)
+    q = {"id": hashlib.sha1(("ordner:" + pfad.casefold()).encode()).hexdigest()[:10], "art": "ordner", "name": name or pfad, "pfad": pfad,
+         "nur_lesen": body.get("nur_lesen", True) is not False}  # fail-safe: only an explicit false makes the source writable
     liste = [x for x in _quellen(mandant) if x["id"] != q["id"]] + [q]
     _quellen_speichern(mandant, liste)
     bp.schreiben(bp.pfad_fuer(mandant), ereignis="notiz", werkzeug="trove-plugin", mandant=mandant,
-                 meldung="Quelle eingebunden: %s (%s)" % (q["name"], q["art"]), quelle_id=q["id"], quelle_art=q["art"],
-                 quelle_pfad=q.get("pfad", ""), quelle_remote=q.get("remote", ""))
+                 meldung="Source added: %s (%s)" % (q["name"], "read-only" if q["nur_lesen"] else "writable"), quelle_id=q["id"], quelle_art=q["art"],
+                 quelle_pfad=q.get("pfad", ""))
     return q
 
 
-CLOUD_TYPEN = {  # Anzeigename -> rclone-Backend und die Felder, die der Tab abfragt
-    "webdav": ("webdav", ["url", "vendor", "user", "pass"]), "sftp": ("sftp", ["host", "port", "user", "pass"]),
-    "mega": ("mega", ["user", "pass"]), "drive": ("drive", []), "icloud": ("iclouddrive", ["apple_id", "password"]),
-}
-
-
-@router.post("/cloud")
-def cloud_anbinden(body: dict):
-    """Cloud-Speicher ueber rclone anbinden (Remote anlegen, Zugang pruefen, bei Fehlschlag wieder entfernen).
-    drive: rclone oeffnet auf diesem Rechner den Browser zur Anmeldung. Passwoerter gehen verschleiert in die rclone-Konfiguration."""
-    typ, name = body.get("typ"), (body.get("name") or "").strip()
-    if typ not in CLOUD_TYPEN:
-        raise HTTPException(400, "typ: " + ", ".join(CLOUD_TYPEN))
-    if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_-]{1,30}", name):
-        raise HTTPException(400, "name: 2-31 Zeichen aus A-Z a-z 0-9 _ -")
-    if name + ":" in [r.strip() for r in _rclone("listremotes", timeout=20).splitlines()]:
-        raise HTTPException(409, "Remote %s gibt es schon" % name)
-    backend, felder = CLOUD_TYPEN[typ]
-    kv = []
-    for k in felder:
-        v = str((body.get("felder") or {}).get(k) or "").strip()
-        if v:
-            kv += [k, v]
-    _rclone("config", "create", name, backend, *kv, "--obscure", timeout=600 if typ == "drive" else 60)
-    try:
-        _rclone("lsd", name + ":", timeout=90)
-    except HTTPException as ex:
-        _rclone("config", "delete", name, timeout=20)
-        raise HTTPException(502, "Zugang zu %s fehlgeschlagen, Remote wieder entfernt: %s" % (typ, ex.detail))
-    return {"ok": True, "remote": name}
+@router.post("/quellen/{qid}/schreibbar")
+def quelle_schreibbar(qid: str, body: dict):
+    """Switch one source between read-only and writable (the per-folder write permission)."""
+    mandant = body.get("mandant") or MANDANT
+    q = _quelle(mandant, qid)
+    nur_lesen = body.get("nur_lesen") is not False
+    liste = [({**x, "nur_lesen": nur_lesen} if x["id"] == qid else x) for x in _quellen(mandant)]
+    _quellen_speichern(mandant, liste)
+    bp.schreiben(bp.pfad_fuer(mandant), ereignis="notiz", werkzeug="trove-plugin", mandant=mandant,
+                 meldung="Source %s is now %s" % (q["name"], "read-only" if nur_lesen else "writable"), quelle_id=qid)
+    return {**q, "nur_lesen": nur_lesen}
 
 
 @router.delete("/quellen/{qid}")
@@ -382,33 +306,17 @@ def _liste_ordner(q, rel, mandant):
     return {"quelle": q["id"], "pfad": rel, "voll": voll, "eintraege": eintraege, "indexiert": (len(shas) == len(dateien)) if dateien else True}
 
 
-def _liste_rclone(q, rel):
-    ziel = "%s:%s" % (q["remote"], "/".join(p for p in [q.get("pfad", ""), rel.strip("/")] if p))
-    out = _rclone("lsjson", ziel, "--max-depth", "1", "--hash", timeout=120)
-    eintraege = []
-    for e in json.loads(out or "[]"):
-        try:
-            mt = time.mktime(time.strptime(e.get("ModTime", "")[:19], "%Y-%m-%dT%H:%M:%S"))
-        except ValueError:
-            mt = 0
-        h = e.get("Hashes") or {}
-        eintraege.append({"name": e["Name"], "ordner": bool(e.get("IsDir")), "groesse": max(e.get("Size") or 0, 0), "mtime": mt,
-                          "pfad": ziel.rstrip("/") + "/" + e["Name"], "sha256": h.get("sha256") or h.get("SHA-256"), "fundorte": None, "dublette": False})
-    eintraege.sort(key=lambda e: (not e["ordner"], e["name"].casefold()))
-    return {"quelle": q["id"], "pfad": rel, "voll": ziel, "eintraege": eintraege, "indexiert": False}
 
 
 @router.get("/liste")
 def liste(quelle: str, pfad: str = "", mandant: str = MANDANT):
     q = _quelle(mandant, quelle)
-    return _liste_ordner(q, pfad, mandant) if q["art"] == "ordner" else _liste_rclone(q, pfad)
+    return _liste_ordner(q, pfad, mandant)
 
 
 @router.get("/vorschau")
 def vorschau(quelle: str, pfad: str, mandant: str = MANDANT, seite: int = 0):
     q = _quelle(mandant, quelle)
-    if q["art"] != "ordner":
-        return {"art": "keine", "hinweis": "Vorschau fuer Online-Drives folgt (rclone cat)."}
     voll = _sicher(q["pfad"], pfad)
     if not os.path.isfile(voll):
         raise HTTPException(404, "Datei nicht gefunden")
@@ -536,61 +444,42 @@ def aktion(body: dict):
     art = body.get("art")
     if art not in ("kopieren", "verschieben", "sync"):
         raise HTTPException(400, "art muss kopieren, verschieben oder sync sein")
-    if _kundenmodus():
-        raise HTTPException(403, "Gesperrt: Trove liest deine Ablage nur. Kopieren, Verschieben und Sync in eine Quelle sind hier abgeschaltet.")
     _namen_pruefen(body.get("namen") or [])
     qv, qn = _quelle(mandant, body["von"]["quelle"]), _quelle(mandant, body["nach"]["quelle"])
-    if qn["art"] != "ordner" or qn.get("nur_lesen"):
-        raise HTTPException(400, "Ziel muss ein beschreibbarer lokaler Ordner sein (Welt A). Online-Drives sind nur lesend.")
-    if art == "verschieben" and (qv["art"] != "ordner" or qv.get("nur_lesen")):
-        raise HTTPException(400, "Verschieben nur aus beschreibbaren lokalen Ordnern (Welt A). Aus Online-Drives/Welt B wird nur kopiert.")
+    if qn.get("nur_lesen", True):
+        raise HTTPException(403, "The target source is read-only. Mark that folder as writable to copy into it.")
+    if art == "verschieben" and qv.get("nur_lesen", True):
+        raise HTTPException(403, "Move deletes files from the source, so the source folder must be marked writable. Copy works from a read-only source.")
     nach_ordner = _sicher(qn["pfad"], body["nach"].get("pfad", ""))
     lauf = "%s-%s" % (art, time.strftime("%Y%m%d-%H%M%S"))
     ergebnis = []
     with bp.Protokoll(bp.pfad_fuer(mandant)) as prot:
         prot.schreiben("notiz", werkzeug="trove-plugin", mandant=mandant, lauf=lauf, meldung="Aktion %s beginnt: %s -> %s" % (art, qv["name"], nach_ordner))
-        if qv["art"] == "rclone":
-            basis = "%s:%s" % (qv["remote"], "/".join(p for p in [qv.get("pfad", ""), body["von"].get("pfad", "").strip("/")] if p))
-            namen = body.get("namen") or [""]
-            for n in namen:
-                src = basis.rstrip("/") + ("/" + n if n else "")
-                ziel_pfad = os.path.join(nach_ordner, n) if n else nach_ordner
-                try:
-                    _rclone("copyto", src, ziel_pfad, "--ignore-existing", timeout=3600)
-                    for p, rel in _dateien_unter(ziel_pfad):
-                        s = _sha(p)
-                        prot.schreiben("kopiert", quelle=src.rstrip("/") + ("/" + rel.replace("\\", "/") if os.path.isdir(ziel_pfad) else ""), ziel=p, sha256=s, bytes_=os.path.getsize(p),
-                                       werkzeug="trove-plugin/rclone", mandant=mandant, lauf=lauf, meldung="Quell-Pruefsumme nicht geprueft (rclone copyto); Ziel-sha gerechnet")
-                    ergebnis.append({"name": n or "(Ordner)", "status": "kopiert"})
-                except HTTPException as ex:
-                    prot.schreiben("fehler", quelle=src, ziel=ziel_pfad, werkzeug="trove-plugin/rclone", mandant=mandant, lauf=lauf, meldung=str(ex.detail))
-                    ergebnis.append({"name": n, "status": "fehler", "meldung": str(ex.detail)})
-        else:
-            von_ordner = _sicher(qv["pfad"], body["von"].get("pfad", ""))
-            if os.path.commonpath([von_ordner, nach_ordner]) == von_ordner and art in ("verschieben", "sync") and not body.get("namen"):
-                raise HTTPException(400, "Ziel liegt innerhalb der Quelle")
-            namen = body.get("namen") or ([os.path.basename(von_ordner)] if art != "sync" else [None])
-            for n in namen:
-                if n and os.path.lexists(os.path.join(von_ordner, n)) and not _unter_real(os.path.join(von_ordner, n), von_ordner):
-                    raise HTTPException(400, "Pfad ausserhalb der Quelle (Verknuepfung): %s" % n)
-            for n in namen:
-                start = os.path.join(von_ordner, n) if n else von_ordner
-                if not os.path.exists(start):
-                    ergebnis.append({"name": n, "status": "fehlt"}); continue
-                zusammen = {"verifiziert": 0, "schon_da": 0, "konflikt": 0, "fehler": 0}
-                for p, rel in _dateien_unter(start):
-                    ziel_pfad = os.path.join(nach_ordner, rel) if n else os.path.join(nach_ordner, os.path.relpath(p, von_ordner))
-                    st = _kopiere_datei(prot, mandant, lauf, p, ziel_pfad)
-                    zusammen[st] = zusammen.get(st, 0) + 1
-                    if art == "verschieben" and st in ("verifiziert", "schon_da"):
-                        os.remove(p)
-                        prot.schreiben("verschoben", quelle=p, ziel=ziel_pfad, sha256=_sha(ziel_pfad), bytes_=os.path.getsize(ziel_pfad), werkzeug="trove-plugin",
-                                       mandant=mandant, lauf=lauf, meldung="Quelle nach bestandener Gegenprobe entfernt")
-                if art == "verschieben" and os.path.isdir(start) and zusammen["konflikt"] == 0 and zusammen["fehler"] == 0:
-                    for wurzel, dirs, files in os.walk(start, topdown=False):
-                        if not os.listdir(wurzel):
-                            os.rmdir(wurzel)
-                ergebnis.append({"name": n or "(Ordner)", **zusammen})
+        von_ordner = _sicher(qv["pfad"], body["von"].get("pfad", ""))
+        if os.path.commonpath([von_ordner, nach_ordner]) == von_ordner and art in ("verschieben", "sync") and not body.get("namen"):
+            raise HTTPException(400, "Ziel liegt innerhalb der Quelle")
+        namen = body.get("namen") or ([os.path.basename(von_ordner)] if art != "sync" else [None])
+        for n in namen:
+            if n and os.path.lexists(os.path.join(von_ordner, n)) and not _unter_real(os.path.join(von_ordner, n), von_ordner):
+                raise HTTPException(400, "Pfad ausserhalb der Quelle (Verknuepfung): %s" % n)
+        for n in namen:
+            start = os.path.join(von_ordner, n) if n else von_ordner
+            if not os.path.exists(start):
+                ergebnis.append({"name": n, "status": "fehlt"}); continue
+            zusammen = {"verifiziert": 0, "schon_da": 0, "konflikt": 0, "fehler": 0}
+            for p, rel in _dateien_unter(start):
+                ziel_pfad = os.path.join(nach_ordner, rel) if n else os.path.join(nach_ordner, os.path.relpath(p, von_ordner))
+                st = _kopiere_datei(prot, mandant, lauf, p, ziel_pfad)
+                zusammen[st] = zusammen.get(st, 0) + 1
+                if art == "verschieben" and st in ("verifiziert", "schon_da"):
+                    os.remove(p)
+                    prot.schreiben("verschoben", quelle=p, ziel=ziel_pfad, sha256=_sha(ziel_pfad), bytes_=os.path.getsize(ziel_pfad), werkzeug="trove-plugin",
+                                   mandant=mandant, lauf=lauf, meldung="Quelle nach bestandener Gegenprobe entfernt")
+            if art == "verschieben" and os.path.isdir(start) and zusammen["konflikt"] == 0 and zusammen["fehler"] == 0:
+                for wurzel, dirs, files in os.walk(start, topdown=False):
+                    if not os.listdir(wurzel):
+                        os.rmdir(wurzel)
+            ergebnis.append({"name": n or "(Ordner)", **zusammen})
         prot.schreiben("notiz", werkzeug="trove-plugin", mandant=mandant, lauf=lauf, meldung="Aktion %s beendet: %s" % (art, json.dumps(ergebnis, ensure_ascii=False)[:800]))
         prot.anker_setzen(mandant, lauf)
     return {"ok": True, "lauf": lauf, "ergebnis": ergebnis}
@@ -610,8 +499,6 @@ def aenderungen_lauf(body: dict):
     """F2: Stand eines Ordners aufnehmen und mit dem letzten Lauf vergleichen (neu/weg/verschoben/aussen geaendert)."""
     mandant = body.get("mandant") or MANDANT
     q = _quelle(mandant, body.get("quelle", ""))
-    if q["art"] != "ordner":
-        raise HTTPException(400, "F2-Lauf nur fuer lokale Ordner")
     wurzel = _sicher(q["pfad"], body.get("pfad", ""))
     ort = "q-" + q["id"] + ("-" + hashlib.sha1(wurzel.casefold().encode()).hexdigest()[:6] if body.get("pfad") else "")
     r = aenderungen.lauf(mandant, ort, wurzel, werkzeug="trove-plugin/f2")
@@ -764,7 +651,7 @@ OHNE_FITZ_MOEGLICH = ("wissen.py",)  # laeuft notfalls ohne pypdfium2: Text/Mark
 
 def _werkzeug(skript, *args, timeout=1800, ok_rc=(0,)):
     """OCR/PDF laufen im System-Python (pypdfium2, pikepdf, rapidocr) als Unterprozess — der Hermes-Server hat ein eigenes Python ohne
-    diese Pakete. ok_rc: Rueckgabewerte, bei denen die letzte Zeile die JSON-Zusammenfassung ist (reraise: 2 = Abbruch)."""
+    diese Pakete. ok_rc: Rueckgabewerte, bei denen die letzte Zeile die JSON-Zusammenfassung ist (wissen: 2 = aborted, a run is already active)."""
     try:
         python = konfig.python_finden("pypdfium2" if skript in FITZ_SKRIPTE else None)
     except RuntimeError as ex:
@@ -781,7 +668,7 @@ def _werkzeug(skript, *args, timeout=1800, ok_rc=(0,)):
     try:
         out, err = p.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
-        if os.name == "nt":  # Enkel (qmd/node, brett.py) haengen sonst weiter: nur /T erreicht den ganzen Baum
+        if os.name == "nt":  # Enkel (qmd/node) haengen sonst weiter: nur /T erreicht den ganzen Baum
             subprocess.run(["taskkill", "/T", "/F", "/PID", str(p.pid)], capture_output=True)
         else:
             p.kill()
@@ -799,15 +686,10 @@ def _werkzeug(skript, *args, timeout=1800, ok_rc=(0,)):
         raise _fehler(500, skript + ": keine JSON-Ausgabe: " + out[-400:] + (" | stderr: " + err[-400:] if err else ""))
 
 
-def _sp():
-    import spiegel_erpnext  # nur urllib, laeuft im Server-Python
-    return spiegel_erpnext
 
 
 def _quell_datei(mandant, body):
     q = _quelle(mandant, body.get("quelle", ""))
-    if q["art"] != "ordner":
-        raise HTTPException(400, "Lesen nur aus lokalem Ordner (rclone-Quellen zuerst holen)")
     voll = _sicher(q["pfad"], body.get("pfad", ""))
     if not os.path.isfile(voll):
         raise HTTPException(404, "Datei nicht gefunden: " + body.get("pfad", ""))
@@ -840,123 +722,20 @@ def stapel_zerlegen(body: dict):
     return {"ok": True, **{k: v for k, v in r.items() if k != "seiten_text"}}
 
 
-@router.get("/historie")
-def historie(sha256: str = "", datei: str = "", mandant: str = MANDANT):
-    """F11: Geschaeftshistorie eines Inhalts aus dem ERPNext-Spiegel (plus Zwilling/Prueflist lokal)."""
-    sp = _sp()
-    _mandant_pruefen(mandant)
-    if not sha256 and datei:
-        shas = bp.spur(bp.pfad_fuer(mandant), datei)["sha256"]
-        sha256 = shas[-1] if shas else ""
-    if not sha256:
-        raise HTTPException(400, "sha256 oder datei angeben")
-    if not re.fullmatch(r"[0-9a-f]{64}", sha256):
-        raise HTTPException(400, "sha256 ungueltig")
-    try:
-        r = sp.historie(sha256)
-    except Exception as ex:  # ERPNext nicht erreichbar -> Datei bleibt Wahrheit
-        r = {"ereignisse": None, "beleg": None, "fehler": str(ex)[:200]}
-    zp = os.path.join(TROVE_DATEN, mandant, "zwillinge", sha256 + ".json")
-    if os.path.exists(zp):
-        with open(zp, encoding="utf-8") as f:
-            z = json.load(f)
-        r["zwilling"] = {k: z.get(k) for k in ("datei", "methode", "seiten", "felder", "zeit")}
-    return {"sha256": sha256, **r}
 
 
-@router.post("/spiegeln")
-def spiegeln(body: dict = None):
-    """F11: Belegprotokoll-Zeilen seit letztem Stand nach ERPNext spiegeln und Beleg-Saetze aktualisieren."""
-    body = body or {}
-    mandant = body.get("mandant") or MANDANT
-    sp = _sp()
-    try:
-        a = sp.spiegeln(mandant, int(body.get("max") or 0) or None)
-        b = sp.belege_aktualisieren(mandant, int(body.get("max_belege") or 0) or None) if body.get("belege", True) else {}
-    except Exception as ex:
-        raise HTTPException(502, "ERPNext: " + str(ex)[:300])
-    try:
-        bp.schreiben(bp.pfad_fuer(mandant), ereignis="notiz", werkzeug="trove-plugin/f11", mandant=mandant,
-                     meldung="ERPNext-Spiegel: %d Ereignisse bis nr %d, %s Belege aktualisiert" % (a["gespiegelt"], a["letzte_nr"], b.get("belege_aktualisiert", "-")))
-    except bp.ProtokollGesperrt:
-        pass  # Spiegel ist gelaufen; Notiz ist Beiwerk
-    return {"ok": True, **a, **b}
 
 
-# ---------- F5: E-Mail-Archiv (Postfaecher abholen, Anhaenge ins Protokoll) ----------
-@router.get("/mail/postfaecher")
-def mail_postfaecher(mandant: str = MANDANT):
-    import mail_abholer as ma
-    _mandant_pruefen(mandant)
-    out = []
-    for pf in ma.postfaecher(mandant):
-        st = ma._stand(mandant, pf["id"])
-        wurzel = os.path.join(TROVE_DATEN, mandant, "mail", pf["id"])
-        mails = sum(1 for r, d, f in os.walk(wurzel) if "mail.eml" in f) if os.path.isdir(wurzel) else 0
-        out.append({"id": pf["id"], "art": pf["art"], "konto": st.get("konto"), "mails_archiviert": mails, "stand": {k: v for k, v in st.items() if k != "konto"}, "ablage": wurzel})
-    return {"postfaecher": out}
 
 
-@router.post("/mail/abholen")
-def mail_abholen(body: dict = None):
-    """F5: alle (oder ein) Postfach abholen; laeuft als Unterprozess im System-Python, damit der Server nicht blockiert ist."""
-    body = body or {}
-    mandant = _mandant_pruefen(body.get("mandant") or MANDANT)
-    args = ["--mandant", mandant, "--json"]
-    if body.get("postfach"):
-        args += ["--postfach", body["postfach"]]
-    if body.get("max"):
-        args += ["--max", str(int(body["max"]))]
-    if body.get("abfrage"):
-        args.append("--abfrage=" + str(body["abfrage"]))
-    if body.get("nur_anhaenge"):
-        args.append("--nur-anhaenge")
-    if body.get("alles"):
-        args.append("--alles")
-    r = _werkzeug("mail_abholer.py", *args, timeout=7200)
-    return {"ok": True, "ergebnis": r}
 
 
-# ---------- F7: Unterschreiben und versenden (DocuSeal) ----------
-def _ds():
-    """DocuSeal gehoert nicht zum Kundenpaket: im Kundenmodus jede DocuSeal-Route 403 (wie /reraise); vor dem try der Route rufen."""
-    if _kundenmodus():
-        raise HTTPException(403, "Unterschriften (DocuSeal) sind im Kundenmodus ausgeschaltet")
-    import docuseal  # nur urllib
-    return docuseal
 
 
-@router.get("/docuseal/vorlagen")
-def docuseal_vorlagen():
-    ds = _ds()
-    try:
-        return {"vorlagen": ds.vorlagen()}
-    except Exception as ex:
-        raise HTTPException(502, "DocuSeal: " + str(ex)[:300])
 
 
-@router.post("/docuseal/senden")
-def docuseal_senden(body: dict):
-    """Vorgang aus Vorlage anlegen; 'quelle'+'pfad' = Original (Rueckverfolgung), 'an' = Unterzeichner, 'mail' = DocuSeal mailt selbst."""
-    ds = _ds()
-    mandant = body.get("mandant") or MANDANT
-    beleg = _quell_datei(mandant, body) if body.get("quelle") and body.get("pfad") else None
-    if not body.get("an") or not body.get("vorlage"):
-        raise HTTPException(400, "vorlage und an (E-Mail) angeben")
-    try:
-        return {"ok": True, **ds.senden(mandant, int(body["vorlage"]), body["an"], body.get("name", ""), body.get("rolle"), beleg, bool(body.get("mail")), body.get("betreff"))}
-    except Exception as ex:
-        raise HTTPException(502, "DocuSeal: " + str(ex)[:300])
 
 
-@router.post("/docuseal/abholen")
-def docuseal_abholen(body: dict = None):
-    body = body or {}
-    ds = _ds()
-    try:
-        return {"ok": True, "vorgaenge": ds.abholen(body.get("mandant") or MANDANT, body.get("vorgang"))}
-    except Exception as ex:
-        raise HTTPException(502, "DocuSeal: " + str(ex)[:300])
 
 
 # ---------- F15: eine Suche ueber beide Welten ----------
@@ -1010,12 +789,10 @@ def wissen_sammlungen(mandant: str = MANDANT):
 
 @router.post("/wissen")
 def wissen(body: dict):
-    """F16: Ordner einer Quelle lesen -> Markdown je Datei (mit Original verheiratet) -> QMD-Sammlung -> optional Beleg-Karten (brett.py).
-    sichtbarkeit privat = eigene Nutzung, oeffentlich = Reraise-Tausch. Laeuft als Unterprozess im System-Python."""
+    """F16: Ordner einer Quelle lesen -> Markdown je Datei (mit Original verheiratet) -> optional knowledge cards in the wiki -> optional qmd index.
+    sichtbarkeit privat = own use, oeffentlich = card limited to the public allow-list. Laeuft als Unterprozess im System-Python."""
     mandant = _mandant_pruefen(body.get("mandant") or MANDANT)
     q = _quelle(mandant, body.get("quelle", ""))
-    if q["art"] != "ordner":
-        raise HTTPException(400, "Ins Wissen nur aus lokalem Ordner (rclone-Quellen zuerst holen)")
     wurzel = _sicher(q["pfad"], body.get("pfad", ""))
     if not os.path.isdir(wurzel):
         raise HTTPException(404, "Ordner nicht gefunden")
@@ -1054,43 +831,3 @@ def wissen(body: dict):
     return {"ok": True, "nachgefuehrt": not r.get("eigene_ablage") and not einzeln, **{k: v for k, v in r.items() if k != "eintraege"}, "eintraege": r.get("eintraege", [])[:200]}
 
 
-@router.post("/reraise")
-def reraise(body: dict):
-    """F16: oeffentliche Markdown-Zwillinge (Ordner oder Datei) als Karten zu reraise.ai; privat wird im Werkzeug verweigert.
-    probe = Karten bauen und zeigen (je Karte sha256), nichts senden. Senden nur mit bestaetigt = [sha256 aus der Probe]; die Liste
-    geht als Datei im Stand-Ordner an das Werkzeug (--nur-sha). Abbruch -> 200 mit "abbruch", laufender Lauf (lauf_laeuft) -> 409.
-    bestaetigt-Eintraege "sha256:karte_hash" binden an den Karteninhalt der Probe. Schluessel nur als Datei auf dem Server."""
-    if not _reraise_knopf():
-        raise HTTPException(403, "Der Upload zu Reraise ist ausgeschaltet (Kundenmodus). Einschalten nur auf ausdruecklichen Wunsch: installieren.py --reraise-knopf an")
-    mandant = _mandant_pruefen(body.get("mandant") or MANDANT)
-    q = _quelle(mandant, body.get("quelle", ""))
-    if q["art"] != "ordner":
-        raise HTTPException(400, "Reraise nur aus lokalem Ordner (rclone-Quellen zuerst holen)")
-    voll = _sicher(q["pfad"], body.get("pfad", ""))
-    if not os.path.exists(voll):
-        raise HTTPException(404, "nicht gefunden: " + body.get("pfad", ""))
-    args = [voll, "--mandant", mandant, "--sammlung", _sammlung(mandant, body), "--json", *_max(body)]
-    liste = None
-    if body.get("probe"):
-        args.append("--probe")
-    else:
-        b = body.get("bestaetigt")
-        if not (isinstance(b, list) and 0 < len(b) <= 1000
-                and all(isinstance(s, str) and re.fullmatch(r"[0-9a-f]{64}(:[0-9a-f]{64})?", s) for s in b)):
-            raise HTTPException(400, "bestaetigt: Liste der sha256 (oder sha256:karte_hash) aus der Probe (ohne Liste wird nichts gesendet)")
-        liste = os.path.join(TROVE_DATEN, mandant, "reraise-bestaetigt-%d-%d.txt" % (os.getpid(), time.time_ns()))
-        os.makedirs(os.path.dirname(liste), exist_ok=True)
-        with open(liste, "w", encoding="utf-8") as f:
-            f.write("\n".join(b))
-        args += ["--nur-sha", liste]
-    try:
-        r = _werkzeug("reraise_hochladen.py", *args, timeout=3600, ok_rc=(0, 2))
-    finally:
-        if liste:
-            try:
-                os.remove(liste)
-            except OSError:
-                pass
-    if r.get("lauf_laeuft"):
-        raise _fehler(409, r.get("abbruch") or "Lauf laeuft bereits")
-    return {"ok": True, **{k: v for k, v in r.items() if k != "eintraege"}, "eintraege": r.get("eintraege", [])[:200]}

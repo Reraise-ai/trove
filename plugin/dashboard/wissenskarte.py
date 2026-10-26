@@ -1,12 +1,11 @@
-"""Trove: Wissenskarte fuer ein Wiki im Muster ~/Wissen (raw/ = Quellen, wiki/ = gepflegte Seiten) statt Brett (kartenziel "wiki").
-Der Text-Zwilling (abgeleitet, keine Kopie des Originals; Kopf traegt Originalpfad + sha256) liegt direkt unter <wiki>/../raw/trove/<sammlung>/; die Karte ist wiki/quellen/trove-<sha16>-<slug>.md
-mit Seitenkopf typ/quellen/stand/status (status: zu-pruefen mit Umlaut). wiki/log.md: EINE Zeile je Lauf (log_lauf), im Kundenformat
-"JJJJ-MM-TT HH:MM | Trove | <n> Karten / Seiten | Widersprüche: 0", vor dem schliessenden ``` des Codeblocks; ohne Codeblock angehaengt.
-Nie Doppelkarte: Datei vorhanden = Karte bestand.
-Konfiguration: TROVE_KARTENZIEL (wiki = Standard | brett nur ausdruecklich, konfig.kartenziel), TROVE_WIKI (Standard ~/Wissen/wiki) — beide ueber trove.json.
-Urheber (nur neue Karten): Kopfzeilen created_by (welcher Agent die Karte geschrieben hat: TROVE_AGENT,
-Standard "trove"; Knopf "Ins Wissen" = trove:ins-wissen, Dauerlauf = trove:dauerlauf) und source (Originaldatei beim
-Kunden). Eine Trove-Karte ist nie eine Aussage oder Entscheidung des Menschen.
+"""Trove: knowledge card for a wiki (raw/ = sources, wiki/ = maintained pages).
+The text twin (derived, not a copy of the original; its head carries the original path + sha256) lives under <wiki>/../raw/trove/<collection>/;
+the card is wiki/quellen/trove-<sha16>-<slug>.md with page head typ/quellen/stand/status (status: zu-pruefen, "to review", with umlaut).
+wiki/log.md: ONE line per run (log_lauf), "YYYY-MM-DD HH:MM | Trove | <n> Karten / Seiten | Widersprüche: 0", before the closing ``` of the
+code block; appended if there is no code block. Never a double card: file exists = card existed.
+Setting: wiki_wurzel in trove.json / TROVE_WIKI (default <data root>/knowledge/wiki, created on demand; a custom path must exist).
+Author (new cards only): head lines created_by (which agent wrote the card: TROVE_AGENT, default "trove") and source (original file).
+A Trove card is never a statement or decision of the human.
 """
 import os
 import re
@@ -19,14 +18,16 @@ import konfig
 GEAENDERT = []  # Wiki-Seiten, die dieser Lauf neu geschrieben oder markiert hat (log_lauf schreibt daraus eine Zeile)
 
 
-def kartenziel():
-    return konfig.kartenziel()
-
-
-def wiki_wurzel():
-    w = os.path.expanduser(os.environ.get("TROVE_WIKI") or os.path.join("~", "Wissen", "wiki"))
+def wiki_wurzel(anlegen=True):
+    """The knowledge target. Default: <data root>/knowledge/wiki (created on demand). A path set by the user must already exist."""
+    eigen = os.environ.get("TROVE_WIKI")
+    w = os.path.expanduser(eigen) if eigen else os.path.join(konfig.datenwurzel(), "knowledge", "wiki")
     if not os.path.isdir(w):
-        raise ValueError("Wiki-Ordner nicht gefunden: %s (TROVE_WIKI / trove.json \"wiki_wurzel\")" % w)
+        if eigen or not anlegen:
+            if eigen:
+                raise ValueError("Wiki folder not found: %s (setting wiki_wurzel in trove.json / TROVE_WIKI)" % w)
+            return w
+        os.makedirs(w, exist_ok=True)
     return w
 
 

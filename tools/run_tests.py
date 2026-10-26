@@ -34,6 +34,7 @@ def main():
     if os.path.isdir(EXTRAS):
         erg.append(lauf([os.path.join(REPO, "tools", "run_extras_tests.py")], REPO))
     erg.append(lauf([os.path.join(REPO, "tools", "installieren.py"), "--selbsttest"], REPO))
+    erg.append(lauf([os.path.join(REPO, "tools", "test_wissen.py")], REPO))
     erg.append(lauf([os.path.join(REPO, "tools", "test_backend.py")], REPO))
     print("ALL PASSED" if all(erg) else "FAILURES: %d" % erg.count(False))
     sys.exit(0 if all(erg) else 1)

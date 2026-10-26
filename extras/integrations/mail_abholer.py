@@ -13,6 +13,7 @@ Stand je Postfach: <mandant>\\mail\\<postfach>\\stand.json (gmail: letzte intern
 import argparse, base64, email, email.policy, hashlib, imaplib, json, os, re, sys, time, urllib.parse, urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "plugin", "dashboard"))  # Trove core modules
 import belegprotokoll as bp
 
 BAD = re.compile(r'[<>:"/\\|?*\x00-\x1f]')

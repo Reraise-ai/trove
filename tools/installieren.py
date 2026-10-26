@@ -1,9 +1,8 @@
 """Trove-Plugin in Hermes installieren: Plugin-Dateien + alle Laufzeit-Module + trove.json nach <HERMES_HOME>/plugins/trove/dashboard,
 Desktop-Oberflaeche nach <HERMES_HOME>/desktop-plugins/trove, Eintrag in config.yaml (plugins.enabled), ohne PyYAML. Idempotent.
 HERMES_HOME wie Hermes selbst: Umgebungsvariable, sonst Windows %LOCALAPPDATA%\\hermes, sonst ~/.hermes.
-Aufruf:  python installieren.py --mandant kunde --datenwurzel ~/Trove      (Kunde)
-         Mac-Kunde mit Wissenssystem: ... --kartenziel wiki --wiki-wurzel ~/Wissen/wiki --qmd-standardsuche
-         Knopf "zu Reraise" (Upload oeffentlicher Karten): im Kundenmodus aus; einschalten nur auf Wunsch: --reraise-knopf an
+Usage:   python installieren.py --mandant kunde --datenwurzel ~/Trove
+         With an existing knowledge wiki: ... --wiki-wurzel ~/Wissen/wiki --qmd-standardsuche
          python installieren.py --pruefen                                  (Gesundheitscheck der Installation)
 Python (Mac Standard, sonst mit --venv): eigenes venv ~/.trove-venv aus /opt/homebrew/bin/python3.12 (oder 3.13, oder --python),
 Pakete pypdfium2 pikepdf numpy pillow (Pflicht) + onnxruntime rapidocr-onnxruntime (Texterkennung, darf scheitern); offline: --wheels <ordner>.
@@ -223,23 +222,6 @@ def dauerlauf_einrichten(minuten, dash, k, home):
     return True, "cron-Zeile: */%d * * * * %s %s >> %s 2>&1" % (minuten, python, skript, log)
 
 
-def reraise_knopf_setzen(k, wahl):
-    """--reraise-knopf an|aus in trove.json (an = "1"; aus = Feld weg = Standard aus im Kundenmodus; None = unveraendert)."""
-    if wahl == "an":
-        k["reraise_knopf"] = "1"
-    elif wahl == "aus":
-        k.pop("reraise_knopf", None)
-
-
-def selbsttest_reraise_knopf():
-    k = {"mandant": "x"}
-    reraise_knopf_setzen(k, None); assert k == {"mandant": "x"}, k
-    reraise_knopf_setzen(k, "an"); assert k == {"mandant": "x", "reraise_knopf": "1"}, k
-    reraise_knopf_setzen(k, None); assert k["reraise_knopf"] == "1", k
-    reraise_knopf_setzen(k, "aus"); assert k == {"mandant": "x"}, k
-    print("selbsttest reraise_knopf ok")
-
-
 def selbsttest_config():
     import plistlib
     p = plistlib.loads(plist_text("ai.trove.dauerlauf-x", "/opt/homebrew/bin/python3", "/h/dauerlauf.py", 30, "/d/dauerlauf.log", "/Users/k/.hermes"))
@@ -262,9 +244,7 @@ def selbsttest_config():
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--mandant"); ap.add_argument("--datenwurzel"); ap.add_argument("--python"); ap.add_argument("--register-db")
-    ap.add_argument("--kartenziel", choices=["brett", "wiki"], help="wiki = Wissenskarten in ein Wiki wie ~/Wissen (Standard, Kunde), brett = internes Brett (nur ausdruecklich)")
     ap.add_argument("--wiki-wurzel", help="Ordner wiki/ des Wissenssystems (Standard ~/Wissen/wiki)")
-    ap.add_argument("--reraise-knopf", choices=["an", "aus"], help="Knopf \"zu Reraise\" (Upload oeffentlicher Karten) im Kundenmodus; Standard: aus")
     ap.add_argument("--qmd-standardsuche", action="store_true", help="QMD-Sammlungen mit includeByDefault true (Standardsuche findet sie)")
     ap.add_argument("--hermes-home", help="statt HERMES_HOME/Standard"); ap.add_argument("--pruefen", action="store_true")
     ap.add_argument("--dauerlauf", nargs="?", const=30, type=int, metavar="MINUTEN", help="ueberwachte Ordner alle N Minuten nachfuehren (Standard 30; 0 = abschalten): LaunchAgent (Mac) / geplante Aufgabe (Windows)")
@@ -275,7 +255,6 @@ def main():
     a = ap.parse_args()
     dl_ok, dl_text = True, ""
     if a.selbsttest:
-        selbsttest_reraise_knopf()  # vor dem Mac-gebundenen Teil, laeuft auch unter Windows
         return selbsttest_config()
     home = os.path.expanduser(a.hermes_home) if a.hermes_home else konfig.hermes_home()
     ziel = os.path.join(home, "plugins", "trove"); dash = os.path.join(ziel, "dashboard")
@@ -305,11 +284,9 @@ def main():
         a.python = os.path.abspath(os.path.expanduser(a.python))
     qmd_eintragen(k)
     for feld, wert in (("mandant", a.mandant), ("datenwurzel", a.datenwurzel), ("python", a.python), ("register_db", a.register_db),
-                        ("kartenziel", a.kartenziel), ("wiki_wurzel", a.wiki_wurzel), ("qmd_standardsuche", "1" if a.qmd_standardsuche else None)):
+                        ("wiki_wurzel", a.wiki_wurzel), ("qmd_standardsuche", "1" if a.qmd_standardsuche else None)):
         if wert:
             k[feld] = os.path.expanduser(wert) if feld in ("datenwurzel", "wiki_wurzel") else wert
-    reraise_knopf_setzen(k, a.reraise_knopf)
-    k.setdefault("kartenziel", "wiki")  # immer ausdruecklich in trove.json; brett nur ueber --kartenziel brett
     k.setdefault("mandant", "haus"); k.setdefault("datenwurzel", os.path.join(os.path.expanduser("~"), "Trove"))
     with open(kpfad, "w", encoding="utf-8") as f:
         json.dump(k, f, ensure_ascii=False, indent=1)

@@ -12,6 +12,7 @@ Stand je Mandant: <TROVE_DATEN>\\<mandant>\\docuseal.json (Vorgang -> Beleg-sha,
 import argparse, hashlib, json, os, re, sys, urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "plugin", "dashboard"))  # Trove core modules
 import belegprotokoll as bp
 
 DOCUSEAL = os.environ.get("TROVE_DOCUSEAL", "http://127.0.0.1:8091")

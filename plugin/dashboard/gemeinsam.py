@@ -1,7 +1,7 @@
-"""Trove F16 — gemeinsame Helfer fuer wissen.py und reraise_hochladen.py (nur Standardbibliothek, kein OCR).
+"""Trove F16 — shared helpers for wissen.py (standard library only, no OCR).
 
 Namenspruefung Mandant/Sammlung, Zwilling-Kopf schreiben (yaml_wert) und lesen (kopf_lesen), atomares Schreiben, Protokoll mit Wiederholung, Dateiendungen.
-Regeln fuer oeffentliche Karten: oeffentlich.py. Laufsperre: laufsperre(mandant) — eine je Mandant fuer wissen und reraise.
+Regeln fuer oeffentliche Karten: oeffentlich.py. Run lock: laufsperre(mandant), one per client.
 Grenze: plugin_api /aktion haelt das Protokoll ueber die ganze Aktion; dauert sie laenger als 60 s, scheitert
 prot_mit_wiederholung mit ProtokollGesperrt.
 """
@@ -52,7 +52,7 @@ def pruefe_namen(mandant, sammlung=None):
 
 
 def laufsperre(mandant):
-    """Eine Laufsperre je Mandant: <WURZEL>\\<mandant>\\wissen\\.lauf. wissen- und reraise-Laeufe schliessen sich aus, damit
+    """Eine Laufsperre je Mandant: <WURZEL>\\<mandant>\\wissen\\.lauf. Runs of the same client exclude each other, damit
     kein privater Zwilling zwischen Privat-Pruefung und Karte/Upload entsteht. Belegt -> bp.LaufLaeuft."""
     pruefe_namen(mandant)
     return bp.Sperre(os.path.join(bp.WURZEL, mandant, "wissen", ".lauf"), art="lauf")

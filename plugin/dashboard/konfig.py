@@ -12,8 +12,7 @@ import sys
 
 HIER = os.path.dirname(os.path.abspath(__file__))
 FELDER = {"datenwurzel": "TROVE_DATEN", "mandant": "TROVE_MANDANT", "python": "TROVE_PYTHON", "register_db": "TROVE_REGISTER_DB",
-          "kartenziel": "TROVE_KARTENZIEL", "wiki_wurzel": "TROVE_WIKI", "qmd_standardsuche": "TROVE_QMD_STANDARDSUCHE",
-          "reraise_knopf": "TROVE_RERAISE_KNOPF"}
+          "wiki_wurzel": "TROVE_WIKI", "qmd_standardsuche": "TROVE_QMD_STANDARDSUCHE"}
 _python_cache = {}
 
 
@@ -26,12 +25,6 @@ def konfig_pfad():
     if os.path.isfile(neben):
         return neben
     return os.path.join(os.environ.get("TROVE_DATEN") or os.path.join(os.path.expanduser("~"), "Trove"), "trove.json")
-
-
-def kartenziel():
-    """Die EINE Stelle fuer das Kartenziel (fail-closed): nur ein ausdrueckliches "brett" (Gross/Klein und Leerzeichen egal)
-    ist das interne Brett; nicht gesetzt, leer oder jeder andere Wert ist der Kundenmodus "wiki"."""
-    return "brett" if os.environ.get("TROVE_KARTENZIEL", "").strip().lower() == "brett" else "wiki"
 
 
 def lesen():

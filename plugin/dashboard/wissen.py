@@ -1,31 +1,14 @@
-"""Trove F16 — Ordner ins Wissen: Dateien lesen -> maschinenlesbares Markdown je Beleg -> mit dem Original verheiratet
-(sha256 + Belegprotokoll) -> QMD-Sammlung (Suche) -> auf Wunsch Beleg-Karten auf dem Brett (Weltenbauer/Reraise)
-mit Sichtbarkeit privat oder oeffentlich.
+"""Trove F16 -- folder into knowledge: read files -> machine-readable Markdown twin per file (bound to the original by sha256 +
+receipt log) -> optional knowledge card in the wiki -> optional qmd search index.
 
-Ablage:  <TROVE_DATEN>\\<mandant>\\wissen\\<sammlung>\\<sha16>_<name>.md   (Kopfdaten: quelle, pruefsumme, Felder,
-         Sichtbarkeit; nach erfolgreicher Karte zusaetzlich "karte: b-NNN")
-QMD:     Sammlung "trove-<mandant>-<sammlung>" (nur per -c abrufbar: includeByDefault false, bei jedem Lauf geprueft),
-         update + embed. Laeuft OHNE Protokoll-Sperre.
-Brett:   nur ueber den Pflicht-Schreibkanal dem Schreibkanal (TROVE_BRETT)/_werkzeug/brett.py:
-         reserve --brett belege -n 1 -> karte --id=<id> ... -> bei Fehler freigeben --id=<id>. Nie selbst IDs rechnen.
-Protokoll (F8): je Datei kurz gesperrt "gelesen" (vor dem Ablegen des Zwillings), "notiz" mit karte=<id> je Karte (Log, keine
-         Nachschlagequelle), Start/Ende/QMD als "notiz"; Anker vor und nach QMD. Die Sperre wird nie ueber einen langen Lauf
-         gehalten (gemeinsam.prot_mit_wiederholung: bis 60 s warten). ProtokollGesperrt/ProtokollDefekt brechen den Lauf ab.
-Karte:   EINE Wahrheit: die Kopfzeile "karte: <id>" im Zwilling. Reihenfolge: Merker setzen (<sammlung>.karten.json:
-         sha -> "unterwegs") -> reserve (Merker mit ID) -> karte -> Kopfzeile -> Protokoll-Notiz -> Merker loeschen.
-         Der Merker lebt nur waehrend des Laufs; steht beim naechsten Lauf noch ein Eintrag (und keine Kopfzeile) ->
-         Fehler "Karte unklar — Brett pruefen (ID ...)", KEINE neue Karte. Kopfzeile vorhanden -> alter Merker wird entfernt.
-         Zeitablauf bei brett.py karte: Merker bleibt mit ID, nicht freigeben (die Karte kann geschrieben sein).
-Sichtbarkeit: privat = eigene Nutzung (freigabe privat) | oeffentlich = Reraise-Tausch (freigabe community). Pflichtangabe.
-         Private Karten: voller Zwilling (gekuerzt), nur ab 200 Zeichen Text. Oeffentliche Karten: nur die Positivliste
-         oeffentlich.kartenfelder (nichts aus Belegtext oder Dateiname); privater Zwilling derselben Datei irgendwo -> keine Karte.
-         Privater Lauf ueber eine Datei, die schon oeffentlich ist (oeffentlicher Zwilling mit Brett-Karte oder Reraise-Karte):
-         Zwilling wird geschrieben, Eintrag "schon_oeffentlich" zaehlt als fehler_datei (Meldung, keine Sperre). Reraise
-         "unklar"/"unterwegs" (Karte kann existieren) zaehlt mit ("Reraise unklar").
-Dubletten: Dateien gleichen Inhalts (sha256) je Lauf einmal; weitere Fundstellen -> "dublette" (kein Zwilling/Brett), Zaehler.
-Zwillingssuche: oeffentlich.zwillings_index einmal je Lauf unter der Laufsperre, neue Zwillinge werden nachgetragen.
-Laufsperre je Mandant: gemeinsam.laufsperre (<mandant>\\wissen\\.lauf, dieselbe wie reraise_hochladen -> LaufLaeuft).
-lese_treppe/verprobung (OCR-Pakete) werden erst beim Lesen geladen.
+Knowledge target (one plain setting, `wiki_wurzel` in trove.json / TROVE_WIKI): <wiki>/../raw/trove/<collection>/ holds the twins,
+<wiki>/quellen/ the cards (status zu-pruefen), <wiki>/log.md one line per run. Default: <data root>/knowledge/wiki (created on demand).
+The original file is never changed. A card is never written twice (file exists = card exists).
+Receipt log (F8): per file a short lock for "gelesen" (before the twin is stored), a "notiz" per card; start/end/index as "notiz".
+Duplicates (same sha256) are read once per run; further finds are reported as "dublette".
+Visibility: privat = own use, oeffentlich = card reduced to the allow-list in oeffentlich.kartenfelder (nothing from the document text).
+Run lock per client: gemeinsam.laufsperre. lese_treppe/verprobung (OCR packages) are only loaded when reading.
+The qmd search tool is optional: without it the twins and cards are still written and the run reports that indexing was skipped.
 """
 import argparse
 import dataclasses
@@ -56,7 +39,6 @@ QMD = _qmd_exe()
 QMD_ENV = {"XDG_CACHE_HOME": os.environ.get("TROVE_QMD_CACHE", os.path.join(os.path.expanduser("~"), ".cache")),
            "XDG_CONFIG_HOME": os.environ.get("TROVE_QMD_CONFIG", os.path.join(os.path.expanduser("~"), ".config"))}
 QMD_INDEX_YML = os.environ.get("TROVE_QMD_INDEX", os.path.join(QMD_ENV["XDG_CONFIG_HOME"], "qmd", "index.yml"))
-BRETT = os.environ.get("TROVE_BRETT", "")
 ERZEUGT_VON = "trove/wissen.py"
 MAX_TEXT_BYTES = 5 << 20
 QMD_VERBOTEN = set('&|<>^%"!')  # qmd.cmd ist eine Batch-Datei (BatBadBut): solche Zeichen nie durchreichen
@@ -96,8 +78,8 @@ class Lauf:
         gm.pruefe_namen(self.mandant, self.sammlung)
         self.name = "wissen-" + self.sammlung
         import wissenskarte as wk
-        # Kundenmodus (wiki): nur der Text-Zwilling, direkt im Wissenssystem (raw/trove/<sammlung>), nichts doppelt
-        self.ordner = wk.raw_ziel(self.sammlung) if wk.kartenziel() == "wiki" else os.path.join(bp.WURZEL, self.mandant, "wissen", self.sammlung)
+        # only the text twin, directly in the knowledge target (raw/trove/<collection>), nothing stored twice
+        self.ordner = wk.raw_ziel(self.sammlung)
 
 
 def sichtbarkeit_regel(sichtbarkeit):
@@ -345,6 +327,11 @@ def _qmd_pruefen(ordner):
         raise ValueError("Ordnerpfad enthaelt fuer qmd.cmd verbotene Zeichen (&|<>^%%\"!): %r" % ordner)
 
 
+def _qmd_da():
+    """Is the optional qmd tool available?"""
+    return bool(shutil.which(QMD) or os.path.isfile(QMD))
+
+
 def _qmd(*args, timeout=300):
     p = subprocess.Popen([QMD, *args], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8",
                          errors="replace", env={**os.environ, **QMD_ENV, "PYTHONUTF8": "1",
@@ -364,37 +351,17 @@ def _qmd(*args, timeout=300):
     return p.returncode, (out or "").strip()
 
 
-def _index_yml(name):
-    """includeByDefault: false fuer die Sammlung sicherstellen. Rueckgabe (text, ist_fehler)."""
-    try:
-        with open(QMD_INDEX_YML, encoding="utf-8") as fh:
-            y = fh.read()
-    except OSError as ex:
-        return "nicht lesbar: " + str(ex)[:120], True
-    m = re.search(r"^  %s:\n(?:    .*\n)+" % re.escape(name), y, re.M)
-    if not m:
-        return "Sammlung nicht gefunden in index.yml", True
-    block = m.group(0)
-    soll = "true" if os.environ.get("TROVE_QMD_STANDARDSUCHE", "").lower() in ("1", "true", "ja") else "false"  # Kunde: true (Standardsuche findet sie)
-    if "    includeByDefault: %s\n" % soll in block:
-        return "schon gesetzt", False
-    if "includeByDefault" in block:
-        return "includeByDefault steht anders als %s — nicht geaendert" % soll, True
-    try:
-        sik = QMD_INDEX_YML + ".bak-vor-trove-" + time.strftime("%Y%m%d-%H%M%S")
-        with open(sik, "w", encoding="utf-8") as fh:
-            fh.write(y)
-        gm.schreibe_atomar(QMD_INDEX_YML, y.replace(block, block + "    includeByDefault: %s\n" % soll, 1))
-    except OSError as ex:
-        return "nicht geaendert: " + str(ex)[:120], True
-    return "gesetzt (Sicherung %s)" % os.path.basename(sik), False
 
 
-def qmd_wiki(l):
-    """kartenziel wiki: keine eigene Sammlung. Der Zwilling liegt unter <wiki>/../raw/trove/ und wird ueber die vorhandene
-    Kunden-Sammlung 'raw' gefunden; hier nur Index + Embeddings der Standardsammlungen auffrischen (sonst gaebe es Doppeltreffer)."""
+def qmd_sammlung(l):
+    """No collection of its own: the twin lives under <wiki>/../raw/trove/ and is found through the existing 'raw' collection;
+    here only the index and embeddings of the default collections are refreshed (otherwise there would be double hits)."""
     import wissenskarte as wk
-    erg = {"sammlung": "raw (vorhandene Kunden-Sammlung)", "fehler": 0}
+    erg = {"sammlung": "raw", "fehler": 0}
+    if not _qmd_da():
+        erg.update(uebersprungen="qmd (optional search index) is not installed - twins and cards were written, indexing skipped", dateien_im_index=0)
+        return erg
+    _qmd_pruefen(wk.raw_ziel(l.sammlung))
     rc, out = _qmd("update", timeout=900)
     erg["update"] = (rc, out[-400:])
     erg["fehler"] += rc != 0
@@ -407,56 +374,10 @@ def qmd_wiki(l):
     return erg
 
 
-def qmd_sammlung(l):
-    """Sammlung anlegen (einmal), includeByDefault pruefen (jedes Mal), Index + Embeddings auffrischen."""
-    import wissenskarte as wk
-    if wk.kartenziel() == "wiki":
-        return qmd_wiki(l)
-    name = "trove-%s-%s" % (l.mandant, l.sammlung)
-    _qmd_pruefen(l.ordner)
-    erg = {"sammlung": name, "fehler": 0}
-    rc, out = _qmd("collection", "list")
-    if rc != 0:
-        raise RuntimeError("qmd collection list: rc %d %s" % (rc, out[-300:]))
-    if not re.search(r"^\s*%s \(qmd://" % re.escape(name), out, re.M):
-        rc, out = _qmd("collection", "add", l.ordner, "--name", name)
-        erg["angelegt"] = (rc, out[-300:])
-        erg["fehler"] += rc != 0
-    erg["index_yml"], ist_fehler = _index_yml(name)
-    if ist_fehler:
-        erg["fehler"] += 1
-        erg["update"] = "nicht ausgefuehrt (index.yml)"
-        return erg
-    rc, out = _qmd("update", timeout=900)
-    erg["update"] = (rc, out[-400:])
-    erg["fehler"] += rc != 0
-    if l.embed:
-        rc, out = _qmd("embed", "-c", name, "--timeout", "20", timeout=1800)
-        erg["embed"] = (rc, out[-400:])
-        erg["fehler"] += rc != 0
-    rc, out = _qmd("ls", name)
-    erg["dateien_im_index"] = len([z for z in out.splitlines() if z.strip().lower().endswith(".md")]) if rc == 0 else out[-200:]
-    erg["fehler"] += rc != 0
-    return erg
 
 
-def _brett(*args, timeout=300):
-    if not BRETT:
-        raise RuntimeError("kartenziel brett, aber TROVE_BRETT (Ordner des Bretts) ist nicht gesetzt")
-    r = subprocess.run([sys.executable, os.path.join(BRETT, "_werkzeug", "brett.py"), "--sitzung", "trove", *args],
-                       capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, cwd=BRETT,
-                       env={**os.environ, "PYTHONUTF8": "1", "BRETT_URHEBER": "agent:trove"})
-    if r.returncode != 0:
-        raise RuntimeError("brett.py %s: rc %d %s" % (args[0], r.returncode, (r.stderr or r.stdout)[-500:]))
-    return r.stdout.strip()
 
 
-def _reservieren():
-    out = _brett("reserve", "--brett=belege", "-n", "1")
-    ids = sorted(set(re.findall(r"\bb-\d+\b", out)))
-    if len(ids) != 1:
-        raise RuntimeError("brett.py reserve: keine eindeutige ID in der Ausgabe: %r" % out[-300:])
-    return ids[0]
 
 
 def kartentext(kopf, md_text, md, l):
@@ -506,7 +427,7 @@ def quelle_umziehen(l, md, neu):
     rumpf = rumpf.replace("\n" + original_zeile(alt) + "  \n", "\n" + original_zeile(neu) + "  \n", 1)
     gm.schreibe_atomar(md, "---\n" + "\n".join(zeilen) + rumpf)
     karte = str(kopf.get("karte") or "")
-    if karte.startswith("wiki:") and wk.kartenziel() == "wiki":
+    if karte.startswith("wiki:"):
         cp = os.path.join(wk.wiki_wurzel(), *karte[5:].split("/")) + ".md"
         if os.path.exists(cp):
             with open(cp, encoding="utf-8") as fh:
@@ -521,49 +442,24 @@ def quelle_umziehen(l, md, neu):
     return alt
 
 
-def _merker_pfad(l):
-    return l.ordner + ".karten.json"
 
 
-def merker_lesen(pfad):
-    try:
-        with open(pfad, encoding="utf-8") as fh:
-            return json.load(fh)
-    except FileNotFoundError:
-        return {}
 
 
-def merker_setzen(l, sha, zustand, kid=None):
-    """Einzige Stelle fuer den Merker: zustand "unterwegs" (mit reservierter ID, sobald bekannt) oder None = entfernen.
-    Andere Eintraege bleiben stehen. Schreibt nur bei Aenderung."""
-    pfad = _merker_pfad(l)
-    m = merker_lesen(pfad)
-    if zustand is None and sha not in m:
-        return
-    if zustand is None:
-        del m[sha]
-    else:
-        m[sha] = {"zustand": zustand, "id": kid, "zeit": bp.jetzt()}
-    gm.schreibe_atomar(pfad, json.dumps(m, ensure_ascii=False, indent=1))
 
 
 def karte_erzeugen(l, md_erg, min_zeichen=1):
-    """Beleg-Karte aus dem Zwilling, nur ueber brett.py. Wahrheit: Kopfzeile 'karte:'. Zugehoerigkeit/Traeger aus dem Kopf.
+    """Wissenskarte aus dem Zwilling. Wahrheit: Kopfzeile 'karte:'. Zugehoerigkeit/Traeger aus dem Kopf.
     Oeffentlich: nur Positivliste (oeffentlich.kartenfelder); verweigert, wenn dieselbe Datei irgendwo privat ist.
     ProtokollGesperrt/ProtokollDefekt gehen unveraendert an den Aufrufer."""
     regel = sichtbarkeit_regel(l.sichtbarkeit)
     md, sha = md_erg["md"], md_erg["sha256"]
     kopf, md_text = zwilling_lesen(md)
     if kopf.get("karte"):
-        merker_setzen(l, sha, None)  # Absturz zwischen Kopfzeile und Merker-Loeschen: Kopfzeile gilt
         return {"karte": kopf["karte"], "grund": "Karte bestand schon"}
-    offen = merker_lesen(_merker_pfad(l)).get(sha)
-    if offen:
-        raise RuntimeError("Karte unklar — Brett pruefen (ID %s); danach den Eintrag in %s entfernen oder 'karte: <id>' in den "
-                           "Zwilling schreiben" % (offen.get("id") or "keine", _merker_pfad(l)))
     zugehoerigkeit, traeger = kopf.get("zugehoerigkeit") or ZUG_OFFEN, kopf.get("traeger") or ZUG_OFFEN
     if regel["sichtbarkeit"] == "oeffentlich":
-        privat = oe.privat_irgendwo(os.path.join(bp.WURZEL, l.mandant, "wissen"), sha, l.index)
+        privat = oe.privat_irgendwo(os.path.dirname(l.ordner), sha, l.index)
         if privat:
             return {"karte": None, "grund": "in Sammlung %s privat" % ", ".join(privat)}
         k = oe.kartenfelder(sha, kopf)
@@ -575,63 +471,17 @@ def karte_erzeugen(l, md_erg, min_zeichen=1):
         titel, quelle, inhalt = privat_titel(kopf), str(kopf.get("quelle") or ""), kartentext(kopf, md_text, md, l)
         datum = oe.iso_datum(kopf.get("belegdatum"))
     import wissenskarte as wk
-    if wk.kartenziel() == "wiki":  # Kunde: Wissenskarte im Wiki statt Brett
-        if regel["sichtbarkeit"] == "privat":  # Karte verweist nur auf die Quelle (raw/trove/...), der Volltext steht dort einmal -> keine Doppeltreffer
-            felder = md_text.split("\n## Felder", 1)[1].split("\n## Text", 1)[0].strip() if "\n## Felder" in md_text and "\n## Text" in md_text else ""
-            anfang = inhaltszeile_mit_titel(md_text)  # kurze Datei: voller Text ("Inhalt: ..."), sonst Anfang
-            inhalt = "Liegt bei dir unter `%s`.\n\n%sGelesen als Beleg-Zwilling (Verprobung: %s). Volltext in der Quelle.%s" % (
-                kopf.get("quelle"), (anfang + "\n\n") if anfang else "", kopf.get("verprobung"),
-                ("\n\n" + felder) if felder else "")
-        kid, neu = wk.karte_schreiben(l.sammlung, md, sha, titel, inhalt, kopf.get("quelle"), zugehoerigkeit)
-        _karte_im_kopf(md, kid)
-        _notiz(l, quelle=md, ziel=kid, sha256=sha, werkzeug="wissen.py/wiki", karte=kid, sichtbarkeit=l.sichtbarkeit, md_sha256=bp.datei_sha(md),
-               meldung="Wissenskarte %s (%s, %s)" % (kid, "neu" if neu else "bestand schon, Kopfzeile nachgetragen", titel[:80]))
-        return {"karte": kid, "grund": None, "karte_neu": neu}
-    if ZUG_OFFEN in (zugehoerigkeit, traeger):
-        return {"karte": None, "grund": "Zugehörigkeit offen — Brett-Karte erst mit Zugehörigkeit"}
-    tmp = md + ".karte.tmp"
-    with open(tmp, "w", encoding="utf-8", errors="replace", newline="\n") as fh:
-        fh.write(inhalt)
-    kid = None
-    try:
-        merker_setzen(l, sha, "unterwegs")
-        kid = _reservieren()
-        merker_setzen(l, sha, "unterwegs", kid)
-        out = _brett("karte", "--id=" + kid, "--brett=belege", "--typ=beleg", "--titel=" + titel,
-                     "--quelle=" + quelle, *(["--quelle-datum=" + datum] if datum else []),
-                     "--pruefsumme=" + sha, "--bewertung=frei", "--status=entwurf",
-                     "--freigabe=" + regel["freigabe"], "--traeger=" + traeger, "--zugehoerigkeit=" + zugehoerigkeit,
-                     "--sichtbarkeit=" + regel["sichtbarkeit"], "--klasse=B", "--ebene=belegt",
-                     "--herkunft-system=Trove", "--body-datei=" + tmp)
-    except subprocess.TimeoutExpired as ex:
-        if kid:  # karte lief ab: sie kann geschrieben sein -> nicht freigeben, Merker mit ID bleibt ("Karte unklar")
-            raise RuntimeError("Karte unklar — brett.py karte nach %s s abgebrochen (ID %s); Brett pruefen, Merker bleibt"
-                               % (ex.timeout, kid)) from ex
-        merker_setzen(l, sha, None)  # reserve lief ab: noch keine Karte
-        raise
-    except Exception as ex:
-        if kid:
-            try:
-                _brett("freigeben", "--id=" + kid)
-            except Exception as fx:  # Merker bleibt "unterwegs": naechster Lauf meldet "Karte unklar"
-                raise RuntimeError("%s; freigeben %s gescheitert: %s" % (str(ex)[:300], kid, str(fx)[:200])) from ex
-        merker_setzen(l, sha, None)  # ohne Karte kein Merker
-        raise
-    finally:
-        try:
-            os.remove(tmp)
-        except OSError:
-            pass
-    try:
-        _karte_im_kopf(md, kid)
-    except Exception as ex:
-        raise RuntimeError("Karte %s steht auf dem Brett, Kopfzeile scheiterte (%s) — Merker bleibt, naechster Lauf meldet "
-                           "'Karte unklar'" % (kid, str(ex)[:200])) from ex
-    _notiz(l, quelle=md, ziel=os.path.join(BRETT, "brett", "belege", kid + ".md"), sha256=sha, werkzeug="wissen.py/brett",
-           meldung="Beleg-Karte %s auf dem Brett (%s, Sichtbarkeit %s, %s)" % (kid, titel[:80], l.sichtbarkeit, zugehoerigkeit),
-           karte=kid, sichtbarkeit=l.sichtbarkeit, md_sha256=bp.datei_sha(md), brett_ausgabe=out[-300:])
-    merker_setzen(l, sha, None)
-    return {"karte": kid, "grund": None, "karte_neu": True}
+    if regel["sichtbarkeit"] == "privat":  # Karte verweist nur auf die Quelle (raw/trove/...), der Volltext steht dort einmal -> keine Doppeltreffer
+        felder = md_text.split("\n## Felder", 1)[1].split("\n## Text", 1)[0].strip() if "\n## Felder" in md_text and "\n## Text" in md_text else ""
+        anfang = inhaltszeile_mit_titel(md_text)  # kurze Datei: voller Text ("Inhalt: ..."), sonst Anfang
+        inhalt = "Liegt bei dir unter `%s`.\n\n%sGelesen als Beleg-Zwilling (Verprobung: %s). Volltext in der Quelle.%s" % (
+            kopf.get("quelle"), (anfang + "\n\n") if anfang else "", kopf.get("verprobung"),
+            ("\n\n" + felder) if felder else "")
+    kid, neu = wk.karte_schreiben(l.sammlung, md, sha, titel, inhalt, kopf.get("quelle"), zugehoerigkeit)
+    _karte_im_kopf(md, kid)
+    _notiz(l, quelle=md, ziel=kid, sha256=sha, werkzeug="wissen.py/wiki", karte=kid, sichtbarkeit=l.sichtbarkeit, md_sha256=bp.datei_sha(md),
+           meldung="Wissenskarte %s (%s, %s)" % (kid, "neu" if neu else "bestand schon, Kopfzeile nachgetragen", titel[:80]))
+    return {"karte": kid, "grund": None, "karte_neu": neu}
 
 
 FREIGABE = "macOS-Freigabe nötig (Systemeinstellungen → Datenschutz & Sicherheit → Festplattenvollzugriff)"
@@ -652,13 +502,11 @@ def _echt(p):
 
 def eigene_ablagen(mandant):
     """Ordner, die Trove selbst beschreibt und darum nie einliest (sonst liest Trove seine eigenen Karten, Lauf fuer Lauf mehr):
-    Wissensspeicher ~/Wissen, Wiki-Wurzel und deren Elternordner (raw/trove, wiki/quellen, wiki/log.md), Datenwurzel.
+    Knowledge folder (wiki root and its parent: raw/trove, wiki/quellen, wiki/log.md), Datenwurzel.
     Liefert [(normierter echter Pfad, Anzeigepfad, art)]; art "wissen" = nie einlesen, "daten" = Datenwurzel."""
-    zonen = [(os.path.join(os.path.expanduser("~"), "Wissen"), "wissen")]
-    wiki = os.environ.get("TROVE_WIKI")
-    if wiki:
-        wiki = os.path.expanduser(wiki).rstrip("/\\") or wiki
-        zonen += [(wiki, "wissen"), (os.path.dirname(wiki), "wissen")]
+    import wissenskarte as wk
+    wiki = wk.wiki_wurzel(anlegen=False).rstrip("/\\") or wk.wiki_wurzel(anlegen=False)
+    zonen = [(wiki, "wissen"), (os.path.dirname(wiki), "wissen")]
     zonen += [(bp.WURZEL, "daten"), (os.path.join(bp.WURZEL, mandant, "wissen"), "wissen")]
     out, gesehen = [], set()
     for p, art in zonen:
@@ -784,28 +632,20 @@ def ordner_ins_wissen(mandant, wurzel, sammlung, sichtbarkeit, zugehoerigkeit, t
         for muster in ("*.md.teil", "*.md.karte.tmp"):
             for rest in glob.glob(os.path.join(glob.escape(l.ordner), muster)):
                 os.remove(rest)
-        l.index = oe.zwillings_index(os.path.dirname(l.ordner))  # Brett: <daten>\\<mandant>\\wissen, Wiki: raw/trove
+        l.index = oe.zwillings_index(os.path.dirname(l.ordner))  # twins live in raw/trove
         return _lauf(l)
 
 
-def _reraise_karten(mandant):
-    """Reraise-Stand (karten/unklar/unterwegs) aus reraise.json und Protokoll ("versendet"); einmal je privatem Lauf."""
-    import reraise_hochladen as rh
-    return rh.stand_lesen(mandant)
 
 
-def schon_oeffentlich(l, sha, md, reraise):
-    """Privater Lauf: anderer Zwilling derselben Datei ist oeffentlich UND (Brett-Karte im Kopf ODER Reraise-Karte ODER Reraise
-    unklar/unterwegs) -> Meldetext mit Karten-/Reraise-ID, sonst None. reraise: Stand wie _reraise_karten ({} = unlesbar)."""
-    funde, rk = [], reraise.get("karten", {})
-    offen = sha in reraise.get("unklar", {}) or sha in reraise.get("unterwegs", {})
-    for s, anderer, kopf, _ in oe.zwillinge(os.path.join(bp.WURZEL, l.mandant, "wissen"), sha, l.index):
+def schon_oeffentlich(l, sha, md):
+    """Private run: another twin of the same file is public and already has a card -> message text, else None."""
+    funde = []
+    for s, anderer, kopf, _ in oe.zwillinge(os.path.dirname(l.ordner), sha, l.index):
         if anderer == md or kopf.get("pruefsumme") != sha or kopf.get("sichtbarkeit") != "oeffentlich":
             continue
-        ids = (["Karte %s" % kopf["karte"]] if kopf.get("karte") else []) + \
-              (["Reraise %s" % rk[sha].get("id")] if sha in rk else ["Reraise unklar"] if offen else [])
-        if ids:
-            funde.append("Sammlung %s (%s)" % (s, ", ".join(ids)))
+        if kopf.get("karte"):
+            funde.append("Sammlung %s (Karte %s)" % (s, kopf["karte"]))
     return ("bereits oeffentlich: " + "; ".join(funde)) if funde else None
 
 
@@ -827,16 +667,16 @@ def _lauf(l):
         dateien = dateien[:l.max_dateien]
     z = {"mandant": l.mandant, "sammlung": l.sammlung, "wurzel": l.wurzel, "sichtbarkeit": l.sichtbarkeit, "traeger": l.traeger,
          "dateien": len(dateien), "nur_in_wolke": len(wolke), "wolke_hinweis": wolke_hinweis(len(wolke)), "zwillinge_uebersprungen": zwillinge, "neu": 0, "schon_da": 0, "karten": 0,
-         "merker_offen": len(merker_lesen(_merker_pfad(l))), "schon_oeffentlich": 0, "fehler_datei": 0, "fehler_karte": 0,
+         "schon_oeffentlich": 0, "fehler_datei": 0, "fehler_karte": 0,
          "fehler_qmd": 0, "dubletten": 0, "fehler": 0, "eintraege": [], "unlesbar": unlesbar,
          "hinweise": [unlesbar_meldung(u) for u in unlesbar] + hinweise + ([ng_hinweis] if ng_hinweis else []),
          "eigene_ablage": bool(hinweise) and not dateien and not l.nur_dateien, "auswahl": len(l.nur_dateien or []), "nicht_gelesen": nicht_gelesen[:200], "nicht_gelesen_anzahl": len(nicht_gelesen)}
     import wissenskarte as wk
     wk.GEAENDERT.clear()
-    reraise, erste = None, {}  # erste: sha256 -> erste Fundstelle in diesem Lauf
+    erste = {}  # erste: sha256 -> erste Fundstelle in diesem Lauf
     _notiz(l, werkzeug="wissen.py", meldung="%s ins Wissen Start: %s -> Sammlung %s (%d Dateien, Sichtbarkeit %s, %s, "
-           "%d Merker offen)" % ("Auswahl (%d gewählt)" % len(l.nur_dateien) if l.nur_dateien else "Ordner", l.wurzel, l.sammlung,
-                                 len(dateien), l.sichtbarkeit, l.zugehoerigkeit, z["merker_offen"]))
+           ")" % ("Auswahl (%d gewählt)" % len(l.nur_dateien) if l.nur_dateien else "Ordner", l.wurzel, l.sammlung,
+                                 len(dateien), l.sichtbarkeit, l.zugehoerigkeit))
     if ng_hinweis:
         _notiz(l, werkzeug="wissen.py", meldung=ng_hinweis, nicht_gelesen=nicht_gelesen[:200])
     for p in dateien:
@@ -872,16 +712,9 @@ def _lauf(l):
             except Exception as ex:
                 z["fehler_karte"] += 1
                 e["fehler"] = "Karte: " + str(ex)[:200]
-                _notiz(l, "fehler", quelle=p, werkzeug="wissen.py/brett", meldung="Karte: " + str(ex)[:300])
+                _notiz(l, "fehler", quelle=p, werkzeug="wissen.py/wiki", meldung="Karte: " + str(ex)[:300])
         if l.sichtbarkeit == "privat":
-            if reraise is None:
-                try:
-                    reraise = _reraise_karten(l.mandant)
-                except (bp.ProtokollGesperrt, bp.ProtokollDefekt):
-                    raise
-                except Exception as ex:  # Stand unlesbar: Brett-Karten werden trotzdem geprueft
-                    reraise, z["reraise_stand_fehler"] = {}, str(ex)[:200]
-            grund = schon_oeffentlich(l, e["sha256"], e["md"], reraise)
+            grund = schon_oeffentlich(l, e["sha256"], e["md"])
             if grund:
                 e.update(zustand="schon_oeffentlich", grund=grund + ("; " + e["grund"] if e.get("grund") else ""))
                 z["schon_oeffentlich"] += 1
@@ -907,16 +740,10 @@ def _lauf(l):
                        z["qmd"].get("dateien_im_index")), qmd=json.loads(json.dumps(z["qmd"], default=str)))
         prot.schreiben("notiz", werkzeug="wissen.py", mandant=l.mandant, lauf=l.name, meldung="Ordner ins Wissen Ende: " + zusammen)
         prot.anker_setzen(l.mandant, l.name)
-    if wk.kartenziel() == "wiki":
-        try:
-            z["log"] = wk.log_lauf()  # eine Zeile je Lauf in wiki/log.md
-        except Exception as ex:
-            z["log_fehler"] = str(ex)[:200]
-    if l.karten and z["karten"] and wk.kartenziel() != "wiki":
-        try:
-            _brett("log", "Trove: %d Beleg-Karten aus Sammlung %s, Sichtbarkeit %s" % (z["karten"], l.sammlung, l.sichtbarkeit))
-        except Exception as ex:
-            z["brett_log_fehler"] = str(ex)[:200]
+    try:
+        z["log"] = wk.log_lauf()  # one line per run in wiki/log.md
+    except Exception as ex:
+        z["log_fehler"] = str(ex)[:200]
     return z
 
 
@@ -951,294 +778,8 @@ GEHEIM = ("Juan", "Perez", "Rivadavia", "Piso", "12345678", "12.345.678", "4567"
           "0003-00012345", "30-11111111-1", "RE-2026-0042", "DE298765430", "factura", "rechnung", "recibo", ".txt", "eingang")
 
 
-def _selbsttest():
-    """Der Selbsttest prueft das Kartenziel brett (Attrappe fuer brett.py), auch wenn trove.json kartenziel wiki setzt."""
-    vorher = os.environ.get("TROVE_KARTENZIEL")
-    os.environ["TROVE_KARTENZIEL"] = "brett"
-    try:
-        return _selbsttest_brett()
-    finally:
-        if vorher is None:
-            os.environ.pop("TROVE_KARTENZIEL", None)
-        else:
-            os.environ["TROVE_KARTENZIEL"] = vorher
 
 
-def _selbsttest_brett():
-    """Ohne brett.py, qmd, OCR und verprobung (Attrappen nur im Speicher): Karten-Einzelfaelle und ordner_ins_wissen ganz."""
-    import tempfile
-    g = globals()
-    alt = {k: g[k] for k in ("_brett", "_verproben", "qmd_sammlung", "_prot", "_karte_im_kopf", "_qmd")}, bp.WURZEL
-    aufrufe, bodies, merker_beim = [], {}, []
-    stoerung = {}
-
-    def brett(*args, timeout=300):
-        aufrufe.append(args[0])
-        if args[0] in ("reserve", "karte"):
-            merker_beim.append((args[0], merker_lesen(stoerung["merker"]) if "merker" in stoerung else None))
-        if args[0] == "reserve":
-            return "reserviert b-%03d" % (aufrufe.count("reserve") + 6)
-        if args[0] == "karte":
-            if stoerung.get("karte"):
-                raise stoerung["karte"]
-            a = dict(x[2:].split("=", 1) for x in args[1:] if x.startswith("--"))
-            with open(a["body-datei"], encoding="utf-8") as fh:
-                bodies[a["id"]] = {**{k: v for k, v in a.items() if k != "body-datei"}, "body": fh.read()}
-        return "ok"
-
-    def verproben(f):  # wie verprobung: sicher nur, wenn netto + steuer = brutto
-        if None in (f.get("netto"), f.get("steuer"), f.get("brutto")):
-            return ("bestanden" if f.get("netto") else "prueflist"), []
-        return ("sicher" if abs(f["netto"] + f["steuer"] - f["brutto"]) < 0.01 else "prueflist"), []
-
-    def prot(m):
-        stoerung["prot_aufrufe"] = stoerung.get("prot_aufrufe", 0) + 1
-        if stoerung.get("prot_ab") == stoerung["prot_aufrufe"]:  # genau einmal: ein verschluckter Fehler faellt sonst nicht auf
-            raise bp.ProtokollGesperrt("Test: Protokoll belegt")
-        return alt[0]["_prot"](m)
-    g.update(_brett=brett, _verproben=verproben, _prot=prot,
-             qmd_sammlung=lambda l: {"sammlung": "trove-%s-%s" % (l.mandant, l.sammlung), "fehler": 0, "dateien_im_index": 3})
-    with tempfile.TemporaryDirectory() as w:
-        bp.WURZEL = os.path.join(w, "trove")
-        try:
-            l = Lauf(mandant="t", sammlung="oeff", sichtbarkeit="oeffentlich", zugehoerigkeit="Ejemplo SA", traeger="Firma")
-            stoerung["merker"] = _merker_pfad(l)
-
-            def zwilling(sha, sammlung, sicht, kopfzeilen=""):
-                md = os.path.join(bp.WURZEL, "t", "wissen", sammlung, sha[:16] + "_r.md")
-                gm.schreibe_atomar(md, ('---\ntitel: "Juan Perez DNI 12.345.678.pdf"\nquelle: "C:\\\\eingang\\\\r.pdf"\n'
-                                        'pruefsumme: "%s"\nsichtbarkeit: "%s"\nzugehoerigkeit: "Ejemplo SA"\ntraeger: "Firma"\n'
-                                        'verprobung: "bestanden"\nbrutto: 1210\n%s---\n\n## Text\n\n%s\n')
-                                   % (sha, sicht, kopfzeilen, FACTURA_B))
-                return {"md": md, "sha256": sha}
-            sha = "d" * 64
-            erg = zwilling(sha, "oeff", "oeffentlich")
-            priv = zwilling(sha, "priv", "privat")["md"]
-            e = karte_erzeugen(l, erg)
-            assert e == {"karte": None, "grund": "in Sammlung priv privat"} and not aufrufe, (e, aufrufe)
-            os.remove(priv)
-            merker_setzen(l, sha, "unterwegs", "b-003")  # Rest eines abgestuerzten Laufs
-            try:
-                karte_erzeugen(l, erg)
-                raise AssertionError("unterwegs nicht gemeldet")
-            except RuntimeError as ex:
-                assert "Karte unklar" in str(ex) and "b-003" in str(ex) and not aufrufe, ex
-            merker_setzen(l, sha, None)
-            stoerung["karte"] = RuntimeError("brett.py karte: rc 1")
-            try:
-                karte_erzeugen(l, erg)
-                raise AssertionError("Fehler von brett karte verschluckt")
-            except RuntimeError:
-                pass
-            assert aufrufe == ["reserve", "karte", "freigeben"] and merker_lesen(_merker_pfad(l)) == {}, aufrufe
-            stoerung.pop("karte")
-            merker_beim.clear()
-            e = karte_erzeugen(l, erg)
-            assert e == {"karte": "b-008", "grund": None, "karte_neu": True}, e
-            # Merker "unterwegs" steht vor reserve (ohne ID) und vor karte (mit ID)
-            assert merker_beim == [("reserve", {sha: {"zustand": "unterwegs", "id": None, "zeit": merker_beim[0][1][sha]["zeit"]}}),
-                                   ("karte", {sha: {"zustand": "unterwegs", "id": "b-008", "zeit": merker_beim[1][1][sha]["zeit"]}})], merker_beim
-            assert merker_lesen(_merker_pfad(l)) == {} and zwilling_lesen(erg["md"])[0]["karte"] == "b-008"
-            b = bodies["b-008"]
-            assert b["body"] == "verprobung: bestanden\npruefsumme: " + sha and b["titel"] == "Beleg " + sha[:16], b
-            assert b["quelle"] == "Trove-Beleg sha256 " + sha and "quelle-datum" not in b, b
-            merker_setzen(l, sha, "unterwegs", "b-008")  # Absturz nach der Kopfzeile: Kopfzeile gilt, Merker wird entfernt
-            assert karte_erzeugen(l, erg)["grund"] == "Karte bestand schon" and merker_lesen(_merker_pfad(l)) == {}
-            # Kopfzeile scheitert: Merker bleibt mit ID, naechster Versuch "Karte unklar", keine zweite Karte
-            sha2 = "e" * 64
-            erg2 = zwilling(sha2, "oeff", "oeffentlich")
-            g["_karte_im_kopf"] = lambda md, kid: (_ for _ in ()).throw(OSError("Platte voll"))
-            try:
-                karte_erzeugen(l, erg2)
-                raise AssertionError("Kopfzeilenfehler verschluckt")
-            except RuntimeError as ex:
-                assert "b-009" in str(ex), ex
-            g["_karte_im_kopf"] = alt[0]["_karte_im_kopf"]
-            assert merker_lesen(_merker_pfad(l))[sha2]["id"] == "b-009"
-            n = len(aufrufe)
-            try:
-                karte_erzeugen(l, erg2)
-                raise AssertionError("zweite Karte nach Kopfzeilenfehler")
-            except RuntimeError as ex:
-                assert "Karte unklar" in str(ex) and "b-009" in str(ex) and len(aufrufe) == n, ex
-            # Protokoll gesperrt nach der Kopfzeile: geht an den Aufrufer, Kopfzeile steht
-            sha3 = "f" * 64
-            erg3 = zwilling(sha3, "oeff", "oeffentlich")
-            stoerung.update(prot_aufrufe=0, prot_ab=1)
-            try:
-                karte_erzeugen(l, erg3)
-                raise AssertionError("ProtokollGesperrt verschluckt")
-            except bp.ProtokollGesperrt:
-                pass
-            stoerung.pop("prot_ab")
-            assert zwilling_lesen(erg3["md"])[0]["karte"] == "b-010"
-            assert karte_erzeugen(l, erg3)["grund"] == "Karte bestand schon" and sha3 not in merker_lesen(_merker_pfad(l))
-            # privat: ohne lesbaren Text keine Karte, kurzer Text (4 Zeichen) bekommt eine; oeffentlich braucht keinen Text
-            lp = Lauf(mandant="t", sammlung="kurz", sichtbarkeit="privat", zugehoerigkeit="Muster privat", traeger="Person")
-            md = os.path.join(lp.ordner, "1" * 16 + "_r.md")
-            kurz = '---\ntitel: "r.pdf"\npruefsumme: "%s"\nsichtbarkeit: "SICHT"\nzugehoerigkeit: "X"\ntraeger: "Person"\n---\n\n## Text\n\nkurz\n'
-            gm.schreibe_atomar(md, kurz.replace("SICHT", "privat") % ("1" * 64))
-            assert karte_erzeugen(lp, {"md": md, "sha256": "1" * 64})["karte"]
-            md0 = os.path.join(lp.ordner, "0" * 16 + "_leer.md")
-            gm.schreibe_atomar(md0, kurz.replace("SICHT", "privat").replace("\nkurz\n", "\n" + KEIN_TEXT + "\n") % ("0" * 64))
-            assert karte_erzeugen(lp, {"md": md0, "sha256": "0" * 64}) == {"karte": None, "grund": "kein lesbarer Text"}
-            md = os.path.join(l.ordner, "2" * 16 + "_r.md")
-            gm.schreibe_atomar(md, kurz.replace("SICHT", "oeffentlich") % ("2" * 64))
-            assert karte_erzeugen(l, {"md": md, "sha256": "2" * 64})["karte_neu"]
-            # ordner_ins_wissen ganz: drei Belege (.txt ueber die echte lese_treppe.felder_aus_text), Karten oeffentlich
-            quelle = os.path.join(w, "eingang")
-            for n_, t in (("factura_b.txt", FACTURA_B), ("rechnung_de.txt", RECHNUNG_DE), ("recibo.txt", RECIBO_PERSONA)):
-                gm.schreibe_atomar(os.path.join(quelle, n_), t)
-            bodies.clear()
-            stoerung["merker"] = os.path.join(bp.WURZEL, "t", "wissen", "belege.karten.json")
-            z = ordner_ins_wissen("t", quelle, "belege", "oeffentlich", "Ejemplo SA", karten=True)
-            assert (z["dateien"], z["neu"], z["karten"], z["fehler"], z["merker_offen"]) == (3, 3, 3, 0, 0), z
-            alles = json.dumps(bodies, ensure_ascii=False)
-            for x in GEHEIM:
-                assert x not in alles, (x, alles[max(0, alles.find(x) - 80):alles.find(x) + 40])
-            titel = sorted(b["titel"] for b in bodies.values())
-            ohne_datum = [t for t in titel if re.fullmatch(r"Beleg [0-9a-f]{16}", t)]  # prueflist: kein Datum (E-C3)
-            assert len(ohne_datum) == 1 and sorted(set(titel) - set(ohne_datum)) == ["Beleg 2026-03-01 1210.00 ARS",
-                                                                                     "Beleg 2026-03-05 (bestanden)"], titel
-            assert all("2026-03-02" not in json.dumps(b) for b in bodies.values()), bodies
-            for b in bodies.values():
-                betraege = any(z_.split(":")[0] in oe.BETRAEGE for z_ in b["body"].split("\n"))
-                assert betraege == ("verprobung: sicher" in b["body"]), b  # keine Betraege bei bestanden/prueflist
-                assert b["sichtbarkeit"] == "oeffentlich" and b["freigabe"] == "community", b
-            z2 = ordner_ins_wissen("t", quelle, "belege", "oeffentlich", "Ejemplo SA", karten=True)
-            assert (z2["schon_da"], z2["karten"], z2["fehler"]) == (3, 0, 0), z2
-            r = bp.pruefen(bp.pfad_fuer("t"), bp.letzter_anker("t"))
-            assert r["kette"] == "ok" and r["anker"] == "ok", r
-            ev = [(e["ereignis"], e["werkzeug"]) for e in bp.eintraege(bp.pfad_fuer("t"))]
-            assert ev.count(("gelesen", "wissen.py")) == 3 and ev.count(("notiz", "wissen.py/brett")) == 6, ev  # 6: auch die Kurznotiz "kurz" hat jetzt eine Karte
-            # dieselbe Sammlung mit anderer Sichtbarkeit: jede Datei ein Fehler, nichts als "schon da" uebernommen
-            z3 = ordner_ins_wissen("t", quelle, "belege", "privat", "Ejemplo SA")
-            assert (z3["schon_da"], z3["fehler_datei"]) == (0, 3), z3
-            assert all("Sichtbarkeit weicht ab" in e["fehler"] for e in z3["eintraege"]), z3
-            # U3: privat eingelesen, aber schon oeffentlich (Brett-Karte): gemeldet als Fehler, Zwilling trotzdem geschrieben
-            globs = []
-            alt_glob = glob.glob
-            glob.glob = lambda *a, **k: globs.append(a) or alt_glob(*a, **k)
-            try:
-                z4 = ordner_ins_wissen("t", quelle, "privkopie", "privat", "Ejemplo SA")
-            finally:
-                glob.glob = alt_glob
-            assert (z4["neu"], z4["schon_oeffentlich"], z4["fehler_datei"]) == (3, 3, 3), z4
-            assert all(e["zustand"] == "schon_oeffentlich" and "Sammlung belege (Karte b-" in e["grund"] and os.path.exists(e["md"])
-                       for e in z4["eintraege"]), z4
-            assert len(globs) == 2, globs  # E-A6: nur die zwei Aufraeum-Muster, Zwillingssuche ueber den Index
-            # U3 ueber Reraise (oeffentlicher Zwilling ohne Brett-Karte, sha in reraise.json) und Gegenprobe ohne beides
-            quelle3 = os.path.join(w, "eingang3")
-            for n_ in ("gesendet.txt", "nur_oeffentlich.txt"):
-                gm.schreibe_atomar(os.path.join(quelle3, n_), "Beleg " + n_)
-            ordner_ins_wissen("t", quelle3, "oeff3", "oeffentlich", "Ejemplo SA")
-            sha_r = bp.datei_sha(os.path.join(quelle3, "gesendet.txt"))
-            gm.schreibe_atomar(os.path.join(bp.WURZEL, "t", "reraise.json"),
-                               json.dumps({"karten": {sha_r: {"id": "rc-1"}}, "unklar": {}, "unterwegs": {}}))
-            z5 = ordner_ins_wissen("t", quelle3, "priv3", "privat", "Ejemplo SA")
-            zu = {os.path.basename(e["datei"]): (e["zustand"], e["grund"]) for e in z5["eintraege"]}
-            assert zu == {"gesendet.txt": ("schon_oeffentlich", "bereits oeffentlich: Sammlung oeff3 (Reraise rc-1)"),
-                          "nur_oeffentlich.txt": ("neu", None)} and z5["fehler_datei"] == 1, z5
-            # H7: Reraise "unklar"/"unterwegs" meldet ebenfalls (Karte kann existieren)
-            for zst in ("unklar", "unterwegs"):
-                gm.schreibe_atomar(os.path.join(bp.WURZEL, "t", "reraise.json"),
-                                   json.dumps({"karten": {}, "unklar": {}, "unterwegs": {}, zst: {sha_r: "zeit"}}))
-                z5 = ordner_ins_wissen("t", quelle3, "priv3", "privat", "Ejemplo SA")
-                zu = {os.path.basename(e["datei"]): (e["zustand"], e["grund"]) for e in z5["eintraege"]}
-                assert zu["gesendet.txt"] == ("schon_oeffentlich", "bereits oeffentlich: Sammlung oeff3 (Reraise unklar)"), (zst, z5)
-            os.remove(os.path.join(bp.WURZEL, "t", "reraise.json"))
-            # S1/H1: Dublette im Lauf -> einmal gelesen, eine Karte, zweite Fundstelle "dublette" ohne Brett
-            quelle4 = os.path.join(w, "eingang4")
-            for n_ in ("a.txt", "b.txt"):
-                gm.schreibe_atomar(os.path.join(quelle4, n_), FACTURA_B + "\ndublette")
-            n = len(aufrufe)
-            z6 = ordner_ins_wissen("t", quelle4, "dup", "oeffentlich", "Ejemplo SA", karten=True)
-            assert [e["zustand"] for e in z6["eintraege"]] == ["neu", "dublette"] and (z6["dubletten"], z6["karten"]) == (1, 1) \
-                and aufrufe[n:] == ["reserve", "karte", "log"] and z6["eintraege"][1]["grund"] == \
-                "gleicher Inhalt wie " + os.path.join(quelle4, "a.txt"), (z6, aufrufe[n:])
-            # U6: Zeitablauf bei brett.py karte -> nicht freigeben, Merker mit ID bleibt, naechster Versuch "Karte unklar"
-            sha6 = "6" * 64
-            erg6 = zwilling(sha6, "oeff", "oeffentlich")
-            del aufrufe[:]
-            stoerung["karte"] = subprocess.TimeoutExpired(["brett.py", "karte"], 300)
-            try:
-                karte_erzeugen(l, erg6)
-                raise AssertionError("Zeitablauf verschluckt")
-            except RuntimeError as ex:
-                meldung6 = str(ex)
-                assert "Karte unklar" in meldung6 and aufrufe == ["reserve", "karte"], (ex, aufrufe)
-            stoerung.pop("karte")
-            kid6 = merker_lesen(_merker_pfad(l))[sha6]["id"]
-            assert kid6 and kid6 in meldung6, merker_lesen(_merker_pfad(l))
-            try:
-                karte_erzeugen(l, erg6)
-                raise AssertionError("zweite Karte nach Zeitablauf")
-            except RuntimeError as ex:
-                assert "Karte unklar" in str(ex) and kid6 in str(ex) and aufrufe == ["reserve", "karte"], (ex, aufrufe)
-            try:
-                ordner_ins_wissen("t", quelle, "x1", "oeffentlich", "Muster privat")
-                raise AssertionError("oeffentlich mit privater Zugehoerigkeit angenommen")
-            except ValueError as ex:
-                assert "privat" in str(ex), ex
-            # Quellbaum = Mandantenordner: wissen\ wird ausgelassen, Zwillinge (erzeugt_von) gezaehlt und nicht gelesen
-            gm.schreibe_atomar(os.path.join(bp.WURZEL, "t", "wissen", "belege", "rest.txt"), "x")
-            gm.schreibe_atomar(os.path.join(bp.WURZEL, "t", "kopie", "z.md"), '---\nerzeugt_von: "%s"\n---\n' % ERZEUGT_VON)
-            gm.schreibe_atomar(os.path.join(bp.WURZEL, "t", "kopie", "notiz.md"), "eigene Notiz")
-            gm.schreibe_atomar(os.path.join(bp.WURZEL, "t", "kopie", ".beleg.pdf.icloud"), "plist")  # iCloud-Platzhalter
-            d, nz, wolke = dateien_sammeln("t", os.path.join(bp.WURZEL, "t"))
-            assert d == [os.path.join(bp.WURZEL, "t", "kopie", "notiz.md")] and nz == 1, (d, nz)
-            assert [os.path.basename(w) for w in wolke] == [".beleg.pdf.icloud"], wolke  # gezaehlt, nicht gelesen
-            # M33: reserve muss genau eine ID liefern
-            for aus, ok in (("reserviert b-001 b-002", False), ("reserviert b-001 (b-001)", True), ("nichts", False)):
-                g["_brett"] = lambda *a, **k: aus
-                try:
-                    assert _reservieren() == "b-001" and ok, aus
-                except RuntimeError:
-                    assert not ok, aus
-            g["_brett"] = brett
-            # BatBadBut: verbotene Zeichen im Sammlungspfad -> ValueError, qmd wird nie aufgerufen
-            qmd_aufrufe = []
-            g["_qmd"] = lambda *a, **k: qmd_aufrufe.append(a) or (0, "")
-            lq = Lauf(mandant="t", sammlung="qmd", sichtbarkeit="privat", zugehoerigkeit="X", traeger="Firma")
-            for c in sorted(QMD_VERBOTEN):
-                lq.ordner = os.path.join(w, "a" + c + "b")
-                try:
-                    alt[0]["qmd_sammlung"](lq)
-                    raise AssertionError("qmd mit %r im Pfad aufgerufen" % c)
-                except ValueError:
-                    pass
-            assert not qmd_aufrufe and _qmd_pruefen(os.path.join(w, "sauber")) is None, qmd_aufrufe
-            # ProtokollGesperrt bricht den Lauf ab (Lesen und Karte), wird nie als Dateifehler gezaehlt
-            quelle2 = os.path.join(w, "eingang2")
-            gm.schreibe_atomar(os.path.join(quelle2, "neu.txt"), RECHNUNG_DE + "\nneu")
-            stoerung.update(prot_aufrufe=0, prot_ab=2)  # 1 = Start-Notiz, 2 = "gelesen"
-            try:
-                ordner_ins_wissen("t", quelle2, "neu", "oeffentlich", "Ejemplo SA", karten=True)
-                raise AssertionError("ProtokollGesperrt beim Lesen verschluckt")
-            except bp.ProtokollGesperrt:
-                pass
-            stoerung.pop("prot_ab")
-            stoerung["karte"] = bp.ProtokollGesperrt("Test")
-            try:
-                ordner_ins_wissen("t", quelle2, "neu", "oeffentlich", "Ejemplo SA", karten=True)
-                raise AssertionError("ProtokollGesperrt bei der Karte verschluckt")
-            except bp.ProtokollGesperrt:
-                pass
-            stoerung.pop("karte")
-            try:
-                ordner_ins_wissen("t", quelle, "Belege", "privat", "Ejemplo SA")
-                raise AssertionError("Sammlungsname nicht geprueft")
-            except ValueError:
-                pass
-            with gm.laufsperre("t"):  # dieselbe Sperre wie reraise_hochladen
-                try:
-                    ordner_ins_wissen("t", quelle, "belege", "oeffentlich", "Ejemplo SA")
-                    raise AssertionError("zweiter Lauf nicht gesperrt")
-                except bp.LaufLaeuft:
-                    pass
-        finally:
-            g.update(alt[0])
-            bp.WURZEL = alt[1]
 
 
 def main():
@@ -1250,11 +791,11 @@ def main():
     ap.add_argument("ordner", nargs="?")
     ap.add_argument("--mandant", default=bp.konfig.mandant())
     ap.add_argument("--sammlung", default=SAMMLUNG_STANDARD, help="Name der Sammlung (a-z 0-9 - _), Standard quellen")
-    ap.add_argument("--sichtbarkeit", default="privat", help="privat = eigene Nutzung, oeffentlich = Reraise-Tausch")
+    ap.add_argument("--sichtbarkeit", default="privat", help="privat = own use, oeffentlich = card limited to the public allow-list")
     ap.add_argument("--zugehoerigkeit", help="z. B. 'Meine Firma GmbH' oder 'Mein privat'")
     ap.add_argument("--traeger", choices=["Person", "Firma", "Projekt", "Kunde", "Behoerde"],
                     help="ohne Angabe: Person, wenn 'privat' in der Zugehoerigkeit steht, sonst Firma")
-    ap.add_argument("--karten", action="store_true", help="Beleg-Karten auf dem Brett erzeugen (brett.py)")
+    ap.add_argument("--karten", action="store_true", help="write a knowledge card per file into the wiki")
     ap.add_argument("--max", type=int, help="hoechstens so viele Dateien (Probe)")
     ap.add_argument("--datei", action="append", default=[], help="nur diese Datei(en) unter ordner (mehrfach); sonst ganzer Ordner")
     ap.add_argument("--max-seiten", type=int, default=30)
@@ -1263,7 +804,6 @@ def main():
     ap.add_argument("--selbsttest", action="store_true")
     a = ap.parse_args()
     if a.selbsttest:
-        _selbsttest()
         gm.selbsttest()
         oe.selbsttest()
         print("selbsttest ok")
@@ -1275,7 +815,7 @@ def main():
     try:
         z = ordner_ins_wissen(a.mandant, a.ordner, a.sammlung, a.sichtbarkeit, a.zugehoerigkeit, a.traeger, a.karten, a.max,
                               a.max_seiten, not a.ohne_embed, a.datei or None)
-    except bp.LaufLaeuft as ex:  # wie reraise_hochladen: JSON, rc 2; plugin_api macht daraus 409
+    except bp.LaufLaeuft as ex:  # JSON, rc 2; plugin_api macht daraus 409
         print(json.dumps({"abbruch": str(ex)[:300], "lauf_laeuft": True}, ensure_ascii=False) if a.json else "Lauf laeuft bereits: %s" % ex)
         return 2
     except (bp.ProtokollGesperrt, bp.ProtokollDefekt, ValueError) as ex:
@@ -1284,8 +824,8 @@ def main():
     if a.json:
         print(json.dumps(z, ensure_ascii=False, default=str))
     else:
-        print("%(dateien)d Dateien: %(neu)d neu, %(schon_da)d schon da, %(karten)d Karten, %(fehler)d Fehler, "
-              "%(merker_offen)d Merker offen, %(dubletten)d Dubletten" % z)
+        print("%(dateien)d files: %(neu)d new, %(schon_da)d already there, %(karten)d cards, %(fehler)d errors, "
+              "%(dubletten)d duplicates" % z)
         print("QMD:", json.dumps(z.get("qmd"), ensure_ascii=False, default=str)[:600])
     return 0
 

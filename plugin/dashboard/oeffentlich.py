@@ -1,8 +1,7 @@
-"""Trove F16 — Regeln fuer oeffentliche Karten (Brett mit sichtbarkeit oeffentlich UND Reraise). Nur Standardbibliothek.
+"""Trove F16 — Regeln fuer oeffentliche Karten (cards with visibility oeffentlich). Nur Standardbibliothek.
 
 Eine oeffentliche Karte enthaelt NICHTS, was aus dem Belegtext oder dem Dateinamen stammt. Positivliste, sonst nichts
-(die Brett-Karte traegt zusaetzlich die Pflichtfelder des Brett-Kartenformats traeger, zugehoerigkeit, freigabe und
-sichtbarkeit; sie stammen nicht aus dem Beleg, sondern aus den Angaben des Laufs — siehe wissen.karte_erzeugen):
+(fields such as zugehoerigkeit and sichtbarkeit come from the run settings, not from the document -- see wissen.karte_erzeugen):
   belegdatum   ISO-Datum (geprueft)
   netto/steuer/brutto  Zahlen, NUR wenn verprobung == "sicher" (Summen rechnerisch bestaetigt); sonst keine Betraege
   waehrung     EUR | ARS | USD | GBP | CHF

@@ -17,6 +17,7 @@ Agentenbenutzer trove-spiegel@pe.local nur mit dieser Rolle, API-Schluessel in d
 import argparse, http.cookiejar, json, os, sys, time, urllib.parse, urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "plugin", "dashboard"))  # Trove core modules
 import belegprotokoll as bp
 import konfig
 
