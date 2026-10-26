@@ -6,6 +6,8 @@ Aufruf: python messung_f3.py --quelle "<ordner>|20|Belege" --max-seiten 2 --kand
 import argparse, csv, json, os, statistics, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", "..", "plugin", "dashboard"))  # Trove modules live in the plugin package
 import belegprotokoll as bp
 import lese_treppe as lt
 import verprobung as vp

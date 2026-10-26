@@ -10,6 +10,8 @@ Regeln (Plan §1.2/§6, Review 18.10.):
 - Jeder Lauf hat eine Start- und eine Ende-Zeile im Belegprotokoll (auch bei Abbruch).
 """
 import argparse, hashlib, json, os, sqlite3, sys, tarfile, time
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", "..", "plugin", "dashboard"))  # Trove modules live in the plugin package
 import belegprotokoll
 
 BAD = set('<>:"|?*%')

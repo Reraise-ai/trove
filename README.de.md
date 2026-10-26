@@ -169,7 +169,7 @@ Trove ist früh dran. Das gibt es schon, und das kommt als Nächstes:
 ```bash
 git clone https://github.com/Reraise-ai/trove.git
 cd trove
-python plugin/installieren.py
+python tools/installieren.py
 ```
 
 Hermes neu laden (oder neu starten). In der Seitenleiste erscheint der Tab **Trove**.
@@ -177,7 +177,7 @@ Hermes neu laden (oder neu starten). In der Seitenleiste erscheint der Tab **Tro
 - Der Installer findet den Hermes-Ordner unter Windows, macOS und Linux. Klappt das nicht, `HERMES_HOME` setzen oder `--hermes-home` angeben und erneut ausführen.
 - Er legt `config.yaml` an, falls sie fehlt, und schaltet das Plugin ein. Eine bestehende `config.yaml` wird vorher gesichert. Zweimal ausführen schadet nicht.
 - OCR-Pakete (`onnxruntime`, `rapidocr-onnxruntime`) sind optional. Ohne sie läuft Trove ohne Texterkennung.
-- Gesundheitscheck: `python plugin/installieren.py --pruefen` (installiert nichts, nennt nur, was fehlt).
+- Gesundheitscheck: `python tools/installieren.py --pruefen` (installiert nichts, nennt nur, was fehlt).
 
 | Option | Wirkung |
 | --- | --- |

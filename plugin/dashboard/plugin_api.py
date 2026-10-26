@@ -25,10 +25,10 @@ import time
 from fastapi import APIRouter, HTTPException
 
 HIER = os.path.dirname(os.path.abspath(__file__))
-# Module liegen installiert neben dieser Datei, im Repo zwei Ordner darueber; TROVE_REPO ueberschreibt
-TROVE_REPO = next((d for d in (os.environ.get("TROVE_REPO"), HIER, os.path.normpath(os.path.join(HIER, "..", ".."))) if d and os.path.isfile(os.path.join(d, "belegprotokoll.py"))), HIER)
-if TROVE_REPO not in sys.path:
-    sys.path.insert(0, TROVE_REPO)
+# All Trove modules ship inside this directory (plugin/dashboard), so installing only the plugin directory is enough.
+TROVE_REPO = HIER  # kept as a name for code that needs "where Trove's own scripts live"
+if HIER not in sys.path:
+    sys.path.insert(0, HIER)
 import konfig  # noqa: E402
 import belegprotokoll as bp  # noqa: E402
 import aenderungen  # noqa: E402

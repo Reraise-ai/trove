@@ -11,9 +11,9 @@ Nie pip --user. Windows bleibt beim bisherigen Weg (--python oder Suche), ausser
 """
 import argparse, json, os, re, shutil, subprocess, sys, time
 
-QUELLE = os.path.dirname(os.path.abspath(__file__))
-REPO = os.path.dirname(QUELLE)
-sys.path.insert(0, REPO)
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+QUELLE = os.path.join(REPO, "plugin")  # the self-contained plugin directory (also what the Hermes catalog installs)
+sys.path.insert(0, os.path.join(QUELLE, "dashboard"))
 _vorher = set(os.environ)
 import konfig  # noqa: E402
 import gesundheit  # noqa: E402
@@ -24,7 +24,6 @@ PAKETE_PFLICHT = ["pypdfium2", "pikepdf", "numpy", "pillow"]
 PAKETE_OCR = ["onnxruntime", "rapidocr-onnxruntime"]  # rapidocr-onnxruntime verlangt Python < 3.13
 BASIS_PYTHON = ("/opt/homebrew/bin/python3.12", "/usr/local/bin/python3.12", "/opt/homebrew/bin/python3.13", "/usr/local/bin/python3.13")
 VENV_STANDARD = os.path.join("~", ".trove-venv")
-DATEIEN = ["plugin.yaml", "__init__.py", "dashboard/manifest.json", "dashboard/plugin_api.py"]
 
 
 def plugins_enabled_setzen(txt):
@@ -284,12 +283,17 @@ def main():
         if not os.path.isfile(os.path.join(dash, "gesundheit.py")):
             sys.exit("Nicht installiert: %s fehlt. Erst installieren." % dash)
         sys.exit(subprocess.run([sys.executable, os.path.join(dash, "gesundheit.py")], env=dict(os.environ, HERMES_HOME=home)).returncode)
-    for rel in DATEIEN:
-        q = os.path.join(QUELLE, *rel.split("/")); z = os.path.join(ziel, *rel.split("/"))
-        os.makedirs(os.path.dirname(z), exist_ok=True); shutil.copyfile(q, z)
-    module = gesundheit.laufzeit_module(os.path.join(QUELLE, "dashboard", "plugin_api.py"), REPO)
-    for n in module:
-        shutil.copyfile(os.path.join(REPO, n + ".py"), os.path.join(dash, n + ".py"))
+    # Copy the whole plugin directory (modules live in plugin/dashboard); the desktop half goes to desktop-plugins/ below.
+    module = sorted(n[:-3] for n in os.listdir(os.path.join(QUELLE, "dashboard")) if n.endswith(".py"))
+    for wurzel, _dirs, dateien in os.walk(QUELLE):
+        if "__pycache__" in wurzel or os.path.relpath(wurzel, QUELLE).split(os.sep)[0] == "desktop":
+            continue
+        for n in dateien:
+            if n.endswith(".pyc"):
+                continue
+            z = os.path.join(ziel, os.path.relpath(os.path.join(wurzel, n), QUELLE))
+            os.makedirs(os.path.dirname(z), exist_ok=True)
+            shutil.copyfile(os.path.join(wurzel, n), z)
     kpfad = os.path.join(dash, "trove.json")
     k = json.load(open(kpfad, encoding="utf-8")) if os.path.isfile(kpfad) else {}
     venv = a.venv or (VENV_STANDARD if sys.platform == "darwin" and not a.kein_venv else None)

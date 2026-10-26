@@ -18,7 +18,14 @@ _python_cache = {}
 
 
 def konfig_pfad():
-    return os.environ.get("TROVE_KONFIG") or os.path.join(HIER, "trove.json")
+    """trove.json: TROVE_KONFIG, else next to this module if one is there (legacy installer layout), else in the data root
+    (<TROVE_DATEN or ~/Trove>/trove.json) -- never inside the installed plugin package, which a catalog update replaces."""
+    if os.environ.get("TROVE_KONFIG"):
+        return os.environ["TROVE_KONFIG"]
+    neben = os.path.join(HIER, "trove.json")
+    if os.path.isfile(neben):
+        return neben
+    return os.path.join(os.environ.get("TROVE_DATEN") or os.path.join(os.path.expanduser("~"), "Trove"), "trove.json")
 
 
 def kartenziel():
@@ -41,6 +48,7 @@ def ueberwacht_eintragen(eintrag):
     liste = [e for e in k.get("ueberwacht", []) if (e.get("ordner"), e.get("sammlung")) != (eintrag["ordner"], eintrag["sammlung"])] + [eintrag]
     k["ueberwacht"] = liste
     p = konfig_pfad()
+    os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
     with open(p + ".neu", "w", encoding="utf-8") as f:
         json.dump(k, f, ensure_ascii=False, indent=1)
     os.replace(p + ".neu", p)
@@ -131,7 +139,7 @@ def python_finden(modul=None):
         if _kann(exe, modul or "sys"):  # auch ohne Paketwunsch pruefen: der Windows-Store-Platzhalter python3.exe startet nichts
             _python_cache[modul] = exe
             return exe
-    raise RuntimeError("Kein Python mit %s gefunden. Einrichten: python plugin/installieren.py ... (legt auf dem Mac ~/.trove-venv mit allen Paketen an; "
+    raise RuntimeError("Kein Python mit %s gefunden. Einrichten: python tools/installieren.py ... (legt auf dem Mac ~/.trove-venv mit allen Paketen an; "
                        "Windows: py -3 -m pip install pypdfium2 pikepdf rapidocr-onnxruntime numpy pillow) oder in trove.json \"python\" auf ein passendes Python setzen." % modul)
 
 

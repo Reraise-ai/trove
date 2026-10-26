@@ -169,7 +169,7 @@ Trove is early, and the interface is currently in German. Here is what exists an
 ```bash
 git clone https://github.com/Reraise-ai/trove.git
 cd trove
-python plugin/installieren.py
+python tools/installieren.py
 ```
 
 Reload Hermes (or restart it). A **Trove** tab appears in the sidebar.
@@ -177,7 +177,7 @@ Reload Hermes (or restart it). A **Trove** tab appears in the sidebar.
 - The installer finds the Hermes home on Windows, macOS and Linux. If it can't, set `HERMES_HOME` or pass `--hermes-home` and run it again.
 - It creates `config.yaml` if missing and enables the plugin. An existing `config.yaml` is backed up first. Running it twice is safe.
 - OCR packages (`onnxruntime`, `rapidocr-onnxruntime`) are optional. Without them, Trove works without OCR.
-- Health check: `python plugin/installieren.py --pruefen` (installs nothing, tells you what is missing).
+- Health check: `python tools/installieren.py --pruefen` (installs nothing, tells you what is missing).
 
 | Option | What it does |
 | --- | --- |

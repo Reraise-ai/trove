@@ -82,10 +82,8 @@ def _importe(quelle, vorhanden):
 
 
 def _plugin_api():
-    for p in (os.path.join(HIER, "plugin_api.py"), os.path.join(HIER, "plugin", "dashboard", "plugin_api.py")):
-        if os.path.isfile(p):
-            return p
-    return None
+    p = os.path.join(HIER, "plugin_api.py")
+    return p if os.path.isfile(p) else None
 
 
 def _punkt(name, status, detail, hilfe=""):
@@ -236,7 +234,7 @@ def bericht():
     k = konfig.lesen()
     wiki_modus = konfig.kartenziel() == "wiki"
     mac = sys.platform == "darwin"
-    venv_hilfe = ("Einrichten mit dem Installer (legt %s mit allen Paketen an): python3 plugin/installieren.py --mandant <name> --datenwurzel ~/Trove ..."
+    venv_hilfe = ("Einrichten mit dem Installer (legt %s mit allen Paketen an): python3 tools/installieren.py --mandant <name> --datenwurzel ~/Trove ..."
                   % os.path.join(os.path.expanduser("~"), ".trove-venv"))
     try:
         py = konfig.python_finden("pypdfium2")  # TROVE_PYTHON/trove.json gilt ohne Paketpruefung -> Pakete stehen in den Zeilen darunter
@@ -320,7 +318,7 @@ def bericht():
     else:
         p.append(_punkt("Dauerlauf (Planer)", "ok" if geladen else ("fehlt" if noetig else "optional"),
                         det if noetig or geladen else "nicht eingerichtet (keine ueberwachten Ordner)",
-                        "" if geladen else "am Mac angemeldet: python3 plugin/installieren.py ... --dauerlauf 30"))
+                        "" if geladen else "am Mac angemeldet: python3 tools/installieren.py ... --dauerlauf 30"))
     for e in ueberwacht:
         o = e.get("ordner") or ""
         try:
