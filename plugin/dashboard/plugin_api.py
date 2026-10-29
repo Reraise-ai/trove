@@ -485,6 +485,101 @@ def aktion(body: dict):
     return {"ok": True, "lauf": lauf, "ergebnis": ergebnis}
 
 
+_WIN_RESERVIERT = {"CON", "PRN", "AUX", "NUL", "CLOCK$", *("COM%d" % i for i in range(1, 10)), *("LPT%d" % i for i in range(1, 10))}
+_NAME_VERBOTEN = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+
+def _eintragsname_pruefen(name, was="name"):
+    """Einen neuen Datei-/Ordnernamen pruefen (rename / new folder): ein einzelner Name, kein Pfad, auf allen Systemen anlegbar."""
+    if not isinstance(name, str) or not name:
+        raise HTTPException(400, "%s: a name is required" % was)
+    if name != name.strip(" ") or name.endswith("."):
+        raise HTTPException(400, "%s: must not start or end with a space or end with a dot" % was)
+    if name in (".", "..") or _NAME_VERBOTEN.search(name) or os.path.isabs(name) or os.path.splitdrive(name)[0]:
+        raise HTTPException(400, "%s: no path separators, '..' or characters that are not allowed in file names: %r" % (was, name))
+    if len(name.encode("utf-8")) > 255:
+        raise HTTPException(400, "%s: too long" % was)
+    if name.split(".")[0].rstrip(" ").upper() in _WIN_RESERVIERT:
+        raise HTTPException(400, "%s: reserved system name: %r" % (was, name))
+    return name
+
+
+def _ordnerpfad_pruefen(pfad):
+    if ".." in str(pfad or "").replace("\\", "/").split("/"):
+        raise HTTPException(400, "pfad: '..' is not allowed")
+    return pfad
+
+
+def _schreibbare_quelle(mandant, qid):
+    q = _quelle(mandant, qid)
+    if q.get("nur_lesen", True):
+        raise HTTPException(403, "This source is read-only. Mark the folder as writable to rename or create folders in it.")
+    return q
+
+
+@router.post("/umbenennen")
+def umbenennen(body: dict):
+    """Rename one file or folder inside a writable source. body: {quelle, pfad (the folder it is in), name, neu}. Never overwrites."""
+    mandant = body.get("mandant") or MANDANT
+    q = _schreibbare_quelle(mandant, body.get("quelle"))
+    name, neu = body.get("name"), body.get("neu")
+    _namen_pruefen([name])
+    if not name:
+        raise HTTPException(400, "name: the entry to rename is required")
+    _eintragsname_pruefen(neu, "neu")
+    ordner = _sicher(q["pfad"], _ordnerpfad_pruefen(body.get("pfad", "")))
+    alt, ziel = os.path.join(ordner, name), os.path.join(ordner, neu)
+    if not os.path.lexists(alt):
+        raise HTTPException(404, "Entry not found: %s" % name)
+    if not _unter_real(ordner, q["pfad"]):
+        raise HTTPException(400, "Path is outside the source folder")
+    if name == neu:
+        raise HTTPException(400, "The new name is the same as the old one")
+    nur_gross_klein = name.casefold() == neu.casefold()
+    if os.path.lexists(ziel) and not (nur_gross_klein and os.path.samefile(alt, ziel)):
+        raise HTTPException(409, "An entry named %r already exists here. Nothing was renamed." % neu)
+    sha, groesse = "", None
+    if os.path.isfile(alt) and not os.path.islink(alt):
+        groesse = os.path.getsize(alt)
+        if groesse <= 256 * 1024 * 1024:
+            sha = _sha(alt)
+    lauf = "umbenennen-%s" % time.strftime("%Y%m%d-%H%M%S")
+    with bp.Protokoll(bp.pfad_fuer(mandant)) as prot:
+        try:
+            os.rename(alt, ziel)
+        except OSError as ex:
+            prot.schreiben("fehler", quelle=alt, ziel=ziel, werkzeug="trove-plugin", mandant=mandant, lauf=lauf, meldung="rename failed: %s" % (ex.strerror or type(ex).__name__))
+            raise _fehler(500, "Rename failed: %s" % (ex.strerror or type(ex).__name__))
+        prot.schreiben("umbenannt", quelle=alt, ziel=ziel, sha256=sha, bytes_=groesse, werkzeug="trove-plugin", mandant=mandant, lauf=lauf,
+                       meldung="%s renamed in place: %s -> %s" % ("folder" if os.path.isdir(ziel) and not os.path.islink(ziel) else "file", name, neu))
+        prot.anker_setzen(mandant, lauf)
+    return {"ok": True, "lauf": lauf, "name": neu}
+
+
+@router.post("/ordner-neu")
+def ordner_neu(body: dict):
+    """Create one new folder inside a writable source. body: {quelle, pfad (parent folder), name}. Never touches an existing entry."""
+    mandant = body.get("mandant") or MANDANT
+    q = _schreibbare_quelle(mandant, body.get("quelle"))
+    name = _eintragsname_pruefen(body.get("name"), "name")
+    ordner = _sicher(q["pfad"], _ordnerpfad_pruefen(body.get("pfad", "")))
+    if not os.path.isdir(ordner):
+        raise HTTPException(404, "Folder not found")
+    ziel = os.path.join(ordner, name)
+    lauf = "ordner-neu-%s" % time.strftime("%Y%m%d-%H%M%S")
+    with bp.Protokoll(bp.pfad_fuer(mandant)) as prot:
+        try:
+            os.mkdir(ziel)  # atomic: fails if anything with that name exists
+        except FileExistsError:
+            raise HTTPException(409, "An entry named %r already exists here. No folder was created." % name)
+        except OSError as ex:
+            prot.schreiben("fehler", quelle=ordner, ziel=ziel, werkzeug="trove-plugin", mandant=mandant, lauf=lauf, meldung="new folder failed: %s" % (ex.strerror or type(ex).__name__))
+            raise _fehler(500, "New folder failed: %s" % (ex.strerror or type(ex).__name__))
+        prot.schreiben("notiz", quelle=ordner, ziel=ziel, werkzeug="trove-plugin", mandant=mandant, lauf=lauf, meldung="folder created: %s" % name)
+        prot.anker_setzen(mandant, lauf)
+    return {"ok": True, "lauf": lauf, "name": name}
+
+
 @router.get("/spur")
 def spur(datei: str, mandant: str = MANDANT):
     _mandant_pruefen(mandant)

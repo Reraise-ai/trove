@@ -40,3 +40,60 @@ def run(c, u, tmp, mod):
     assert r.status_code == 200 and r.json()["nachgefuehrt"] is False and not konfig.lesen().get("ueberwacht"), r.text
     r = c.post(u + "/wissen", json={**wiss, "nachfuehren": True})
     assert r.status_code == 200 and r.json()["nachgefuehrt"] is True and len(konfig.lesen()["ueberwacht"]) == 1, r.text
+    desk_basics(c, u, tmp)
+
+
+def desk_basics(c, u, tmp):
+    """Rename and new folder: writable sources only, never overwrite, no traversal, every change in the receipt log."""
+    import belegprotokoll
+    wurzel = os.path.join(tmp, "desk")
+    os.makedirs(os.path.join(wurzel, "sub"))
+    for n, inhalt in (("a.txt", "A"), ("b.txt", "B")):
+        with open(os.path.join(wurzel, n), "w", encoding="utf-8") as f:
+            f.write(inhalt)
+    q = c.post(u + "/quellen", json={"art": "ordner", "pfad": wurzel}).json()
+    ren = lambda **k: c.post(u + "/umbenennen", json={"quelle": q["id"], "pfad": "", **k})
+    neu = lambda **k: c.post(u + "/ordner-neu", json={"quelle": q["id"], "pfad": "", **k})
+    # read-only (default): refused, nothing changes
+    r = ren(name="a.txt", neu="z.txt")
+    assert r.status_code == 403 and os.path.exists(os.path.join(wurzel, "a.txt")), r.text
+    r = neu(name="fresh")
+    assert r.status_code == 403 and not os.path.exists(os.path.join(wurzel, "fresh")), r.text
+    assert c.post(u + "/quellen/" + q["id"] + "/schreibbar", json={"nur_lesen": False}).status_code == 200
+
+    def log_text():
+        mand = c.get(u + "/status").json()["mandant"]
+        with open(belegprotokoll.pfad_fuer(mand), encoding="utf-8") as f:
+            return f.read()
+    # happy path: rename file and folder, create folder (also in a subfolder)
+    r = ren(name="a.txt", neu="a2.txt")
+    assert r.status_code == 200 and os.path.exists(os.path.join(wurzel, "a2.txt")) and not os.path.exists(os.path.join(wurzel, "a.txt")), r.text
+    assert ren(name="sub", neu="sub2").status_code == 200 and os.path.isdir(os.path.join(wurzel, "sub2"))
+    assert neu(name="fresh").status_code == 200 and os.path.isdir(os.path.join(wurzel, "fresh"))
+    r = c.post(u + "/ordner-neu", json={"quelle": q["id"], "pfad": "sub2", "name": "inner"})
+    assert r.status_code == 200 and os.path.isdir(os.path.join(wurzel, "sub2", "inner")), r.text
+    # case-only rename works
+    assert ren(name="b.txt", neu="B.txt").status_code == 200 and "B.txt" in os.listdir(wurzel)
+    # never overwrite
+    r = ren(name="a2.txt", neu="B.txt")
+    assert r.status_code == 409, r.text
+    with open(os.path.join(wurzel, "B.txt"), encoding="utf-8") as f:
+        assert f.read() == "B"
+    assert os.path.exists(os.path.join(wurzel, "a2.txt"))
+    assert neu(name="fresh").status_code == 409 and neu(name="B.txt").status_code == 409
+    assert ren(name="missing.txt", neu="x.txt").status_code == 404
+    assert ren(name="a2.txt", neu="a2.txt").status_code == 400
+    # traversal and invalid names
+    for schlecht in ("../evil", "x/y", "x\\y", "..", ".", "", "/abs", "C:evil", "name.", "name ", " name", "CON", "nul.txt", "Com1.log", "a:b", "a*b", "a\x00b", "a" * 300):
+        assert ren(name="a2.txt", neu=schlecht).status_code == 400, repr(schlecht)
+        assert neu(name=schlecht).status_code == 400, repr(schlecht)
+    assert ren(name="../a2.txt", neu="ok.txt").status_code == 400
+    assert c.post(u + "/umbenennen", json={"quelle": q["id"], "pfad": "../..", "name": "a2.txt", "neu": "ok.txt"}).status_code == 400
+    assert c.post(u + "/ordner-neu", json={"quelle": q["id"], "pfad": "../..", "name": "ok"}).status_code == 400
+    assert sorted(os.listdir(wurzel)) == ["B.txt", "a2.txt", "fresh", "sub2"], os.listdir(wurzel)
+    assert not os.path.exists(os.path.join(tmp, "evil"))
+    # receipt log has every change
+    prot = log_text()
+    assert prot.count('"umbenannt"') >= 3 and "a.txt" in prot and "a2.txt" in prot and "folder created: fresh" in prot, prot[-600:]
+    mand = c.get(u + "/status").json()["mandant"]
+    assert belegprotokoll.pruefen(belegprotokoll.pfad_fuer(mand))["kette"] == "ok"  # chain still intact
