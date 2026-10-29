@@ -389,7 +389,8 @@ function Tasks() {
       setTitle(''); setText(''); setOpen(false); load()
     } catch (e) { setError(errText(e)) } finally { setBusy(false) }
   }
-  const act = async (id, what) => { setError(null); try { await rest('/auftrag/' + id + '/' + what, { method: 'POST', body: { mandant: MANDANT } }); load() } catch (e) { setError(errText(e)) } }
+  const act = async (id, what) => { setError(null); try { await rest('/auftrag/' + id + '/' + what, { method: 'POST', body: { mandant: MANDANT, confirm: true } }); load() } catch (e) { setError(errText(e)) } }
+  const [shown, setShown] = useState(null)
   const color = (s) => s === 'done' ? 'text-(--ui-text-success)' : s === 'blocked' ? 'text-(--ui-text-warning)' : s === 'running' ? 'text-(--ui-text-info)' : quiet
   return jsxs('div', { className: box + ' p-2 text-xs flex flex-col gap-1 shrink-0', children: [
     jsxs('div', { className: 'flex items-center gap-2', children: [
@@ -409,12 +410,14 @@ function Tasks() {
       ] })
     ] }) : null,
     error ? jsx('div', { className: 'text-destructive', children: error }) : null,
-    ...list.filter((a) => a.status !== 'archived').slice(0, 12).map((a) => jsxs('div', { className: 'flex items-center gap-2', children: [
+    ...list.filter((a) => a.status !== 'archived').slice(0, 12).map((a) => jsxs('div', { className: 'flex flex-col', children: [jsxs('div', { className: 'flex items-center gap-2', children: [
       jsx('span', { className: 'font-mono ' + color(a.status), children: a.status }),
       jsx('span', { className: 'font-mono', children: a.id }),
       jsx('span', { className: 'flex-1 truncate', title: a.ergebnis_kommentar || a.zusammenfassung || '', children: a.titel + (a.zusammenfassung ? ' — ' + a.zusammenfassung : a.ergebnis_kommentar ? ' — ' + a.ergebnis_kommentar : '') }),
       a.status === 'blocked' ? jsx(Button, { size: 'sm', onClick: () => act(a.id, 'freigeben'), children: t('release') }) : null,
-      ['done', 'blocked', 'review'].includes(a.status) ? jsx(Button, { size: 'sm', variant: 'ghost', onClick: () => act(a.id, 'archivieren'), children: t('archive') }) : null
+      a.details ? jsx(Button, { size: 'sm', variant: 'ghost', 'aria-expanded': shown === a.id, onClick: () => setShown(shown === a.id ? null : a.id), children: t('details') }) : null,
+      ['done', 'blocked', 'review', 'failed', 'running'].includes(a.status) && !(a.status === 'running' && !a.quelle) ? jsx(Button, { size: 'sm', variant: 'ghost', onClick: () => act(a.id, 'archivieren'), children: t('archive') }) : null
+    ] }), (a.details && (shown === a.id || a.status === 'blocked')) ? jsx('pre', { className: 'whitespace-pre-wrap break-all rounded border border-(--ui-stroke-secondary) p-1 ml-4', style: { maxHeight: 240, overflow: 'auto' }, children: a.details }) : null
     ] }, a.id))
   ] })
 }
@@ -570,7 +573,7 @@ const EN = {
   trace_direkt: 'direct', trace_rueckwaerts: 'backwards', trace_vorwaerts: 'forwards', trace_gleicher_inhalt: 'same content elsewhere',
   searchPlaceholder: 'Search the index and the receipt log: file name, invoice number, sender, sha256 …', search: 'Search', collapse: 'hide', expand: 'show', searching: 'searching …',
   foundUnder: (w, n) => 'located ' + w + ' (' + n + '):', receiptLogN: (n) => 'Receipt log (' + n + '):',
-  tasksTitle: 'Tasks for your agents (Hermes Kanban)', nOpen: (n) => n + ' open', close: 'close', newTask: '+ Task',
+  tasksTitle: 'Tasks for your agents (Hermes Kanban)', details: 'Details', nOpen: (n) => n + ' open', close: 'close', newTask: '+ Task',
   taskTitlePlaceholder: 'Title (e.g. review the batch in the left source and list duplicates)', taskTextPlaceholder: 'Task text: what exactly should be done. The card stays blocked until you release it.',
   agent: 'Agent:', defaultAgent: '(Hermes default)', creating: 'creating …', titleFirst: 'enter a title or text first', createCard: 'Create card (blocked)',
   startsAfterRelease: 'The agent starts only after you press "Release" in the list.', release: 'Release', archive: 'Archive',
@@ -637,7 +640,7 @@ const DE = {
   trace_direkt: 'direkt', trace_rueckwaerts: 'rückwärts', trace_vorwaerts: 'vorwärts', trace_gleicher_inhalt: 'gleicher Inhalt anderswo',
   searchPlaceholder: 'Index und Belegprotokoll durchsuchen: Dateiname, Rechnungsnummer, Absender, sha256 …', search: 'Suchen', collapse: 'zu', expand: 'auf', searching: 'suche …',
   foundUnder: (w, n) => 'liegt ' + w + ' (' + n + '):', receiptLogN: (n) => 'Belegprotokoll (' + n + '):',
-  tasksTitle: 'Aufträge an deine Agenten (Hermes Kanban)', nOpen: (n) => n + ' offen', close: 'schließen', newTask: '+ Auftrag',
+  tasksTitle: 'Aufträge an deine Agenten (Hermes Kanban)', details: 'Details', nOpen: (n) => n + ' offen', close: 'schließen', newTask: '+ Auftrag',
   taskTitlePlaceholder: 'Titel (z. B. Belegstapel in der linken Quelle sichten und Dubletten listen)', taskTextPlaceholder: 'Auftragstext: was genau getan werden soll. Die Karte bleibt gesperrt, bis du sie freigibst.',
   agent: 'Agent:', defaultAgent: '(Hermes-Standard)', creating: 'lege an …', titleFirst: 'erst Titel oder Text eingeben', createCard: 'Karte anlegen (gesperrt)',
   startsAfterRelease: 'Der Agent startet erst nach „Freigeben“ in der Liste.', release: 'Freigeben', archive: 'Archivieren',

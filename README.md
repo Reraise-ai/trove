@@ -22,6 +22,7 @@
   <a href="#safety-and-what-trove-does-on-your-machine">Safety</a> ·
   <a href="#what-works-today">What works today</a> ·
   <a href="#quick-start">Quick start</a> ·
+  <a href="#use-trove-from-other-agents-mcp">MCP</a> ·
   <a href="#faq">FAQ</a> ·
   <a href="README.de.md">Deutsch</a>
 </p>
@@ -119,7 +120,8 @@ it back. Trove only writes into writable folders (copy, move, sync, rename, new 
 - *Rename* and *New folder* work only in writable folders, never overwrite an existing entry, accept a single plain name (no path, no `..`, no names Windows reserves) and are entered in the receipt log.
 
 **What Trove writes outside your folders** (all under your control):
-- Its own data folder (`TROVE_DATEN`, default `~/Trove`): the receipt log (`belegprotokoll`), the file register (`register.db`), the list of sources, the task list.
+- Its own data folder (`TROVE_DATEN`, default `~/Trove`): the receipt log (`belegprotokoll`), the file register (`register.db`), the list of sources, the task list,
+  and the approval queue for requests from MCP clients (`mcp_auftraege.json`).
 - "Into knowledge" writes markdown twins and knowledge cards as twins under `<wiki>/../raw/trove/` and cards under `<wiki>/quellen/`, where the wiki folder is `<TROVE_DATEN>/knowledge/wiki` by default (or the folder in `TROVE_WIKI`), and one
   line per run into `<wiki>/log.md`. Cards carry the status `to-review` (override with `TROVE_CARD_STATUS`). Originals are never modified.
 - Adding a folder to the optional continuous run (checkbox "Remember folder for the continuous run") writes it to Trove's watch list in `trove.json`.
@@ -132,11 +134,22 @@ it back. Trove only writes into writable folders (copy, move, sync, rename, new 
 - Optional, only when you use them: Stirling-PDF over HTTP to `TROVE_STIRLING` (default `http://127.0.0.1:8090`) for splitting PDFs, and Ollama at `TROVE_OLLAMA` (default `http://127.0.0.1:11434`) only if you choose an Ollama-based OCR model (page images are sent to that URL).
 - macOS only: `sips` to convert HEIC images for OCR.
 
+**MCP server (only if you connect another agent system).** `plugin/dashboard/mcp_server.py` is a small MCP server. Nothing starts it
+except an MCP client you configure yourself (Claude Desktop, Claude Code, Cursor, …), which runs it as a child process and talks to it over stdin/stdout.
+It uses the same backend functions and checks as the tab. MCP clients can **read** (sources, folder listings, previews, search, the log trail,
+receipt reading, change check). They **cannot change files**: copy, move, sync and "Into knowledge" only create a **blocked request** that appears in the
+Trove tab's task list with the client's name and full details and runs only after you click **Release** there. There is no MCP tool to release or
+approve anything, and the release route accepts only the JSON request the tab sends (`{"confirm": true}`), no forms and no foreign web origin.
+Every request, refusal, release and result is written to the receipt log with the client's name. With `--http PORT` it serves MCP over HTTP instead,
+bound to `127.0.0.1` only. Limit: the release button protects against what an agent can do *through Trove*. An agent that also has unrestricted
+shell or file access on your machine can bypass any tool, Trove included; give such agents only the access you would give a person.
+
 **Optional installer and scheduler (not part of a catalog install).** `python tools/installieren.py` is a developer/offline helper. It can create a private
 Python environment, write `trove.json`, add `trove` to `plugins.enabled` in Hermes's `config.yaml` (after backing the file up), and, only with
 `--dauerlauf`, register a LaunchAgent (macOS) or a Scheduled Task (Windows) that re-reads your watched folders. None of this happens unless you run it.
 
 **Network and telemetry.** No telemetry, no analytics, no auto-update. Trove itself makes no outgoing connections except to the local services above if you run them.
+It opens no listening port, except the optional MCP HTTP transport on `127.0.0.1` when you start it with `--http`.
 
 **Language.** The interface is English by default and German through Hermes's plugin i18n (it follows your Hermes language setting). Backend messages are in English.
 
@@ -156,7 +169,7 @@ Trove is early alpha. Here is what exists and what is next.
 | | Rename, new folder, sort (name, size, date, type; folders first) | ✅ |
 | | Print, merge PDFs, compare file contents | 🔜 |
 | **Agents** | Tasks for Hermes agents (Kanban), blocked until you release them | ✅ |
-| | MCP access, so other agent systems use the same desk and approval step | 🔜 |
+| | MCP access, so other agent systems use the same desk and approval step ([how](#use-trove-from-other-agents-mcp)) | ✅ |
 | **Log & receipts** | Tamper-evident, append-only log | ✅ |
 | | Read receipts: e-invoice XML (ZUGFeRD / Factur-X) → PDF text → local OCR | ✅ |
 | | Rule-based checks: totals, VAT rates, CUIT, IBAN, German VAT ID | ✅ |
@@ -217,8 +230,63 @@ Trove has no fixed paths. Settings come from environment variables first, then `
 | `TROVE_ARBEITSORDNER` | working folder for task cards (default: a scratch workspace) |
 | `TROVE_STIRLING`, `TROVE_OLLAMA` | URLs of the optional local services (see above) |
 | `TROVE_REGISTER_DB` | optional read-only register of an earlier source |
+| `TROVE_MCP_CLIENT` | fixed client name for the receipt log of the MCP server (default: the name the MCP client reports) |
 
 The `TROVE_` prefix is shared with other tools called "trove"; if another plugin in your setup uses it, set the variables per process or via `trove.json`.
+
+## Use Trove from other agents (MCP)
+
+Claude, Cursor or any other MCP client can work on the same desk as you and your Hermes agents, with the same approval step.
+
+**What an agent can do over MCP**
+
+| Tools | Effect |
+| --- | --- |
+| `status`, `list_sources`, `list_folder`, `preview`, `search`, `file_trail`, `task_status`, `list_tasks` | read only |
+| `read_receipt`, `check_changes` | read; write only into Trove's own data folder (markdown twin, change snapshot) and the log |
+| `request_copy`, `request_move`, `request_sync`, `request_into_knowledge`, `request_agent_task`; `request_rename`, `request_new_folder` where the desk has rename / new folder | **create a blocked request**, nothing else |
+
+A request shows up in the Trove tab's task list as `MCP <client name>: <what>` with status `blocked`, and below it the full details:
+the exact source and target folders, every entry name, the agent's reason, and for an agent task the complete task text. **Release** runs it
+with the folder permissions as they are at that moment; **Archive** rejects it. The agent polls `task_status` with the task id it got.
+
+Checked before a request is queued: read-only folders stay read-only (only you can mark a folder writable in the tab); a copy, move or sync
+onto itself (same file or folder, also through path variants or links) is refused, and the backend refuses it again at release; paths with `..`,
+absolute paths and links that lead out of the source folder are refused. Limits: 200 entry names, 4000 characters of task text and 20 open
+requests per client. A request that has been "running" for more than 3 hours (for example because Hermes was closed) can be archived.
+
+Good to know: the client name is what the client reports about itself; it is not authenticated. Every MCP client connected to the same Trove
+data folder sees all requests (`list_tasks`), including those of other clients.
+
+**Setup.** The server needs Python 3.10+ with the packages `mcp` (tested with 2.3.0, the version Hermes pins) and `fastapi`:
+`python3 -m pip install mcp fastapi`. Use the `mcp_server.py` of your Trove install, e.g. `<HERMES_HOME>/plugins/reraise-trove/dashboard/mcp_server.py`
+for a catalog install or `<repo>/plugin/dashboard/mcp_server.py` for a checkout.
+
+Claude Desktop (`claude_desktop_config.json`, *Settings → Developer → Edit config*):
+
+```json
+{
+  "mcpServers": {
+    "trove": {
+      "command": "python3",
+      "args": ["/path/to/trove/plugin/dashboard/mcp_server.py"]
+    }
+  }
+}
+```
+
+Claude Code:
+
+```bash
+claude mcp add trove -- python3 /path/to/trove/plugin/dashboard/mcp_server.py
+```
+
+On Windows use `python` and a path like `C:/path/to/trove/plugin/dashboard/mcp_server.py`. If you changed Trove's data folder or client
+(`TROVE_DATEN`, `TROVE_MANDANT`) only in Hermes's environment, pass the same values in the client's `env` block (or `--mandant <name>`), so both
+work on the same desk. Hermes agents can use it the same way (`mcp_servers:` in Hermes's `config.yaml`).
+Optional: `python3 mcp_server.py --http 8765` serves MCP over HTTP at `http://127.0.0.1:8765/mcp` (localhost only). It accepts only the
+Host `127.0.0.1:8765` / `localhost:8765` and no browser origin (protection against DNS rebinding); if the installed `mcp` package cannot enforce
+that, `--http` refuses to start. The HTTP endpoint has no login: any program on this computer can read through it, so prefer stdio.
 
 ## FAQ
 
@@ -250,7 +318,9 @@ never needs your mail or drive passwords. Once the files are in the folder, Trov
 <summary><strong>Which AI agents can work with Trove?</strong></summary>
 
 <br>
-Today, the agents in Hermes: tasks go to the Hermes Kanban board and wait for your release there. MCP access for other agent systems is planned.
+The agents in Hermes: tasks go to the Hermes Kanban board and wait for your release there. And any MCP client (Claude Desktop, Claude Code, Cursor, …)
+through Trove's MCP server: it can read freely, and every change it asks for waits as a blocked request in the Trove tab until you release it
+(see [Use Trove from other agents](#use-trove-from-other-agents-mcp)).
 </details>
 
 <details>
@@ -264,7 +334,7 @@ by fixed rules, not by an AI model.
 ## Tests
 
 ```bash
-python tools/run_tests.py        # self-tests, knowledge flow, UI strings, backend smoke test
+python tools/run_tests.py        # self-tests, knowledge flow, UI strings, backend smoke test, MCP approval test (needs the mcp package)
 TROVE_UI_NODE_MODULES=/path/to/node_modules python tools/run_tests.py   # additionally the UI render test (needs react, react-dom, react-test-renderer 18)
 ```
 
