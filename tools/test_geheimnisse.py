@@ -239,6 +239,8 @@ def lauf(form):
                    "erpnext_received": "\n".join(x for x in empfangen if "insert_many" in x or "Trove Beleg" in x or "doctype" in x)}
         funde = []
         for name, text in quellen.items():
+            if "AuthenticationError" in text:  # K8: no error code from an upstream body either
+                funde.append("%s upstream error code passed on" % name)
             if "ZZBODYMARKZZ" in text:
                 i = text.index("ZZBODYMARKZZ")
                 funde.append("%s upstream body passed on: %r" % (name, text[max(0, i - 80):i + 40]))

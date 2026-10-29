@@ -1322,6 +1322,8 @@ def _int_lauf(f):
 @router.get("/integrationen")
 def integrationen():
     """Which integrations are active. Names of missing settings only, never values. No network."""
+    import zugang
+    zugang.neu_laden()  # the UI's Refresh: settings may have changed in Hermes
     import docuseal
     import mail_abholer
     import reraise_hochladen

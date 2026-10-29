@@ -68,18 +68,20 @@ class Gmail:
         for versuch in range(6):
             try:
                 st, body = zugang.anfrage_mit_anmeldung(zugang.GMAIL_OAUTH_ID, "GET", url, {"Accept": "application/json"}, 120)
-            except (OSError, TimeoutError) as e:
+            except (OSError, TimeoutError, zugang.DienstFehler) as e:
+                if isinstance(e, zugang.DienstFehler) and str(e) != zugang.GMAIL_NETZ:
+                    raise
                 if versuch < 5:
                     time.sleep(2 ** versuch); continue
-                raise zugang.DienstFehler("Gmail %s: network: %s" % (path.split("?")[0], type(e).__name__))
+                raise zugang.DienstFehler(zugang.GMAIL_NETZ) from None
             if st == 200:
                 return json.loads(body or b"{}")
             text = zugang.kurz(body or b"", 300)
             if (st in (429, 500, 503) or (st == 403 and ("Quota" in text or "ate limit" in text))) and versuch < 5:
                 time.sleep(30 if st == 403 else 2 ** versuch); continue
             if st == 401:
-                raise NichtEingerichtet("Gmail rejected the sign-in (401): run `hermes auth add %s:%s` again" % (zugang.PLUGIN_ID, zugang.GMAIL_OAUTH_ID))
-            raise zugang.http_fehler("Gmail " + path.split("?")[0].split("/")[0], st, body, "error.status")
+                raise NichtEingerichtet(zugang.GMAIL_ANMELDEN)
+            raise zugang.DienstFehler(zugang.GMAIL_ABGELEHNT % st)
 
     def profil(self):
         return self.api("profile")

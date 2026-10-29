@@ -41,6 +41,7 @@ _formen = set()
 _formen_sortiert = []
 _sperre = threading.Lock()
 _lokal = threading.local()
+_gewarnt = set()
 
 
 class NichtEingerichtet(RuntimeError):
@@ -52,35 +53,14 @@ class DienstFehler(RuntimeError):
     a response body, reason phrase or other upstream text never goes into it."""
 
 
-RE_CODE = re.compile(r"[A-Za-z0-9_.-]{1,64}")
-
-
-def fehler_code(body, *felder):
-    """A short error code from an upstream JSON error body (dotted field paths, e.g. "error.status"), only if it matches RE_CODE."""
-    import json as _json
-    try:
-        d = body if isinstance(body, (dict, list)) else _json.loads(body.decode("utf-8", "replace") if isinstance(body, (bytes, bytearray)) else str(body))
-    except (ValueError, TypeError):
-        return ""
-    for feld in felder:
-        x = d
-        for teil in feld.split("."):
-            if isinstance(x, dict):
-                x = x.get(teil)
-            elif isinstance(x, list) and teil.isdigit() and int(teil) < len(x):
-                x = x[int(teil)]
-            else:
-                x = None
-                break
-        if isinstance(x, str) and RE_CODE.fullmatch(x):
-            return schwaerzen(x)
-    return ""
-
-
 def http_fehler(dienst, status, body=None, *felder):
-    """DienstFehler for a non-success answer: fixed text + status + optional validated code. The body itself is dropped."""
-    code = fehler_code(body, *felder) if body is not None and felder else ""
-    return DienstFehler("%s answered HTTP %s%s" % (dienst, status, " (code %s)" % code if code and code != "***" else ""))
+    """DienstFehler for a non-success answer: only "<service> answered HTTP <status>". Body and any error code in it are dropped
+    (body/felder are accepted for call compatibility and ignored on purpose: an upstream code would be a side channel)."""
+    try:
+        status = int(status)
+    except (TypeError, ValueError):
+        status = 0
+    return DienstFehler("%s answered HTTP %d" % (dienst, status))
 
 
 def fehlertext(ex, n=300):
@@ -131,7 +111,9 @@ def geheimnis(name):
         try:
             wert = get_secret(name)
         except Exception as ex:  # e.g. no profile scope under multiplexing: fail closed, never another profile's value
-            _LOG.warning("trove: secret %s not readable here (%s)", name, type(ex).__name__)
+            if name not in _gewarnt:  # once per name and process
+                _gewarnt.add(name)
+                _LOG.warning("trove: secret %s not readable here (%s)", name, type(ex).__name__)
             return None
     wert = (wert or "").strip()
     _merken(wert)
@@ -177,6 +159,12 @@ def url_einstellung(name):
     return u
 
 
+GMAIL_NETZ = "Gmail could not be reached (network unreachable). Check the internet connection and try again."
+GMAIL_ANMELDEN = ("Gmail sign-in is missing or has expired: run `hermes auth add %s:%s` in a terminal, then try again."
+                  % (PLUGIN_ID, GMAIL_OAUTH_ID))
+GMAIL_ABGELEHNT = "Google rejected the Gmail request (HTTP %s)."
+
+
 def anfrage_mit_anmeldung(provider, methode, url, headers=None, timeout=60.0):
     """Request with a sign-in that Hermes holds (oauth: in plugin.yaml). Returns (status, body bytes); the token never reaches Trove."""
     if anfrage_quelle is not None:
@@ -188,10 +176,16 @@ def anfrage_mit_anmeldung(provider, methode, url, headers=None, timeout=60.0):
     try:
         r = credentialed_provider_request(provider, methode, url, headers=headers, timeout=timeout)
     except ProviderNotSignedIn:
-        raise NichtEingerichtet("Gmail is not signed in: run `hermes auth add %s:%s` in a terminal" % (PLUGIN_ID, GMAIL_OAUTH_ID))
+        raise NichtEingerichtet(GMAIL_ANMELDEN) from None
+    except (OSError, TimeoutError):
+        raise DienstFehler(GMAIL_NETZ) from None
     except Exception as ex:
-        code = getattr(ex, "code", "")
-        raise RuntimeError("Gmail sign-in through Hermes failed: %s %s" % (type(ex).__name__, code)) from None
+        name = type(ex).__name__
+        if name == "AuthError" and getattr(ex, "code", "") == "oauth_refresh_failed" or "Connect" in name or "Timeout" in name or "Network" in name:
+            raise DienstFehler(GMAIL_NETZ) from None
+        if name == "AuthError":  # revoked, expired or rejected client: a new sign-in fixes it
+            raise NichtEingerichtet(GMAIL_ANMELDEN) from None
+        raise DienstFehler(GMAIL_ABGELEHNT % "?") from None
     return r.status, r.body
 
 
@@ -221,14 +215,29 @@ def _merken(wert):
                 _formen_sortiert[:] = sorted(_formen, key=len, reverse=True)
 
 
+NEU_LADEN_S = 60  # declared secrets are re-read at most this often (or after neu_laden(), e.g. on "Refresh" in the UI)
+_geladen = {"um": None, "quelle": None}
+
+
+def neu_laden():
+    """Forget the load time: the next schwaerzen() reads every declared secret again (settings may have changed)."""
+    _geladen["um"] = None
+
+
 def alle_laden():
-    """Read every declared secret once (through Hermes) so redaction knows them even in a process that has not used them yet."""
+    """Read every declared secret (through Hermes) so redaction knows them even in a process that has not used them yet.
+    Cached: at most every NEU_LADEN_S seconds, after neu_laden(), or when the secret source changes."""
+    import time as _time
+    jetzt = _time.monotonic()
+    if _geladen["um"] is not None and _geladen["quelle"] is geheimnis_quelle and jetzt - _geladen["um"] < NEU_LADEN_S:
+        return
     if getattr(_lokal, "laedt", False):
         return
     _lokal.laedt = True
     try:
         for n in GEHEIMNISSE:
             geheimnis(n)
+        _geladen["um"], _geladen["quelle"] = jetzt, geheimnis_quelle
     finally:
         _lokal.laedt = False
 
@@ -314,6 +323,39 @@ def selbsttest():
             raise AssertionError("URL with user info accepted")
         except NichtEingerichtet:
             pass
+        # K8: only "<service> answered HTTP <status>", never a code or text from the body
+        e = http_fehler("ERPNext", 401, b'{"exc_type": "AuthenticationError", "message": "boom"}', "exc_type")
+        assert str(e) == "ERPNext answered HTTP 401", e
+        # R1: a secret source that fails warns once per name; schwaerzen() does not re-read on every call
+        aufrufe = []
+
+        def kaputt(n):
+            aufrufe.append(n)
+            raise RuntimeError("no profile scope")
+        zaehler = []
+
+        class Z(logging.Handler):
+            def emit(self, r):
+                zaehler.append(r.getMessage())
+        h = Z()
+        _LOG.addHandler(h)
+        _gewarnt.clear()
+        try:
+            _GET_SECRET[:] = [kaputt]
+            geheimnis_quelle = None
+            neu_laden()
+            for _ in range(200):
+                schwaerzen("zeile")
+            assert len(zaehler) == len(GEHEIMNISSE) and len(aufrufe) == len(GEHEIMNISSE), (len(zaehler), len(aufrufe))
+            neu_laden(); schwaerzen("x")
+            assert len(aufrufe) == 2 * len(GEHEIMNISSE) and len(zaehler) == len(GEHEIMNISSE)  # reloaded, no new warnings
+        finally:
+            _LOG.removeHandler(h)
+            _GET_SECRET[:] = []
+            neu_laden()
+        # K9: Gmail failures through Hermes have fixed, readable texts
+        assert "hermes auth add reraise-trove:gmail" in GMAIL_ANMELDEN and "network unreachable" in GMAIL_NETZ
+        assert "RuntimeError" not in GMAIL_ANMELDEN + GMAIL_NETZ + GMAIL_ABGELEHNT
         geheimnis_quelle = einstellungen_quelle = None
         try:
             import agent.secret_scope  # noqa: F401
