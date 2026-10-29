@@ -28,7 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **One redaction for everything that leaves Trove**: every secret value read in the process is masked in HTTP responses,
   MCP replies, the Python log, the receipt log and the ERPNext mirror, in all common spellings; error texts also have known
   local paths stripped.
-- Creating ERPNext doctypes and sending a document for signature ask for confirmation first.
+- Creating ERPNext doctypes and sending a document for signature ask for confirmation first, enforced by the backend
+  (`{"confirm": true}`).
+- Errors from external services (DocuSeal, ERPNext, Gmail, Reraise) are reported only as service, HTTP status and a short
+  error code; their response bodies are never passed on. DocuSeal documents are downloaded only from the configured
+  DocuSeal origin.
 - **Links are never followed**: copy, move, sync, rename, new folder, the file register and MCP requests refuse an entry
   that is a link or a path that goes through one; links inside a copied or moved folder are skipped and logged. This covers
   symlinks and Windows NTFS junctions (one check, `ist_verknuepfung`).
