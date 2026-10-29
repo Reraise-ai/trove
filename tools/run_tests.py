@@ -39,6 +39,7 @@ def main():
     erg.append(lauf([os.path.join(REPO, "tools", "test_aktion_selbst.py")], REPO))
     erg.append(lauf([os.path.join(REPO, "tools", "test_leere_ordner.py")], REPO))
     erg.append(lauf([os.path.join(REPO, "tools", "test_fehlertexte.py")], REPO))
+    erg.append(lauf([os.path.join(REPO, "tools", "test_verknuepfung.py")], REPO))
     erg.append(lauf([os.path.join(REPO, "tools", "test_mcp.py")], REPO))
     erg.append(lauf([os.path.join(REPO, "tools", "test_geheimnisse.py")], REPO))
     print("ALL PASSED" if all(erg) else "FAILURES: %d" % erg.count(False))

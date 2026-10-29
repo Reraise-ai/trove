@@ -264,7 +264,7 @@ def bauen(mandant=None, client=None):
             raus = [n for n in namen if not api._unter_real(os.path.join(von, n), von)]
             if raus:
                 raise ValueError("these entries are links that leave the source folder: %s" % ", ".join(raus[:10]))
-            links = [n for n in namen if os.path.islink(os.path.join(von, n))]
+            links = [n for n in namen if api.ist_verknuepfung(os.path.join(von, n))]
             if links:
                 raise ValueError("these entries are links; Trove does not copy, move or sync links: %s" % ", ".join(links[:10]))
             for wurzel, ordner, feld in ((qv["pfad"], von, "from_path"), (qn["pfad"], nach, "to_path")):
@@ -356,6 +356,8 @@ def bauen(mandant=None, client=None):
                 else:
                     rufen(api._namen_pruefen, [new_name])
                 ordner = rufen(api._sicher, q["pfad"], path)
+                if api._ueber_link(q["pfad"], ordner):
+                    raise ValueError("path goes through a link; Trove does not follow links")
                 if not name or not os.path.lexists(os.path.join(ordner, name)):
                     raise ValueError("not found in %s: %s" % (ort(q, path), name))
                 if os.path.lexists(os.path.join(ordner, new_name)) and name.casefold() != (new_name or "").casefold():
@@ -382,6 +384,8 @@ def bauen(mandant=None, client=None):
                 ordner = rufen(api._sicher, q["pfad"], path)
                 if not os.path.isdir(ordner):
                     raise ValueError("folder not found: " + ort(q, path))
+                if api._ueber_link(q["pfad"], ordner):
+                    raise ValueError("path goes through a link; Trove does not follow links")
                 if os.path.lexists(os.path.join(ordner, name)):
                     raise ValueError("an entry named %r already exists in %s" % (name, ort(q, path)))
             except (ValueError, ToolError) as ex:

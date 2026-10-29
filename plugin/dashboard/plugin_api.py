@@ -193,7 +193,7 @@ def _selbst_ziel(start, ziel, nach_ordner):
         return None
     if _gleich(start, ziel):
         return "Source and target are the same entry: %s." % os.path.basename(start.rstrip("/\\"))
-    if os.path.isdir(start) and not os.path.islink(start) and _unter_real(nach_ordner, start):
+    if os.path.isdir(start) and not ist_verknuepfung(start) and _unter_real(nach_ordner, start):
         return "The target folder is inside the folder being copied or moved: %s." % os.path.basename(start.rstrip("/\\"))
     return None
 
@@ -409,7 +409,7 @@ def register(body: dict):
     with bp.Protokoll(bp.pfad_fuer(mandant)) as prot:
         prot.schreiben("notiz", werkzeug="trove-plugin", mandant=mandant, meldung="Register run starts: " + voll)
         for wurzel, dirs, files in os.walk(voll):
-            dirs[:] = [d for d in dirs if not d.startswith(".")]
+            dirs[:] = [d for d in dirs if not d.startswith(".") and not ist_verknuepfung(os.path.join(wurzel, d))]
             for fn in files:
                 p = os.path.join(wurzel, fn)
                 if gm.nur_in_wolke(p, fn):  # nur in der Wolke (.icloud oder dataless): nicht hashen, kein Download
@@ -481,7 +481,7 @@ def _kopiere_datei(prot, mandant, lauf, von, nach, werkzeug="trove-plugin"):
 def _dateien_unter(voll, links=None):
     """Regular files under voll. Links are never followed and never copied: a link (to a file or a folder, also one pointing
     back up into the same tree) is only reported in `links`, so a copy can neither recurse nor act on the folder a link points to."""
-    if os.path.islink(voll):
+    if ist_verknuepfung(voll):
         if links is not None:
             links.append(voll)
         return
@@ -489,17 +489,39 @@ def _dateien_unter(voll, links=None):
         yield voll, os.path.basename(voll)
         return
     for wurzel, dirs, files in os.walk(voll, followlinks=False):
-        for d in [d for d in dirs if os.path.islink(os.path.join(wurzel, d))]:
+        for d in [d for d in dirs if ist_verknuepfung(os.path.join(wurzel, d))]:
             dirs.remove(d)
             if links is not None:
                 links.append(os.path.join(wurzel, d))
         for fn in files:
             p = os.path.join(wurzel, fn)
-            if os.path.islink(p):
+            if ist_verknuepfung(p):
                 if links is not None:
                     links.append(p)
                 continue
             yield p, os.path.relpath(p, os.path.dirname(voll))
+
+
+_REPARSE_LINK_TAGS = (0xA000000C, 0xA0000003)  # IO_REPARSE_TAG_SYMLINK, IO_REPARSE_TAG_MOUNT_POINT (NTFS junction)
+
+
+def ist_verknuepfung(p):
+    """THE link check for every place that must never follow a link: symlinks, NTFS junctions (os.path.isjunction, Python 3.12+)
+    and, on Windows with older Python, any symlink/junction reparse point seen by lstat. Other reparse points (e.g. OneDrive
+    placeholders) are ordinary files and folders."""
+    try:
+        if os.path.islink(p):
+            return True
+        ij = getattr(os.path, "isjunction", None)
+        if ij is not None and ij(p):
+            return True
+        if os.name == "nt":
+            st = os.lstat(p)
+            if getattr(st, "st_file_attributes", 0) & 0x400 and getattr(st, "st_reparse_tag", 0) in _REPARSE_LINK_TAGS:
+                return True
+    except (OSError, ValueError):
+        return False
+    return False
 
 
 def _ueber_link(wurzel, voll):
@@ -510,9 +532,16 @@ def _ueber_link(wurzel, voll):
     p = wurzel
     for teil in rel.split(os.sep):
         p = os.path.join(p, teil)
-        if os.path.islink(p):
+        if ist_verknuepfung(p):
             return p
     return None
+
+
+def _kein_link_im_pfad(wurzel, ordner):
+    """Rename / new folder never act through a link (symlink or junction) between the source root and the folder."""
+    link = _ueber_link(wurzel, ordner)
+    if link:
+        raise HTTPException(409, "The path goes through a link (%s). Trove does not follow links. Nothing was changed." % os.path.basename(link))
 
 
 @router.post("/aktion")
@@ -550,7 +579,7 @@ def aktion(body: dict):
                 raise HTTPException(409, "The path goes through a link (%s). Trove does not follow links. Nothing was copied, moved or deleted." % os.path.basename(link))
         for n in namen:
             start = os.path.join(von_ordner, n) if n else von_ordner
-            if n and os.path.islink(start):
+            if n and ist_verknuepfung(start):
                 prot.schreiben("fehler", quelle=start, werkzeug="trove-plugin", mandant=mandant, lauf=lauf, meldung="Action %s refused: entry is a link" % art)
                 raise HTTPException(409, "%s is a link. Trove does not copy, move or sync links (that would act on what the link points to). "
                                          "Nothing was copied, moved or deleted." % n)
@@ -565,14 +594,14 @@ def aktion(body: dict):
             if not os.path.exists(start):
                 ergebnis.append({"name": n, "status": "fehlt"}); continue
             zusammen = {"verifiziert": 0, "schon_da": 0, "konflikt": 0, "fehler": 0}
-            if os.path.isdir(start) and not os.path.islink(start):  # folders (also empty ones) exist at the target before any source is removed
+            if os.path.isdir(start) and not ist_verknuepfung(start):  # folders (also empty ones) exist at the target before any source is removed
                 for wurzel, dirs, _files in os.walk(start):
-                    dirs[:] = [d for d in dirs if not os.path.islink(os.path.join(wurzel, d))]
+                    dirs[:] = [d for d in dirs if not ist_verknuepfung(os.path.join(wurzel, d))]
                     rel_d = os.path.relpath(wurzel, os.path.dirname(start)) if n else os.path.relpath(wurzel, von_ordner)
                     if rel_d == ".":
                         continue
                     ziel_d = os.path.join(nach_ordner, rel_d)
-                    if os.path.isdir(ziel_d) and not os.path.islink(ziel_d):
+                    if os.path.isdir(ziel_d) and not ist_verknuepfung(ziel_d):
                         continue
                     if os.path.lexists(ziel_d):
                         zusammen["konflikt"] += 1
@@ -602,7 +631,11 @@ def aktion(body: dict):
             if links:
                 zusammen["links_skipped"] = len(links)
             if art == "verschieben" and os.path.isdir(start) and zusammen["konflikt"] == 0 and zusammen["fehler"] == 0:
-                for wurzel, dirs, files in os.walk(start, topdown=False):
+                ordner_liste = []
+                for wurzel, dirs, _files in os.walk(start):  # never descend into a link or junction
+                    dirs[:] = [d for d in dirs if not ist_verknuepfung(os.path.join(wurzel, d))]
+                    ordner_liste.append(wurzel)
+                for wurzel in reversed(ordner_liste):
                     if not os.listdir(wurzel):
                         os.rmdir(wurzel)
             ergebnis.append({"name": n or "(folder)", **zusammen})
@@ -703,7 +736,7 @@ def _umbenennen_ohne_ueberschreiben(alt, ziel, gleiche_datei=False):
     if os.name == "nt" or gleiche_datei:
         os.rename(alt, ziel)
         return "rename"
-    if not os.path.isdir(alt) or os.path.islink(alt):
+    if not os.path.isdir(alt) or ist_verknuepfung(alt):
         try:
             os.link(alt, ziel, follow_symlinks=False)
         except FileExistsError:
@@ -758,6 +791,7 @@ def umbenennen(body: dict):
     except UnicodeEncodeError:
         raise HTTPException(400, "name: not valid text (lone surrogate characters)")
     ordner = _sicher(q["pfad"], _ordnerpfad_pruefen(body.get("pfad", "")))
+    _kein_link_im_pfad(q["pfad"], ordner)
     alt, ziel = os.path.join(ordner, name), os.path.join(ordner, neu)
     if not os.path.lexists(alt):
         raise HTTPException(404, "Entry not found: %s" % name)
@@ -772,7 +806,7 @@ def umbenennen(body: dict):
     if benutzt:
         raise _fehler(409, "%r is used as %s. Renaming it would break that. Remove it there first, then rename." % (name, benutzt))
     sha, groesse = "", None
-    if os.path.isfile(alt) and not os.path.islink(alt):
+    if os.path.isfile(alt) and not ist_verknuepfung(alt):
         groesse = os.path.getsize(alt)
         if groesse <= 256 * 1024 * 1024:
             sha = _sha(alt)
@@ -791,7 +825,7 @@ def umbenennen(body: dict):
             prot.schreiben("fehler", quelle=alt, ziel=ziel, werkzeug="trove-plugin", mandant=mandant, lauf=lauf, meldung="rename did not take effect, nothing logged as renamed")
             raise _fehler(500, "Rename did not take effect.")
         prot.schreiben("umbenannt", quelle=alt, ziel=ziel, sha256=sha, bytes_=groesse, werkzeug="trove-plugin", mandant=mandant, lauf=lauf,
-                       meldung="%s renamed in place: %s -> %s" % ("folder" if os.path.isdir(ziel) and not os.path.islink(ziel) else "file", name, neu))
+                       meldung="%s renamed in place: %s -> %s" % ("folder" if os.path.isdir(ziel) and not ist_verknuepfung(ziel) else "file", name, neu))
         prot.anker_setzen(mandant, lauf)
     return {"ok": True, "lauf": lauf, "name": neu}
 
@@ -806,6 +840,7 @@ def ordner_neu(body: dict):
     ordner = _sicher(q["pfad"], _ordnerpfad_pruefen(body.get("pfad", "")))
     if not os.path.isdir(ordner):
         raise HTTPException(404, "Folder not found")
+    _kein_link_im_pfad(q["pfad"], ordner)
     ziel = os.path.join(ordner, name)
     lauf = "ordner-neu-%s" % time.strftime("%Y%m%d-%H%M%S")
     with _prot_oeffnen(mandant) as prot:
