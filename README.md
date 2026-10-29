@@ -121,7 +121,9 @@ it back. Trove only writes into writable folders (copy, move, sync, rename, new 
 - *Move* copies, verifies, and **then deletes the original**. It needs the source and the target to be writable, and asks for a second click.
 - *Sync* copies missing files from the left folder to the right folder and never overwrites.
 - *Rename* and *New folder* work only in writable folders, never overwrite an existing entry, accept a single plain name (no path, no `..`, no names Windows reserves) and are entered in the receipt log.
-- Links (symlinks and Windows junctions) are never followed: copy, move, sync, rename and new folder refuse an action on a link or on a path through a link; links inside a folder are skipped and logged.
+- Links (symlinks, Windows junctions and other name-surrogate reparse points) are never followed: copy, move, sync, rename and new folder
+  refuse an action on a link or on a path through a link; links inside a copied folder are skipped and logged; nothing is written
+  through a link inside the target (checked per file; on a move the original of such a file is kept).
 - An action onto itself (same file or folder, target inside the moved folder) is refused before anything is touched.
 
 **What Trove writes outside your folders** (all under your control):
@@ -279,8 +281,10 @@ with the folder permissions as they are at that moment; **Archive** rejects it. 
 
 Checked before a request is queued: read-only folders stay read-only (only you can mark a folder writable in the tab); a copy, move or sync
 onto itself (same file or folder, also through path variants) is refused, and the backend refuses it again at release; paths with `..` and
-absolute paths are refused. Links are never followed: a request that names a link or whose path goes through a link is refused, and links
-inside a copied folder are skipped and logged (the same rule applies to the tab). Limits: 200 entry names, 4000 characters of task text,
+absolute paths are refused. Links (symlinks, and on Windows junctions and other reparse points) are never followed: a request that names a link, or whose
+source or target path goes through a link, is refused (also for "Into knowledge"); links inside a copied folder are skipped and logged;
+and nothing is ever written through a link inside the target folder, checked again for every single file at release (a file that would
+be is not written, and on a move its original is kept). The same rules apply to the tab. Limits: 200 entry names, 4000 characters of task text,
 20 open requests per client and 50 open requests in total; the tab always lists every waiting request. A request that has been "running" for more than 3 hours (for example because Hermes was closed) can be archived.
 
 Good to know: the client name is what the client reports about itself; it is not authenticated. Every MCP client connected to the same Trove

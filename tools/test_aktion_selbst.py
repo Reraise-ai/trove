@@ -23,6 +23,74 @@ def stand(wurzel):
     return out
 
 
+def b3_links_im_ziel(c, mod, bp, tmp):
+    """B3: a link INSIDE the target (to a read-only source, to outside all sources, nested deeper) is never written through."""
+    w = os.path.join(tmp, "b3")
+    for d in ("a/d/y", "b", "ro", "b2", "out", "c/d", "out2"):
+        os.makedirs(os.path.join(w, d))
+    for rel, inhalt in (("a/d/x.txt", "X"), ("a/d/y/z.txt", "Z"), ("ro/keep.txt", "K")):
+        with open(os.path.join(w, rel), "w", encoding="utf-8") as f:
+            f.write(inhalt)
+    os.symlink(os.path.join(w, "ro"), os.path.join(w, "b", "d"))  # target B: link "d" -> read-only source
+    os.symlink(os.path.join(w, "out"), os.path.join(w, "b2", "d"))  # target B2: link "d" -> outside all sources
+    os.symlink(os.path.join(w, "out2"), os.path.join(w, "c", "d", "y"))  # target C: real d/, but d/y -> outside
+    qid = {n: c.post("/quellen", json={"pfad": os.path.join(w, n), "nur_lesen": n == "ro"}).json()["id"] for n in ("a", "b", "ro", "b2", "c")}
+    fehler = []
+
+    def lauf(art, ziel):
+        return c.post("/aktion", json={"art": art, "von": {"quelle": qid["a"], "pfad": ""}, "nach": {"quelle": qid[ziel], "pfad": ""}, "namen": ["d"]})
+
+    vorher = stand(w)
+    for name, art, ziel in (("copy d into B (B/d -> read-only source)", "kopieren", "b"), ("move d into B (B/d -> read-only source)", "verschieben", "b"),
+                            ("copy d into B2 (B2/d -> outside)", "kopieren", "b2"), ("move d into B2 (B2/d -> outside)", "verschieben", "b2")):
+        r = lauf(art, ziel)
+        ok = r.status_code == 409 and stand(w) == vorher
+        print(("ok   " if ok else "FAIL ") + name + " -> %s %s" % (r.status_code, r.json().get("detail", "")[:80]))
+        if not ok:
+            fehler.append(name)
+    # nested: C/d is a real folder, C/d/y a link to outside -> x.txt is written, z.txt is not, and on a move z.txt stays in A
+    r = lauf("verschieben", "c")
+    erg = r.json().get("ergebnis", [{}])[0]
+    ok = (r.status_code == 200 and os.path.isfile(os.path.join(w, "c", "d", "x.txt")) and not os.path.exists(os.path.join(w, "a", "d", "x.txt"))
+          and os.path.isfile(os.path.join(w, "a", "d", "y", "z.txt")) and os.listdir(os.path.join(w, "out2")) == [] and erg.get("fehler") == 1
+          and any("not written (target path goes through a link" in (e.get("meldung") or "") for e in bp.eintraege(bp.pfad_fuer(mod.MANDANT))))
+    print(("ok   " if ok else "FAIL ") + "move d into C (C/d/y -> outside): x.txt moved, z.txt kept, nothing outside -> %s %s" % (r.status_code, erg))
+    if not ok:
+        fehler.append("nested target link")
+    return fehler
+
+
+def helfer_verknuepfung(mod, tmp):
+    """ist_verknuepfung also catches Windows junctions and reparse points (simulated here; the test machine runs Linux)."""
+    fehler = []
+    ordner = os.path.join(tmp, "junction-sim")
+    os.makedirs(ordner)
+    alt_isj, alt_lstat = getattr(os.path, "isjunction", None), os.lstat
+    try:
+        os.path.isjunction = lambda p: os.path.abspath(p) == os.path.abspath(ordner)
+        ok1 = mod.ist_verknuepfung(ordner) and not mod.ist_verknuepfung(tmp)
+        os.path.isjunction = lambda p: False
+
+        class Stat:
+            st_mode = 0o040755  # a plain folder for islink(), but flagged as reparse point like a Windows junction
+            st_file_attributes = mod.FILE_ATTRIBUTE_REPARSE_POINT
+
+        os.lstat = lambda p, *a, **k: Stat() if os.path.abspath(p) == os.path.abspath(ordner) else alt_lstat(p, *a, **k)
+        ok2 = mod.ist_verknuepfung(ordner) and not mod.ist_verknuepfung(tmp)
+        ok3 = mod._ueber_link(tmp, os.path.join(ordner, "x.txt")) == ordner
+    finally:
+        os.lstat = alt_lstat
+        if alt_isj is None:
+            del os.path.isjunction
+        else:
+            os.path.isjunction = alt_isj
+    for name, ok in (("junction via os.path.isjunction", ok1), ("reparse point via st_file_attributes", ok2), ("path through a junction", ok3)):
+        print(("ok   " if ok else "FAIL ") + "helper: " + name)
+        if not ok:
+            fehler.append(name)
+    return fehler
+
+
 def main():
     tmp = tempfile.mkdtemp(prefix="trove-selbst-")
     try:
@@ -109,6 +177,8 @@ def main():
         print(("ok   " if ok else "FAIL ") + "normal move still works")
         if not ok:
             fehler.append("normal move")
+        fehler += b3_links_im_ziel(c, mod, bp, tmp)
+        fehler += helfer_verknuepfung(mod, tmp)
         assert bp.pruefen(bp.pfad_fuer(mod.MANDANT)).get("ok", True) is not False
         if fehler:
             sys.exit("FAILED: " + ", ".join(fehler))

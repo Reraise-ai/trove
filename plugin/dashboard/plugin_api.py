@@ -502,23 +502,25 @@ def _dateien_unter(voll, links=None):
             yield p, os.path.relpath(p, os.path.dirname(voll))
 
 
-_REPARSE_LINK_TAGS = (0xA000000C, 0xA0000003)  # IO_REPARSE_TAG_SYMLINK, IO_REPARSE_TAG_MOUNT_POINT (NTFS junction)
+FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+_REPARSE_TAG_NAME_SURROGATE = 0x20000000  # set for symlinks, junctions (mount points), WSL symlinks; not for OneDrive/cloud or dedup files
 
 
 def ist_verknuepfung(p):
-    """THE link check for every place that must never follow a link: symlinks, NTFS junctions (os.path.isjunction, Python 3.12+)
-    and, on Windows with older Python, any symlink/junction reparse point seen by lstat. Other reparse points (e.g. OneDrive
-    placeholders) are ordinary files and folders."""
+    """THE link check for every place that must never follow a link: symlinks, NTFS junctions (os.path.isjunction, Python 3.12+),
+    and any Windows reparse point that redirects to another path (lstat: FILE_ATTRIBUTE_REPARSE_POINT with a name-surrogate tag,
+    also on older Python; a reparse point without a known tag counts as a link). OneDrive placeholders and dedup files are
+    ordinary files and folders."""
     try:
         if os.path.islink(p):
             return True
         ij = getattr(os.path, "isjunction", None)
         if ij is not None and ij(p):
             return True
-        if os.name == "nt":
-            st = os.lstat(p)
-            if getattr(st, "st_file_attributes", 0) & 0x400 and getattr(st, "st_reparse_tag", 0) in _REPARSE_LINK_TAGS:
-                return True
+        st = os.lstat(p)
+        if getattr(st, "st_file_attributes", 0) & FILE_ATTRIBUTE_REPARSE_POINT:
+            tag = getattr(st, "st_reparse_tag", None)
+            return tag is None or bool(tag & _REPARSE_TAG_NAME_SURROGATE)
     except (OSError, ValueError):
         return False
     return False
@@ -542,6 +544,20 @@ def _kein_link_im_pfad(wurzel, ordner):
     link = _ueber_link(wurzel, ordner)
     if link:
         raise HTTPException(409, "The path goes through a link (%s). Trove does not follow links. Nothing was changed." % os.path.basename(link))
+
+
+def _ziel_sicher(wurzel, ziel):
+    """Reason text if writing the file ziel would pass through a link (B3): any existing component between the target source root
+    and ziel (ziel itself included) is a link/junction, or the nearest existing folder resolves outside the target source. Else None."""
+    link = _ueber_link(wurzel, ziel)
+    if link:
+        return "target path goes through a link: %s" % os.path.relpath(link, wurzel)
+    da = os.path.dirname(ziel)
+    while not os.path.lexists(da) and os.path.dirname(da) != da:
+        da = os.path.dirname(da)
+    if not _unter_real(da, wurzel):
+        return "target folder resolves outside the target source"
+    return None
 
 
 @router.post("/aktion")
@@ -583,6 +599,11 @@ def aktion(body: dict):
                 prot.schreiben("fehler", quelle=start, werkzeug="trove-plugin", mandant=mandant, lauf=lauf, meldung="Action %s refused: entry is a link" % art)
                 raise HTTPException(409, "%s is a link. Trove does not copy, move or sync links (that would act on what the link points to). "
                                          "Nothing was copied, moved or deleted." % n)
+        for n in namen:  # B3: the entry's counterpart in the target must not be a link (writing would go through it)
+            grund = _ziel_sicher(qn["pfad"], os.path.join(nach_ordner, n)) if n else None
+            if grund:
+                prot.schreiben("fehler", ziel=os.path.join(nach_ordner, n), werkzeug="trove-plugin", mandant=mandant, lauf=lauf, meldung="Action %s refused: %s" % (art, grund))
+                raise HTTPException(409, "In the target, %s. Trove does not write through links. Nothing was copied, moved or deleted." % grund)
         for n in namen:  # copy/move/sync onto itself: refuse before anything is touched (a move would delete the only copy)
             start = os.path.join(von_ordner, n) if n else von_ordner
             grund = _selbst_ziel(start, os.path.join(nach_ordner, n) if n else nach_ordner, nach_ordner)
@@ -601,7 +622,14 @@ def aktion(body: dict):
                     if rel_d == ".":
                         continue
                     ziel_d = os.path.join(nach_ordner, rel_d)
-                    if os.path.isdir(ziel_d) and not ist_verknuepfung(ziel_d):
+                    grund = _ziel_sicher(qn["pfad"], ziel_d)  # B3: no folder is created through a link inside the target
+                    if grund:
+                        zusammen["fehler"] += 1
+                        prot.schreiben("fehler", quelle=wurzel, ziel=ziel_d, werkzeug="trove-plugin", mandant=mandant, lauf=lauf,
+                                       meldung="folder not created (%s); source kept" % grund)
+                        dirs[:] = []
+                        continue
+                    if os.path.isdir(ziel_d):
                         continue
                     if os.path.lexists(ziel_d):
                         zusammen["konflikt"] += 1
@@ -620,6 +648,11 @@ def aktion(body: dict):
             links = []
             for p, rel in _dateien_unter(start, links):
                 ziel_pfad = os.path.join(nach_ordner, rel) if n else os.path.join(nach_ordner, os.path.relpath(p, von_ordner))
+                grund = _ziel_sicher(qn["pfad"], ziel_pfad)  # B3: checked for every file, before any folder is created
+                if grund:
+                    prot.schreiben("fehler", quelle=p, ziel=ziel_pfad, werkzeug="trove-plugin", mandant=mandant, lauf=lauf, meldung="not written (%s); source kept" % grund)
+                    zusammen["fehler"] += 1
+                    continue
                 st = _kopiere_datei(prot, mandant, lauf, p, ziel_pfad)
                 zusammen[st] = zusammen.get(st, 0) + 1
                 if art == "verschieben" and st in ("verifiziert", "schon_da"):

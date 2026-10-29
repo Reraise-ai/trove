@@ -267,6 +267,15 @@ def bauen(mandant=None, client=None):
             links = [n for n in namen if api.ist_verknuepfung(os.path.join(von, n))]
             if links:
                 raise ValueError("these entries are links; Trove does not copy, move or sync links: %s" % ", ".join(links[:10]))
+            for n in (namen or [None]):  # B3: nothing in the target may be written through a link (checked again at release, per file)
+                start = os.path.join(von, n) if n else von
+                for i, (datei, rel) in enumerate(api._dateien_unter(start)):
+                    if i >= 20000:
+                        break
+                    ziel = os.path.join(nach, rel) if n else os.path.join(nach, os.path.relpath(datei, von))
+                    grund = api._ziel_sicher(qn["pfad"], ziel) or (api._ziel_sicher(qn["pfad"], os.path.join(nach, n)) if n else None)
+                    if grund:
+                        raise ValueError("in the target, %s; Trove does not write through links" % grund)
             for wurzel, ordner, feld in ((qv["pfad"], von, "from_path"), (qn["pfad"], nach, "to_path")):
                 if api._ueber_link(wurzel, ordner):
                     raise ValueError("%s goes through a link; Trove does not follow links" % feld)
@@ -321,6 +330,8 @@ def bauen(mandant=None, client=None):
             wurzel = rufen(api._sicher, q["pfad"], path)
             if not os.path.isdir(wurzel):
                 raise ValueError("folder not found: " + ort(q, path))
+            if api._ueber_link(q["pfad"], wurzel):
+                raise ValueError("path goes through a link; Trove does not follow links")
             if visibility not in ("privat", "oeffentlich"):
                 raise ValueError("visibility: privat | oeffentlich")
             body = {"quelle": q["id"], "pfad": path, "sammlung": text_pruefen(collection, "collection", 60), "sichtbarkeit": visibility,
@@ -328,6 +339,8 @@ def bauen(mandant=None, client=None):
             body["sammlung"] = rufen(api._sammlung, mandant, body)
             for rel in dateien:
                 voll = rufen(api._sicher, q["pfad"], rel)
+                if api._ueber_link(q["pfad"], voll):
+                    raise ValueError("files: %s goes through a link; Trove does not follow links" % rel)
                 if not os.path.isfile(voll) or not api._unter_real(voll, wurzel):
                     raise ValueError("no such file in the chosen folder: " + rel)
         except (ValueError, ToolError) as ex:

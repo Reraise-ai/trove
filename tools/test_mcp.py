@@ -150,6 +150,30 @@ async def stdio_teil(server_py, env, http, mod, tmp):
         assert http.post(U + "/auftrag/%s/freigeben" % e["id"], json=OK).status_code == 200
         e = _warte(mq, mandant, e["id"])
         assert e["status"] == "failed" and "is a link" in e["ergebnis"] and _stand(tmp) == disk, e
+        # B3: links INSIDE the target are never written through (read-only source behind a link, nested link to outside)
+        t1 = http.post(U + "/quellen", json={"art": "ordner", "pfad": os.path.join(tmp, "tgt"), "name": "Tgt", "nur_lesen": False}).json()
+        t2 = http.post(U + "/quellen", json={"art": "ordner", "pfad": os.path.join(tmp, "tgt2"), "name": "Tgt2", "nur_lesen": False}).json()
+        http.post(U + "/quellen", json={"art": "ordner", "pfad": os.path.join(tmp, "ro"), "name": "RO"})
+        for name, werkzeug, args in (("target counterpart is a link to a read-only source", "request_copy", dict(from_source=w["id"], to_source=t1["id"], names=["wdir"])),
+                                     ("move, target counterpart is a link", "request_move", dict(from_source=w["id"], to_source=t1["id"], names=["wdir"])),
+                                     ("nested link in the target to outside", "request_move", dict(from_source=w["id"], to_source=t2["id"], names=["wdir"])),
+                                     ("sync into a target with a nested link", "request_sync", dict(from_source=w["id"], from_path="wdir", to_source=t2["id"], to_path="wdir")),
+                                     ("S6: into knowledge, path through a link", "request_into_knowledge", dict(source=w["id"], path="dlink")),
+                                     ("S6: into knowledge, file through a link", "request_into_knowledge", dict(source=w["id"], files=["dlink/x.txt"]))):
+            msg, err = await _ruf(c, werkzeug, **args)
+            assert err and "link" in msg, (name, msg)
+        assert _stand(tmp) == disk
+        for ziel in (t1, t2):  # queued past the request check (older version): refused per file at release, nothing written, nothing deleted
+            e = mq.anlegen(mandant, "test-client", "verschieben", {"von": {"quelle": w["id"], "pfad": ""}, "nach": {"quelle": ziel["id"], "pfad": ""}, "namen": ["wdir"]}, "t", "d")
+            assert http.post(U + "/auftrag/%s/freigeben" % e["id"], json=OK).status_code == 200
+            e = _warte(mq, mandant, e["id"])
+            assert e["status"] == "failed", e
+        assert os.listdir(os.path.join(tmp, "ro")) == ["keep.txt"] and os.listdir(os.path.join(tmp, "outside2")) == []
+        assert os.path.isfile(os.path.join(arbeit, "wdir", "deep", "z.txt"))
+        # the nested case moved x.txt (safe) and kept deep/z.txt; put x.txt back for the rest of the test
+        if os.path.exists(os.path.join(tmp, "tgt2", "wdir", "x.txt")):
+            shutil.move(os.path.join(tmp, "tgt2", "wdir", "x.txt"), os.path.join(arbeit, "wdir", "x.txt"))
+        disk = _stand(tmp)
         # S2: release only as a JSON request with {"confirm": true} and no foreign origin
         e = mq.anlegen(mandant, "test-client", "kopieren", {"von": {"quelle": w["id"], "pfad": ""}, "nach": {"quelle": z["id"], "pfad": ""}, "namen": ["w.txt"]}, "t", "d")
         url = U + "/auftrag/%s/freigeben" % e["id"]
@@ -370,6 +394,13 @@ def main():
         os.symlink(os.path.join(tmp, "outside"), os.path.join(tmp, "work", "aussendir"))
         os.symlink(".", os.path.join(tmp, "work", "self"))  # link to an ancestor inside the source (B2)
         os.symlink("wdir", os.path.join(tmp, "work", "dlink"))
+        for d in ("work/wdir/deep", "tgt", "tgt2/wdir", "ro", "outside2"):
+            os.makedirs(os.path.join(tmp, d), exist_ok=True)
+        for rel, inhalt in (("work/wdir/deep/z.txt", "Z"), ("ro/keep.txt", "K")):
+            with open(os.path.join(tmp, rel), "w", encoding="utf-8") as f:
+                f.write(inhalt)
+        os.symlink(os.path.join(tmp, "ro"), os.path.join(tmp, "tgt", "wdir"))  # target link to a read-only source (B3)
+        os.symlink(os.path.join(tmp, "outside2"), os.path.join(tmp, "tgt2", "wdir", "deep"))  # nested target link to outside
         global HERMES_LOG
         HERMES_LOG = os.path.join(tmp, "hermes-calls.log")
         fake = os.path.join(tmp, "hermes")
