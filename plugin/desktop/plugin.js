@@ -186,6 +186,7 @@ function ResultPanel({ r, back }) {
   else if (r.fehler) body = jsx('div', { className: 'text-destructive', children: r.fehler })
   else if (r.art === 'lesen') body = jsxs('div', { children: [
     z(t('method'), r.methode + ', ' + t('nPages', r.seiten) + ', ' + r.dauer_s + ' s'), z('sha256', r.sha256),
+    r.read_by ? z(t('recReadBy'), r.read_by) : null,
     ...Object.entries(r.felder || {}).map(([k, v]) => z(k, v)),
     jsx('div', { className: 'mt-1 font-medium', children: t('verification') + ': ' + (r.verprobung.sicher ? t('passedSure') : r.verprobung.bestanden ? t('passed') : t('needsReview')) }),
     ...(r.verprobung.gruende || []).map((g, i) => jsx('div', { children: '· ' + g }, i)),
@@ -469,6 +470,23 @@ function Integrations({ left }) {
     if (r) { setCards(null); setPicked([]) }
   }
   const toggle = (sha) => setPicked(picked.includes(sha) ? picked.filter((x) => x !== sha) : [...picked, sha])
+  const rec = s && s.erkennung
+  const recOn = !!(rec && (rec.mode !== 'off' || rec.ocr))
+  const pinText = (p) => p ? t('recPinned', (p.digest || '').slice(0, 12)) : t('recNotPinned')
+  const recRun = async (path, body) => {
+    setBusy(true); setMsg(null); setAsk(null)
+    try { const r = await rest(path, { method: 'POST', body, timeoutMs: 900000 }); setMsg(r.ok ? { text: t('recTestOk') } : { err: t('recTestFail') }); load() } catch (e) { setMsg({ err: errText(e) }) } finally { setBusy(false) }
+  }
+  const recBox = () => jsxs('div', { className: box + ' p-2 flex flex-col gap-1', children: [
+    jsxs('div', { className: 'flex items-center gap-2 flex-wrap', children: [jsx('span', { className: 'font-medium', children: t('recTitle') }), jsx(Badge, { children: recOn ? t('intActive') : t('intOff') })] }),
+    Row(t('recOcr'), rec.ocr ? rec.ocr.model + ' · ' + (rec.ocr.use === 'second_reading' ? t('recUseSecond') : t('recUseScans')) + ' · ' + pinText(rec.ocr.pin) : t('recOcrOff')),
+    Row(t('recFields'), rec.mode === 'off' ? t('recFieldsOff') : (rec.mode === 'provider' ? t('recModeProvider') : t('recModeLocal')) + ': ' + (rec.model || '–') + ' · ' + pinText(rec.pin)),
+    rec.mode === 'provider' ? jsx('div', { className: 'font-medium text-destructive', children: t('recProviderWarn') }) : null,
+    ...(rec.problems || []).map((p, i) => jsx('div', { className: 'text-destructive', children: p }, 'p' + i)),
+    recOn ? jsxs('div', { className: 'flex items-center gap-2 flex-wrap', children: [
+      btn(t('recTest'), () => recRun('/erkennung/test', {}), { disabled: busy, title: t('recTestTip') }),
+      btn(t('recPin'), () => setAsk('pin'), { disabled: busy, title: t('recPinTip') })] }) : jsx('span', { className: quiet, children: t('recHint') }),
+    ask === 'pin' ? confirmBox(t('recPinConfirm'), () => recRun('/erkennung/pin', { confirm: true })) : null] })
   let body = null
   if (open && !s) body = jsx('div', { className: quiet, children: t('loading') })
   else if (open) body = jsxs('div', { className: 'flex flex-col gap-2', children: [
@@ -506,6 +524,7 @@ function Integrations({ left }) {
           ...(cards || []).slice(0, 50).map((e) => jsxs('label', { className: 'flex items-center gap-1', children: [
             jsx('input', { type: 'checkbox', checked: picked.includes(e.sha256), onChange: () => toggle(e.sha256) }),
             jsx('span', { className: 'truncate', title: e.karte_probe && e.karte_probe.body, children: (e.karte_probe && e.karte_probe.title) || e.sha256 })] }, e.sha256))] })] }),
+    rec ? recBox() : null,
     busy ? jsx('div', { className: quiet, children: t('running') }) : null,
     msg ? jsx('div', { className: msg.err ? 'text-destructive' : quiet, children: msg.err || msg.text }) : null] })
   return jsxs('div', { className: box + ' p-2 text-xs flex flex-col gap-1 shrink-0', children: [
@@ -679,6 +698,15 @@ const EN = {
   renamed: (a, b) => 'renamed "' + a + '" to "' + b + '"', folderCreated: (n) => 'folder "' + n + '" created',
   intTitle: 'Integrations (optional: mail, signing, ERPNext, Reraise)', intOpen: 'show', intHint: 'All off until you configure them in Hermes. Trove never asks for passwords or keys here.',
   intSettings: 'Open Hermes settings', intReload: 'Refresh', intActive: 'on', intOff: 'off', intMissing: (n) => 'needs in Hermes: ' + n,
+  recTitle: 'Recognition model (optional)', recOcr: 'OCR model', recOcrOff: 'off (local rapidocr)', recUseScans: 'reads scans', recUseSecond: 'second reading of every PDF',
+  recFields: 'Field model', recFieldsOff: 'off (fixed rules)', recModeLocal: 'local', recModeProvider: 'provider via Hermes',
+  recPinned: (d) => 'pinned' + (d ? ' ' + d : ''), recNotPinned: 'not pinned yet',
+  recProviderWarn: 'Provider mode sends receipt text to an outside provider.',
+  recHint: 'Off. Set it up in the Hermes settings (Trove: OCR model, Field model).', recTest: 'Test model',
+  recTestTip: 'Reads a built-in sample, no receipt leaves this machine. Pins the model on the first success.',
+  recPin: 'Pin', recPinTip: 'Make the installed version the only one Trove uses.',
+  recPinConfirm: 'Pin the installed version? Afterwards Trove refuses every other version of the model. Continue?',
+  recTestOk: 'Model test passed.', recTestFail: 'Model test failed: the sample was not read correctly.', recReadBy: 'Read by',
   intMail: 'Mail (attachments into the receipt log)', intFetchMail: (id) => 'Fetch ' + id, intGmailSignin: (c) => 'sign in once in a terminal: ' + c,
   intDocuseal: 'Signing (your DocuSeal)', intTemplates: 'Templates', intChooseTemplate: '– template –', intSignerPlaceholder: 'Signer e-mail', intDsMail: 'DocuSeal sends the invitation e-mail',
   intSend: 'Send for signature', intFetchSigned: 'Fetch signed documents',
@@ -759,6 +787,15 @@ const DE = {
   renamed: (a, b) => '„' + a + '“ umbenannt in „' + b + '“', folderCreated: (n) => 'Ordner „' + n + '“ angelegt',
   intTitle: 'Anbindungen (optional: Mail, Unterschrift, ERPNext, Reraise)', intOpen: 'zeigen', intHint: 'Alle aus, bis du sie in Hermes einrichtest. Trove fragt hier nie nach Passwörtern oder Schlüsseln.',
   intSettings: 'Hermes-Einstellungen öffnen', intReload: 'Neu laden', intActive: 'an', intOff: 'aus', intMissing: (n) => 'braucht in Hermes: ' + n,
+  recTitle: 'Erkennungsmodell (optional)', recOcr: 'OCR-Modell', recOcrOff: 'aus (lokales rapidocr)', recUseScans: 'liest Scans', recUseSecond: 'zweite Lesung jedes PDFs',
+  recFields: 'Feld-Modell', recFieldsOff: 'aus (feste Regeln)', recModeLocal: 'lokal', recModeProvider: 'Anbieter über Hermes',
+  recPinned: (d) => 'festgelegt' + (d ? ' ' + d : ''), recNotPinned: 'noch nicht festgelegt',
+  recProviderWarn: 'Der Anbieter-Modus schickt Belegtext an einen externen Anbieter.',
+  recHint: 'Aus. Einrichten in den Hermes-Einstellungen (Trove: OCR model, Field model).', recTest: 'Modell testen',
+  recTestTip: 'Liest ein eingebautes Muster, kein Beleg verlässt diesen Rechner. Legt das Modell beim ersten Erfolg fest.',
+  recPin: 'Festlegen', recPinTip: 'Die installierte Version wird die einzige, die Trove benutzt.',
+  recPinConfirm: 'Installierte Version festlegen? Danach lehnt Trove jede andere Version des Modells ab. Weiter?',
+  recTestOk: 'Modelltest bestanden.', recTestFail: 'Modelltest nicht bestanden: das Muster wurde nicht richtig gelesen.', recReadBy: 'Gelesen von',
   intMail: 'Mail (Anhänge ins Belegprotokoll)', intFetchMail: (id) => id + ' abholen', intGmailSignin: (c) => 'einmal im Terminal anmelden: ' + c,
   intDocuseal: 'Unterschrift (dein DocuSeal)', intTemplates: 'Vorlagen', intChooseTemplate: '– Vorlage –', intSignerPlaceholder: 'E-Mail der unterschreibenden Person', intDsMail: 'DocuSeal verschickt die Einladung per E-Mail',
   intSend: 'Zur Unterschrift senden', intFetchSigned: 'Unterschriebenes abholen',

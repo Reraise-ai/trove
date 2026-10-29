@@ -10,6 +10,7 @@ Trove reads no credential file, no .env and no auth.json. Outside Hermes (no age
 integration stays inactive. Secret values never go into logs or responses: schwaerzen() masks every value read here.
 """
 import logging
+import os
 import re
 import threading
 
@@ -24,12 +25,19 @@ IMAP_PASSWORT = "TROVE_IMAP_PASSWORD"
 RERAISE_KEY = "TROVE_RERAISE_KEY"
 GMAIL_CLIENT_ID = "TROVE_GMAIL_CLIENT_ID"          # oauth client_id_env (declared under optional_env and config_schema)
 GMAIL_CLIENT_SECRET = "TROVE_GMAIL_CLIENT_SECRET"  # oauth client_secret_env
-GEHEIMNISSE = (DOCUSEAL_KEY, ERPNEXT_KEY, ERPNEXT_SECRET, IMAP_PASSWORT, RERAISE_KEY, GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET)
+ERKENNUNG_KEY = "TROVE_ERKENNUNG_API_KEY"  # only if a local recognition model endpoint needs a key
+GEHEIMNISSE = (DOCUSEAL_KEY, ERPNEXT_KEY, ERPNEXT_SECRET, IMAP_PASSWORT, RERAISE_KEY, GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, ERKENNUNG_KEY)
 GMAIL_OAUTH_ID = "gmail"  # oauth: id in plugin.yaml; sign-in: hermes auth add reraise-trove:gmail
 
 # plain settings (config_schema) and their neutral defaults: nothing points at any installation
 STANDARD = {"docuseal_url": "", "erpnext_url": "", "erpnext_host_header": "", "imap_host": "", "imap_user": "", "imap_port": 993,
-            "imap_folders": "INBOX", "gmail_query": ""}
+            "imap_folders": "INBOX", "gmail_query": "",
+            # recognition model (erkennung.py); off = today's rule reading
+            "erkennung_modus": "off", "erkennung_endpoint": "http://127.0.0.1:11434", "erkennung_modell": "", "erkennung_provider": "",
+            "erkennung_fallback": "rules", "erkennung_halten": "0", "erkennung_extern_erlaubt": False,
+            "erkennung_ocr_modell": "", "erkennung_ocr_einsatz": "scans", "erkennung_ocr_dateien": "", "erkennung_ocr_sha256": "",
+            "erkennung_ocr_prompt": "<image>\nFree OCR.", "erkennung_ocr_seiten": 5}
+DATEI_SCHLUESSEL = "erkennung_"  # settings that are also read from Hermes' config.yaml when Trove runs outside Hermes (MCP server)
 
 # test seams: the self-tests replace these with mocks (never real services)
 geheimnis_quelle = None      # callable(name) -> str | None
@@ -134,7 +142,7 @@ def einstellungen():
             from hermes_cli.config import load_config_readonly
             roh = (((load_config_readonly().get("plugins") or {}).get("entries") or {}).get(PLUGIN_ID) or {}).get("settings") or {}
         except ImportError:
-            roh = {}
+            roh = {k: v for k, v in _config_yaml_einstellungen().items() if k.startswith(DATEI_SCHLUESSEL)}
         except Exception as ex:
             _LOG.warning("trove: Hermes settings not readable (%s)", type(ex).__name__)
             roh = {}
@@ -143,6 +151,69 @@ def einstellungen():
         if roh.get(k) not in (None, ""):
             out[k] = roh[k]
     return out
+
+
+def _skalar(t):
+    t = t.strip()
+    if t[:1] in ("'", '"'):
+        q = t[0]
+        e = t.find(q, 1)
+        return t[1:e] if e > 0 else t[1:]
+    t = re.split(r"\s+#", t, 1)[0].strip()
+    low = t.lower()
+    if low in ("", "~", "null"):
+        return None
+    if low in ("true", "yes", "on"):
+        return True
+    if low in ("false", "no", "off"):
+        return t if low == "off" else False  # "off" is a value of erkennung_modus, not a boolean here
+    if re.fullmatch(r"-?\d+", t):
+        return int(t)
+    return t
+
+
+def yaml_abschnitt(text, pfad):
+    """Scalars of one block mapping in a YAML text (enough for Hermes' config.yaml; lists and flow styles are skipped)."""
+    stapel, out = [], {}
+    for zeile in text.splitlines():
+        if not zeile.strip() or zeile.lstrip().startswith(("#", "- ")) or zeile.strip() == "-":
+            continue
+        m = re.match(r"^( *)(['\"]?)([^'\":#]+)\2\s*:(?:\s+(.*))?$", zeile)
+        if not m:
+            continue
+        tiefe, schluessel, wert = len(m.group(1)), m.group(3).strip(), (m.group(4) or "").strip()
+        while stapel and stapel[-1][0] >= tiefe:
+            stapel.pop()
+        weg = [s for _, s in stapel]
+        if not wert or wert.startswith("#"):
+            stapel.append((tiefe, schluessel))
+        elif weg == list(pfad) and wert[:1] not in ("[", "{", "|", ">"):
+            out[schluessel] = _skalar(wert)
+    return out
+
+
+def _config_yaml_einstellungen():
+    """plugins.entries.<id>.settings from <HERMES_HOME>/config.yaml: only for Trove processes outside Hermes (the MCP server),
+    which cannot import hermes_cli. Plain settings only; no secret is ever read from a file."""
+    try:
+        import konfig
+        p = os.path.join(konfig.hermes_home(), "config.yaml")
+        if not os.path.isfile(p):
+            return {}
+        with open(p, encoding="utf-8") as f:
+            text = f.read()
+    except (OSError, ImportError, UnicodeDecodeError):
+        return {}
+    try:
+        import yaml
+        d = yaml.safe_load(text) or {}
+        for k in ("plugins", "entries", PLUGIN_ID, "settings"):
+            d = d.get(k) if isinstance(d, dict) else None
+        return d if isinstance(d, dict) else {}
+    except ImportError:
+        return yaml_abschnitt(text, ("plugins", "entries", PLUGIN_ID, "settings"))
+    except Exception:
+        return {}
 
 
 def einstellung(name):

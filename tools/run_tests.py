@@ -21,7 +21,11 @@ SELBSTTESTS = [("belegprotokoll.py", "--selbsttest"), ("gemeinsam.py",), ("konfi
                ("zugang.py",), ("docuseal.py",), ("mail_abholer.py",), ("spiegel_erpnext.py", "--selbsttest"), ("reraise_hochladen.py", "--selbsttest")]
 
 
+HERMES_LEER = tempfile.mkdtemp(prefix="trove-hermes-home-")  # no real Hermes config.yaml (recognition model settings) reaches a test
+
+
 def lauf(cmd, cwd, env=None):
+    env = dict(env or os.environ, HERMES_HOME=HERMES_LEER)
     r = subprocess.run([sys.executable, *cmd], cwd=cwd, capture_output=True, text=True, env=env, timeout=900)
     ok = r.returncode == 0
     print(("PASS " if ok else "FAIL ") + " ".join(cmd))
@@ -42,6 +46,8 @@ def main():
     erg.append(lauf([os.path.join(REPO, "tools", "test_verknuepfung.py")], REPO))
     erg.append(lauf([os.path.join(REPO, "tools", "test_mcp.py")], REPO))
     erg.append(lauf([os.path.join(REPO, "tools", "test_geheimnisse.py")], REPO))
+    erg.append(lauf([os.path.join(REPO, "tools", "test_erkennung.py")], REPO))
+    shutil.rmtree(HERMES_LEER, ignore_errors=True)
     print("ALL PASSED" if all(erg) else "FAILURES: %d" % erg.count(False))
     sys.exit(0 if all(erg) else 1)
 

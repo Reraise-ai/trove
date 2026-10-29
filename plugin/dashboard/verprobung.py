@@ -7,6 +7,7 @@ Keine KI. Regeln:
   R5 IBAN-Pruefziffer (mod 97) — nur wenn IBAN gefunden
   R6 USt-IdNr Form (DE + 9 Ziffern) — nur wenn gefunden
   R7 zwei Auslesungen stimmen beim Brutto ueberein — nur wenn zwei Lesungen vorliegen
+  R8 Regel-Lesung und Erkennungsmodell widersprechen sich nicht bei einem Betrag — nur wenn ein Feld-Modell gelesen hat
 Bestanden = R1 und R2 erfuellt, R3 erfuellt oder nicht pruefbar, keine Pruefziffer falsch, R7 nicht widerspruechlich.
 Jedes Ergebnis: Zeile in <TROVE_DATEN>\\<mandant>\\pruefliste.jsonl (append) und Ereignis "verprobt" im Belegprotokoll.
 """
@@ -41,7 +42,7 @@ def iban_ok(iban):
     return num.isdigit() and int(num) % 97 == 1
 
 
-def verproben(felder, zweite=None):
+def verproben(felder, zweite=None, widerspruch=None):
     heute = datetime.date.today()
     regeln = {}
     d = felder.get("datum")
@@ -67,6 +68,8 @@ def verproben(felder, zweite=None):
         regeln["R7_zwei_lesungen"] = abs(zweite["brutto"] - b) <= 0.02
     else:
         regeln["R7_zwei_lesungen"] = None
+    if widerspruch is not None:  # only when a field model read the receipt; without it the rule set is unchanged
+        regeln["R8_regeln_modell"] = not widerspruch
     gruende = []
     if not regeln["R1_datum"]:
         gruende.append("date missing or implausible")
@@ -82,9 +85,12 @@ def verproben(felder, zweite=None):
         gruende.append("VAT ID incomplete")
     if regeln["R7_zwei_lesungen"] is False:
         gruende.append("two readings disagree on the gross amount")
+    if widerspruch:
+        gruende.append("Widerspruch Regeln/Modell (rule reading and model disagree): " + ", ".join(
+            "%s rules %s / model %s" % (f, w.get("regeln"), w.get("modell")) for f, w in sorted(widerspruch.items())))
     if regeln["R3_summen"] is None and regeln["R2_brutto"]:
         gruende.append("totals cannot be checked (net/tax not found)")
-    bestanden = regeln["R1_datum"] and regeln["R2_brutto"] and regeln["R3_summen"] is not False and regeln["R4_cuit"] is not False and regeln["R5_iban"] is not False and regeln["R6_ustid"] is not False and regeln["R7_zwei_lesungen"] is not False
+    bestanden = regeln["R1_datum"] and regeln["R2_brutto"] and regeln["R3_summen"] is not False and regeln["R4_cuit"] is not False and regeln["R5_iban"] is not False and regeln["R6_ustid"] is not False and regeln["R7_zwei_lesungen"] is not False and regeln.get("R8_regeln_modell") is not False
     sicher = bestanden and regeln["R3_summen"] is True
     return {"bestanden": bool(bestanden), "sicher": bool(sicher), "regeln": regeln, "gruende": gruende}
 
@@ -92,15 +98,17 @@ def verproben(felder, zweite=None):
 def verproben_zwilling(mandant, zwilling_pfad, protokollieren=True):
     with open(zwilling_pfad, encoding="utf-8") as f:
         z = json.load(f)
-    v = verproben(z.get("felder", {}), z.get("zweite_lesung"))
-    zeile = {"zeit": bp._jetzt(), "datei": z.get("datei"), "sha256": z.get("sha256"), "methode": z.get("methode"), "felder": z.get("felder"), **v}
+    e = z.get("erkennung")
+    v = verproben(z.get("felder", {}), z.get("zweite_lesung"), (e or {}).get("widerspruch") if isinstance(e, dict) else None)  # recognition model (erkennung.py): which model, which fields came from it
+    erk = {"erkennung": {k: e.get(k) for k in ("modus", "modell", "provider", "digest", "status", "dauer_s", "felder_modell", "felder_regeln", "verworfen", "widerspruch", "grund")}} if isinstance(e, dict) else {}
+    zeile = {"zeit": bp._jetzt(), "datei": z.get("datei"), "sha256": z.get("sha256"), "methode": z.get("methode"), "felder": z.get("felder"), **v, **erk}
     pl = os.path.join(bp.WURZEL, mandant, "pruefliste.jsonl")
     os.makedirs(os.path.dirname(pl), exist_ok=True)
     with open(pl, "a", encoding="utf-8") as f:
         f.write(json.dumps(zeile, ensure_ascii=False) + "\n")
     if protokollieren:
         bp.schreiben(bp.pfad_fuer(mandant), ereignis="verprobt", quelle=z.get("datei", ""), ziel=zwilling_pfad, sha256=z.get("sha256", ""), werkzeug="verprobung.py", mandant=mandant,
-                     meldung=("bestanden" + (" (sicher)" if v["sicher"] else "")) if v["bestanden"] else ("Needs review: " + "; ".join(v["gruende"])), bestanden=v["bestanden"], sicher=v["sicher"], regeln=v["regeln"])
+                     meldung=("bestanden" + (" (sicher)" if v["sicher"] else "")) if v["bestanden"] else ("Needs review: " + "; ".join(v["gruende"])), bestanden=v["bestanden"], sicher=v["sicher"], regeln=v["regeln"], **erk)
     return zeile
 
 

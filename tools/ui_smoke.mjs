@@ -144,6 +144,24 @@ ok(!calls.some((c) => c[0] === '/integrationen/erpnext/doctypes') && text(it3).i
 const yes = it3.root.findAllByType('button').find((b) => /Yes, do it/.test(JSON.stringify(b.props.children)))
 await TR.act(async () => { yes.props.onClick(); await settle() })
 ok(calls.filter((c) => c[0] === '/integrationen/erpnext/doctypes' && c[2] && c[2].confirm === true).length === 1, 'Create doctypes runs once after confirmation and sends confirm: true')
+// recognition model: shown with mode and pin; Test calls the test route, Pin asks first
+ok(!calls.some((c) => c[0].startsWith('/erkennung')), 'recognition model: no call while not configured')
+fake['/integrationen'] = { ...fake['/integrationen'], erkennung: { mode: 'off', model: '', fallback: 'rules', pin: null, problems: ['OCR model \'unlimited-ocr-3b:latest\' is not pinned yet: press \'Test model\'.'], ocr: { model: 'unlimited-ocr-3b:latest', use: 'scans', pin: null } } }
+for (const loc of ['en', 'de']) {
+  locale = loc
+  const it4 = await render(React.createElement(mod.Integrations, { left: { quelle: 'a1', pfad: '' } }))
+  await TR.act(async () => { it4.root.findAllByType('button').find((b) => /show|zeigen/.test(JSON.stringify(b.props.children))).props.onClick(); await settle() })
+  const s4 = text(it4)
+  ok(s4.includes('unlimited-ocr-3b:latest') && s4.includes(loc === 'en' ? 'not pinned yet' : 'noch nicht festgelegt'), loc + ': recognition model shows the OCR model and its pin state')
+  const pinB = it4.root.findAllByType('button').find((b) => /"(Pin|Festlegen)"/.test(JSON.stringify(b.props.children)))
+  await TR.act(async () => { pinB.props.onClick(); await settle() })
+  ok(!calls.some((c) => c[0] === '/erkennung/pin'), loc + ': Pin asks before pinning')
+  if (loc === 'en') {
+    const testB = it4.root.findAllByType('button').find((b) => /Test model/.test(JSON.stringify(b.props.children)))
+    await TR.act(async () => { testB.props.onClick(); await settle() })
+    ok(calls.filter((c) => c[0] === '/erkennung/test' && c[1] === 'POST').length === 1, 'Test model calls /erkennung/test once')
+  }
+}
 ok(calls.some((c) => c[0] === '/liste') && calls.some((c) => c[0] === '/status'), 'backend calls issued')
 ok(!callsBeforeClicks.some((c) => c[1] === 'POST' && ['/aktion', '/wissen', '/register', '/umbenennen', '/ordner-neu'].includes(c[0])), 'rendering alone never triggers a write action')
 console.log(failures ? failures + ' FAILED' : 'UI SMOKE PASSED')

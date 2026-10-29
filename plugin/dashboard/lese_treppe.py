@@ -195,7 +195,14 @@ def felder_aus_text(text):
 
 # ---------- Treppe ----------
 
-def lesen(pfad, ocr="rapidocr", erzwinge_ocr=False, max_seiten=10):
+def bilder_rendern(doc, n, dpi):
+    """First n pages as base64 PNG for a recognition model (erkennung.py); returned in the JSON output, never stored in the twin."""
+    return [base64.b64encode(seite_als_png(doc[i], dpi)).decode() for i in range(min(n, len(doc)))]
+
+
+def lesen(pfad, ocr="rapidocr", erzwinge_ocr=False, max_seiten=10, seitenbilder=0, bilder_alle=False, ohne_ocr=False, bild_dpi=DPI):
+    """seitenbilder: also return the first N page images (scans; with bilder_alle for every PDF). ohne_ocr: for scans skip the local
+    OCR and leave the reading to the OCR model of erkennung.py (methode "ocr:ausstehend")."""
     import pypdfium2 as pdfium
     t0 = time.time()
     doc = pdfium.PdfDocument(pfad)
@@ -207,19 +214,32 @@ def lesen(pfad, ocr="rapidocr", erzwinge_ocr=False, max_seiten=10):
         if er:
             erg.update(methode="e-rechnung", text=er["text"], felder=er["felder"], e_rechnung_xml=er["xml_name"])
             erg["stufen"].append("e-rechnung")
+            if bilder_alle and seitenbilder:
+                erg["_seitenbilder"] = bilder_rendern(doc, min(seiten, seitenbilder), bild_dpi)
             erg["dauer_s"] = round(time.time() - t0, 3)
             doc.close(); return erg
         text, je_seite = textlayer(doc)
         erg["stufen"].append("textlayer")
         if je_seite >= MIN_ZEICHEN_JE_SEITE:
             erg.update(methode="textlayer", text=text, felder=felder_aus_text(text), zeichen_je_seite=round(je_seite))
+            if bilder_alle and seitenbilder:
+                erg["_seitenbilder"] = bilder_rendern(doc, min(seiten, seitenbilder), bild_dpi)
             erg["dauer_s"] = round(time.time() - t0, 3)
             doc.close(); return erg
         erg["zeichen_je_seite_textlayer"] = round(je_seite)
+    if ohne_ocr:
+        erg.update(methode="ocr:ausstehend", text="", felder={}, ocr_ausstehend=True)
+        erg["stufen"].append("ocr:ausstehend")
+        erg["_seitenbilder"] = bilder_rendern(doc, min(seiten, max(1, seitenbilder)), bild_dpi)
+        erg["dauer_s"] = round(time.time() - t0, 3)
+        doc.close(); return erg
     teile = []
     t_ocr = time.time()
     for i in range(seiten):
-        teile.append(OCR[ocr](seite_als_png(doc[i])))
+        png = seite_als_png(doc[i])
+        teile.append(OCR[ocr](png))
+    if seitenbilder:
+        erg["_seitenbilder"] = bilder_rendern(doc, min(seiten, seitenbilder), bild_dpi)
     text = "\n\f".join(teile)
     erg["stufen"].append("ocr:" + ocr)
     erg.update(methode="ocr:" + ocr, text=text, felder=felder_aus_text(text), ocr_dauer_s=round(time.time() - t_ocr, 3), ocr_s_je_seite=round((time.time() - t_ocr) / max(1, seiten), 3))
@@ -246,14 +266,20 @@ def main():
     ap.add_argument("--ohne-protokoll", action="store_true")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--max-seiten", type=int, default=10)
+    ap.add_argument("--seitenbilder", type=int, default=0, help="also return the first N page images (base64 PNG) in the JSON output (scans)")
+    ap.add_argument("--bilder-alle", action="store_true", help="page images for every PDF, not only scans")
+    ap.add_argument("--ohne-ocr", action="store_true", help="scans: no local OCR, the OCR model of erkennung.py reads the page images")
+    ap.add_argument("--bild-dpi", type=int, default=DPI)
     a = ap.parse_args()
-    erg = lesen(a.datei, a.ocr, a.erzwinge_ocr, a.max_seiten)
+    erg = lesen(a.datei, a.ocr, a.erzwinge_ocr, a.max_seiten, max(0, min(a.seitenbilder, 20)), a.bilder_alle, a.ohne_ocr, max(50, min(a.bild_dpi, 300)))
+    bilder = erg.pop("_seitenbilder", None)
     zp = zwilling_speichern(a.mandant, erg)
-    if not a.ohne_protokoll:
+    if not a.ohne_protokoll and not erg.get("ocr_ausstehend"):  # pending OCR: erkennung.py logs "gelesen" after the model read it
         bp.schreiben(bp.pfad_fuer(a.mandant), ereignis="gelesen", quelle=a.datei, ziel=zp, sha256=erg["sha256"], werkzeug="lese_treppe.py", mandant=a.mandant,
                      meldung="%s, %d Seiten, %.2fs" % (erg["methode"], erg["seiten"], erg["dauer_s"]), methode=erg["methode"], felder=erg["felder"])
     if a.json:
-        print(json.dumps({**{k: v for k, v in erg.items() if k != "text"}, "zwilling": zp, "text_anfang": (erg.get("text") or "")[:1500]}, ensure_ascii=False))
+        print(json.dumps({**{k: v for k, v in erg.items() if k != "text"}, "zwilling": zp, "text_anfang": (erg.get("text") or "")[:1500],
+                          **({"seitenbilder": bilder} if bilder else {})}, ensure_ascii=False))
     else:
         print("%s | %s | %d Seiten | %.2fs | Felder: %s" % (os.path.basename(a.datei), erg["methode"], erg["seiten"], erg["dauer_s"], json.dumps(erg["felder"], ensure_ascii=False)))
 

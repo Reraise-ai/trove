@@ -50,6 +50,17 @@ def ueberwacht_eintragen(eintrag):
     os.replace(p + ".neu", p)
 
 
+def eintrag_setzen(name, wert):
+    """One top-level entry in trove.json (atomic write); the other entries stay."""
+    k = lesen()
+    k[name] = wert
+    p = konfig_pfad()
+    os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
+    with open(p + ".neu", "w", encoding="utf-8") as f:
+        json.dump(k, f, ensure_ascii=False, indent=1)
+    os.replace(p + ".neu", p)
+
+
 GEHEIM_MUSTER = re.compile(r"(^|_)(API_?KEY|KEY|SECRET|PASSWORD|PASSWD|PASS|TOKEN|CREDENTIALS?)S?(_|$)", re.I)
 _verworfen = []
 

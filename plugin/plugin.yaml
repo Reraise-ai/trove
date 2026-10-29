@@ -29,6 +29,21 @@ config_schema:
   gmail_client_secret: {type: secret, env: TROVE_GMAIL_CLIENT_SECRET, label: "Gmail OAuth client secret"}
   gmail_query: {type: str, default: "", label: "Gmail search", description: "Optional Gmail search, e.g. has:attachment newer_than:30d. Empty = new mail since the last run."}
   reraise_key: {type: secret, env: TROVE_RERAISE_KEY, label: "Reraise key", description: "Only for publishing public knowledge cards to reraise.ai. Without a key Trove only links to reraise.ai."}
+  # Recognition model (optional; off = today's rule reading). Pins: press "Test model" / "Pin" under Integrations in the Trove tab.
+  erkennung_ocr_modell: {type: str, default: "", label: "OCR model (local)", description: "Exact Ollama model id of a vision OCR model that reads page images, e.g. unlimited-ocr-3b:latest. Empty = local rapidocr as today."}
+  erkennung_ocr_einsatz: {type: str, default: "scans", choices: [scans, second_reading], label: "OCR model use", description: "scans = reads scanned receipts instead of rapidocr; second_reading = reads every PDF a second time so the rules compare two readings."}
+  erkennung_ocr_dateien: {type: str, default: "", label: "OCR model files", description: "Optional. Comma-separated paths of the GGUF files the OCR model was built from; their sha256 is pinned too."}
+  erkennung_ocr_sha256: {type: str, default: "", label: "OCR model sha256", description: "Optional. Comma-separated sha256 values you expect (files or Ollama layers). Any other version is refused."}
+  erkennung_ocr_prompt: {type: str, default: "<image>\nFree OCR.", label: "OCR model prompt", description: "Prompt sent with each page image (model specific)."}
+  erkennung_ocr_seiten: {type: int, default: 5, label: "OCR model pages", description: "At most this many pages per receipt are sent to the OCR model."}
+  erkennung_modus: {type: str, default: "off", choices: ["off", local, provider], label: "Field model", description: "off = fixed rules only (default). local = a model on erkennung_endpoint. provider = an LLM provider configured in Hermes (sends receipt text off this machine). The field model reads text only."}
+  erkennung_modell: {type: str, default: "", label: "Field model id", description: "Exact model id (pinned). Required when the field model is not off."}
+  erkennung_endpoint: {type: str, default: "http://127.0.0.1:11434", label: "Model endpoint", description: "Ollama or OpenAI-compatible endpoint for the local models: http/https on this machine or the private network only (127.x, 10.x, 172.16-31.x, 192.168.x, localhost, *.local)."}
+  erkennung_provider: {type: str, default: "", label: "Field model provider", description: "Provider mode only: Hermes provider name; empty = Hermes' main provider. Allow the override under plugins.entries.reraise-trove.llm."}
+  erkennung_extern_erlaubt: {type: bool, default: false, label: "Allow sending receipts to the provider", description: "Provider mode only. Receipt text leaves this machine. Off = provider mode refuses."}
+  erkennung_fallback: {type: str, default: "rules", choices: [rules, none], label: "If the pinned model is unavailable", description: "rules = use the rule reading and mark it; none = report an error. Trove never switches to another model."}
+  erkennung_halten: {type: str, default: "0", label: "Keep model loaded", description: "Ollama keep_alive after a read: 0 = unload right away (the GPU is shared), e.g. 10m, -1 = keep loaded."}
+  erkennung_api_key: {type: secret, env: TROVE_ERKENNUNG_API_KEY, label: "Model endpoint key", description: "Only if your local endpoint needs a key. Stored by Hermes."}
 optional_env:
   - name: TROVE_GMAIL_CLIENT_ID
     description: "Gmail OAuth client ID (your own Google Cloud client); only for the optional Gmail fetch"

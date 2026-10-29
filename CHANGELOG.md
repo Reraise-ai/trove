@@ -6,6 +6,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Recognition model (optional, off by default)** (`plugin/dashboard/erkennung.py`): an OCR stage (local Ollama vision model
+  reads page images of scans, or reads every PDF a second time for rule R7) and a field stage (reads text only; local
+  Ollama/OpenAI-compatible endpoint on this machine or the private network, or an LLM provider through Hermes' plugin LLM
+  facade with an explicit opt-in). Models are pinned by exact id; Ollama also by digest, the OCR stage also by the sha256 of
+  every layer and of its GGUF files. Answers must name exactly the pinned model; a changed or missing model is refused, never
+  replaced; `erkennung_fallback` decides between a marked rule reading and an error. Model amounts must occur as amounts in the
+  source text in the document's own number format (no dates or ID digits); identifiers must occur as whole tokens. When the
+  rule reading passes and the model proposes a different value for any field, the result is "Widerspruch Regeln/Modell"
+  (rule R8, not passed). Model calls follow no redirects, use no proxy and connect to the checked address only; every Ollama call sends `keep_alive` (`erkennung_halten`, default 0).
+  Settings in Hermes only; **Test model** / **Pin** in the Integrations panel; MCP `read_receipt` reports `read_by`.
+
 ## [0.3.0] - 2026-10-29
 
 ### Added

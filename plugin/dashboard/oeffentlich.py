@@ -24,7 +24,7 @@ import gemeinsam as gm
 
 WAEHRUNGEN = ("EUR", "ARS", "USD", "GBP", "CHF")
 VERPROBUNG = ("bestanden", "sicher", "prueflist")
-LESEMETHODEN = ("e-rechnung", "textlayer", "text", "ocr:rapidocr", "ocr:docling")
+LESEMETHODEN = ("e-rechnung", "textlayer", "text", "ocr:rapidocr", "ocr:docling", "ocr:modell")
 BETRAEGE = ("netto", "steuer", "brutto")
 TITEL_MAX = 140  # LIMITS.title in reraise.ai _lib/reraise.js
 _ZAHL = r"-?[0-9]+\.[0-9]{2}"  # Dezimaltext mit 2 Nachkommastellen, nie Exponent; [0-9] statt \d: keine Unicode-Ziffern

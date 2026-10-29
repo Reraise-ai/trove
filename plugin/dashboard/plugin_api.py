@@ -1154,14 +1154,72 @@ def lesen(body: dict):
     """F3: Lese-Treppe (E-Rechnung > Textlayer > OCR) fuer eine Datei; Zwilling speichern, F8 'gelesen'; dann F4 Verprobung."""
     mandant = body.get("mandant") or MANDANT
     import verprobung as vp  # reine Regeln, kein ONNX
+    import erkennung as ek  # optional recognition model (settings in Hermes; off = rules only)
+    import zugang
     voll = _quell_datei(mandant, body)
+    k = ek.konfiguration()
     args = [voll, "--mandant", mandant, "--ocr", body.get("ocr") or "rapidocr", "--max-seiten", str(int(body.get("max_seiten") or 10)), "--json"]
     if body.get("erzwinge_ocr"):
         args.append("--erzwinge-ocr")
-    erg = _werkzeug("lese_treppe.py", *args)
+    try:
+        erg, ocr_bericht = ek.beleg_lesen(lambda extra: _werkzeug("lese_treppe.py", *args, *extra), mandant, k)
+        bericht = ek.zwilling_erkennen(erg["zwilling"], k) if ek.aktiv(k) else None
+    except ek.ErkennungFehler as ex:
+        text = zugang.kurz(str(ex), 400)
+        bp.schreiben(bp.pfad_fuer(mandant), ereignis="fehler", quelle=voll, werkzeug="erkennung.py", mandant=mandant,
+                     meldung="recognition model: " + text, art=ex.art)
+        raise _fehler(503, text)
+    felder = erg["felder"]
+    if bericht is not None or ocr_bericht is not None:
+        with open(erg["zwilling"], encoding="utf-8") as f:
+            felder = json.load(f).get("felder") or {}
     v = vp.verproben_zwilling(mandant, erg["zwilling"])
-    return {"ok": True, "zwilling": erg["zwilling"], "sha256": erg["sha256"], "methode": erg["methode"], "seiten": erg["seiten"], "dauer_s": round(erg["dauer_s"], 2),
-            "felder": erg["felder"], "verprobung": {k: v[k] for k in ("bestanden", "sicher", "gruende", "regeln")}, "text_anfang": erg.get("text_anfang", "")}
+    out = {"ok": True, "zwilling": erg["zwilling"], "sha256": erg["sha256"], "methode": erg["methode"], "seiten": erg["seiten"], "dauer_s": round(erg["dauer_s"], 2),
+           "felder": felder, "verprobung": {k: v[k] for k in ("bestanden", "sicher", "gruende", "regeln")}, "text_anfang": erg.get("text_anfang", ""),
+           "read_by": ek.gelesen_von(bericht, ocr_bericht, erg["methode"])}
+    if bericht is not None:
+        out["erkennung"] = {k: bericht.get(k) for k in ("modus", "modell", "provider", "digest", "status", "grund", "dauer_s",
+                                                         "felder_modell", "felder_regeln", "verworfen", "widerspruch")}
+    if ocr_bericht is not None:
+        out["ocr_modell"] = {k: ocr_bericht.get(k) for k in ("modell", "einsatz", "digest", "status", "grund", "sekunden", "s_je_seite", "seiten", "zweite_lesung")}
+    return out
+
+
+def _erk_lauf(f):
+    """Recognition-model actions from the tab: not usable -> 503 with Trove's own text (masked); never an upstream body."""
+    import erkennung as ek
+    import zugang
+    try:
+        return f()
+    except ek.ErkennungFehler as ex:
+        raise _fehler(503, zugang.kurz(str(ex), 400))
+    except Exception as ex:
+        raise _fehler(502, zugang.fehlertext(ex, 300))
+
+
+@router.get("/erkennung")
+def erkennung_status():
+    """Recognition model: mode, pinned model, problems. No network. Settings are changed only in Hermes (human)."""
+    import erkennung as ek
+    import zugang
+    zugang.neu_laden()
+    return ek.status()
+
+
+@router.post("/erkennung/test")
+def erkennung_test(body: dict = None):
+    """'Test model' in the tab: built-in sample only (no receipt content); pins on the first successful test."""
+    import erkennung as ek
+    return _erk_lauf(ek.testen)
+
+
+@router.post("/erkennung/pin")
+def erkennung_pin(body: dict = None):
+    """'Pin' in the tab: the current version of the configured model becomes the only one Trove uses. Needs confirm: true."""
+    import erkennung as ek
+    if not (body or {}).get("confirm") is True:
+        raise HTTPException(400, "Pin needs confirm: true (the tab asks first)")
+    return _erk_lauf(ek.pinnen)
 
 
 @router.post("/stapel")
@@ -1337,7 +1395,15 @@ def integrationen():
              for p in mail_abholer.postfaecher()]
     return {"settings": EINSTELLUNGEN_LINK, "mail": {"mailboxes": boxen},
             "docuseal": {"active": ds, "missing": ds_fehlt}, "erpnext": {"active": erp, "missing": erp_fehlt},
-            "reraise": {"active": reraise_hochladen.eingerichtet(), "link": RERAISE_LINK}}
+            "reraise": {"active": reraise_hochladen.eingerichtet(), "link": RERAISE_LINK}, "erkennung": _erk_status()}
+
+
+def _erk_status():
+    import erkennung as ek
+    try:
+        return ek.status()
+    except Exception as ex:  # never breaks the integrations overview
+        return {"mode": "off", "problems": [type(ex).__name__]}
 
 
 def _int_max(body, name="max"):

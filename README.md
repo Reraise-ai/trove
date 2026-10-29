@@ -179,6 +179,52 @@ Integrations panel. For the ERPNext mirror, create an API user in your ERPNext w
 role and the two doctypes, which needs a key that may create doctypes). For Gmail, create a "Desktop app" OAuth client in your own Google Cloud
 project, enter its ID and secret, and sign in once in a terminal with `hermes auth add reraise-trove:gmail`.
 
+### Recognition model (optional, off by default)
+
+Without it Trove reads receipts exactly as before: e-invoice XML, then the PDF text layer, then local OCR (rapidocr), and fixed
+patterns pick the fields. You can add one or two **pinned** models in **Hermes Settings → Plugins → Trove**:
+
+| Stage | Settings | What it does |
+| --- | --- | --- |
+| OCR model | `erkennung_ocr_modell` (exact Ollama id, e.g. `unlimited-ocr-3b:latest`), `erkennung_ocr_einsatz` (`scans` or `second_reading`), optional `erkennung_ocr_dateien` (GGUF paths), `erkennung_ocr_sha256` | a local vision model reads page images into text. `scans`: replaces rapidocr for scanned receipts. `second_reading`: every PDF is read a second time; the same fixed rules check both readings and rule R7 compares their gross amounts |
+| Field model | `erkennung_modus` (`off`, `local`, `provider`), `erkennung_modell` (exact id), `erkennung_endpoint`, `erkennung_provider`, `erkennung_extern_erlaubt` | proposes the fields (gross, net, tax, rate, date, invoice number, issuer, CUIT, VAT ID, IBAN, currency) as JSON. It reads **text only**: the text layer, the e-invoice, or for scans the OCR text (from the pinned OCR model or rapidocr). It never sees page images, so every value it returns can be checked against that text |
+
+**Pinning.** A model id must be exact (Ollama names usually end in `:latest`). Press **Test model** under Integrations in the
+Trove tab: it reads a built-in sample (no receipt leaves the machine) and, on the first success, pins the model. **Digest
+pinning exists only for Ollama**: there the pin holds the model digest, and for the OCR model also the sha256 of every model
+layer and of the GGUF files listed in `erkennung_ocr_dateien` (hashed again in every new process and on Test/Pin). An
+OpenAI-compatible endpoint (other than Ollama) is pinned only by model id and endpoint; Trove cannot notice if that service swaps
+the model behind the same id. Every answer must name exactly the pinned model; an answer without a model name is refused. If the
+model is missing, changed or another model answers, Trove refuses it and **never switches to another model**.
+`erkennung_fallback: rules` (default) then uses the rule reading and marks it "model unavailable, rules used";
+`erkennung_fallback: none` reports an error (the receipt log gets a `fehler` line). **Pin** accepts a new version after you
+checked it. No MCP tool can change the model or the pin.
+
+**What the field model may do.** It only proposes. Every amount it returns must occur as an amount in the source text, read in
+the document's own number format (`1.234,56` or `1,234.56`, thousands groups of exactly three digits); dates, times,
+percentages and digits inside invoice or ID numbers are not amounts; whole numbers count only with a directly attached currency
+(`180 EUR`, `49,-`), and a document that uses both number formats equally gives no amounts at all. Identifiers must occur as a
+whole token (invoice number at least 3 characters with a digit; VAT ID, IBAN, CUIT complete). Everything else is dropped and
+listed; if nothing is left, the result says "rules (model values dropped)". The fixed rules still decide. If the rule reading
+passes and the model proposes a different value for any field (amount, date, invoice number, issuer, currency, rate), the result
+is **"Widerspruch Regeln/Modell"** (rule R8): it does not pass, and both values are shown. A passed rule reading is never
+replaced silently. Each twin and receipt-log line records the stage, model id, digest, duration and
+which fields came from the model. MCP `read_receipt` uses the same configured models and returns `read_by`, which names the
+source of the text and which fields came from which model.
+
+**Where receipt content goes.**
+- `local` and the OCR model: receipt text or page images go only to the configured endpoint, which must be on this machine or
+  the private network (`127.x`, `::1`, `10.x`, `172.16-31.x`, `192.168.x`, `localhost`, `*.local`; http/https; default
+  `http://127.0.0.1:11434`). Any other host is refused. A name is resolved once and Trove connects to exactly the checked address.
+  Model calls never follow redirects and use no proxy. A key, if the
+  endpoint needs one, is the Hermes secret `TROVE_ERKENNUNG_API_KEY`.
+- `provider`: **receipt text leaves this machine** and goes to the LLM provider configured in Hermes. Hermes makes the call and
+  holds the credentials; Trove never sees or stores a provider key. It refuses unless `erkennung_extern_erlaubt` is on, and
+  Hermes must allow the override under `plugins.entries.reraise-trove.llm` (`allow_model_override`, and
+  `allow_provider_override` if you name a provider; optionally `allowed_models`).
+- GPU: every Ollama call sends `keep_alive` from `erkennung_halten` (default `0`: the model is unloaded right after the read).
+- Error texts are Trove's own and redacted; answer bodies of the model service are never passed on.
+
 **Language.** The interface is English by default and German through Hermes's plugin i18n (it follows your Hermes language setting). Backend messages are in English.
 
 ## What works today

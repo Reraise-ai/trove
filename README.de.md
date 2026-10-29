@@ -90,6 +90,57 @@ Das Feld **Integrations / Anbindungen** unten auf der Trove-Seite zeigt, was an 
   Mit Schlüssel: Karten-Vorschau eines Ordners, anhaken, nur Angehaktes wird gesendet. Karten entstehen nur aus Zwillingen mit Sichtbarkeit öffentlich und nur aus einer festen
   Feldliste (kein Dateiname, kein Belegtext). Ein Upload auf Reraise kann von Mitgliedern nicht gelöscht werden.
 
+### Erkennungsmodell (optional, ab Werk aus)
+
+Ohne Erkennungsmodell liest Trove Belege genau wie bisher: E-Rechnungs-XML, dann die Textebene des PDFs, dann lokale Texterkennung
+(rapidocr), und feste Muster suchen die Felder heraus. In **Hermes-Einstellungen → Plugins → Trove** kannst du ein oder zwei
+**festgelegte** Modelle dazunehmen:
+
+- **OCR-Modell** (`erkennung_ocr_modell`, genaue Ollama-Kennung, z. B. `unlimited-ocr-3b:latest`; `erkennung_ocr_einsatz` = `scans`
+  oder `second_reading`; optional `erkennung_ocr_dateien` mit den GGUF-Pfaden und `erkennung_ocr_sha256`): ein lokales Bildmodell
+  macht aus den Seitenbildern Text. `scans`: ersetzt rapidocr bei gescannten Belegen. `second_reading`: jedes PDF wird ein zweites
+  Mal gelesen; dieselben festen Regeln prüfen beide Lesungen, Regel R7 vergleicht die Bruttobeträge.
+- **Feld-Modell** (`erkennung_modus` = `off`, `local` oder `provider`; `erkennung_modell` mit genauer Kennung): schlägt die Felder
+  (Brutto, Netto, Steuer, Satz, Datum, Rechnungsnummer, Aussteller, CUIT, USt-IdNr., IBAN, Währung) als JSON vor. Es liest **nur
+  Text**: die Textebene, die E-Rechnung oder bei Scans den OCR-Text (vom festgelegten OCR-Modell oder von rapidocr). Seitenbilder
+  sieht es nie – so lässt sich jeder Wert, den es liefert, am Text prüfen.
+
+**Festlegen.** Die Modell-Kennung muss genau stimmen (Ollama-Namen enden meist auf `:latest`). **Modell testen** unter Anbindungen
+im Trove-Tab liest ein eingebautes Muster (kein Beleg verlässt den Rechner) und legt das Modell beim ersten Erfolg fest.
+**Festlegen per Digest gibt es nur bei Ollama**: dort gehört der Digest dazu, beim OCR-Modell zusätzlich die sha256 jeder
+Modellschicht und der in `erkennung_ocr_dateien` genannten GGUF-Dateien (in jedem neuen Prozess und bei Test/Festlegen neu
+berechnet). Ein OpenAI-kompatibler Endpunkt (nicht Ollama) wird nur über Kennung und Endpunkt festgelegt; tauscht dieser Dienst das
+Modell unter derselben Kennung, merkt Trove das nicht. Jede Antwort muss genau das festgelegte Modell nennen; eine Antwort ohne
+Modellnamen wird abgelehnt. Fehlt das Modell, hat es sich geändert oder antwortet ein anderes, lehnt Trove ab und **nimmt nie ein
+anderes Modell**. `erkennung_fallback: rules` (Standard) nimmt dann die Regel-Lesung und markiert sie („model unavailable, rules
+used“); `erkennung_fallback: none` meldet einen Fehler (mit `fehler`-Zeile im Belegprotokoll). **Festlegen** übernimmt eine neue
+Version, nachdem du sie geprüft hast. Kein MCP-Werkzeug kann Modell oder Festlegung ändern.
+
+**Was das Feld-Modell darf.** Es schlägt nur vor. Jeder Betrag, den es liefert, muss als Betrag im Quelltext stehen, gelesen im
+Zahlenformat des Belegs (`1.234,56` oder `1,234.56`, Tausendergruppen mit genau drei Ziffern); Datum, Uhrzeit, Prozentsätze und
+Ziffern in Rechnungs- oder Kennnummern sind keine Beträge; ganze Zahlen zählen nur mit direkt angehängter Währung (`180 EUR`,
+`49,-`), und ein Beleg, der beide Zahlenformate gleich oft benutzt, liefert gar keine Beträge. Kennungen müssen als ganzes Wort
+vorkommen (Rechnungsnummer mindestens 3 Zeichen mit Ziffer; USt-IdNr., IBAN, CUIT vollständig). Alles andere wird verworfen und
+aufgelistet; bleibt nichts übrig, heißt es „rules (model values dropped)“. Die festen Regeln entscheiden weiter. Besteht die
+Regel-Lesung und schlägt das Modell für irgendein Feld (Betrag, Datum, Rechnungsnummer, Aussteller, Währung, Satz) einen anderen
+Wert vor, lautet das Ergebnis **„Widerspruch Regeln/Modell“** (Regel R8): nicht bestanden, beide Werte werden angezeigt. Eine
+bestandene Regel-Lesung wird nie still ersetzt. Zwilling und Belegprotokoll halten
+Stufe, Modell-Kennung, Digest, Dauer und die Herkunft jedes Feldes fest. MCP `read_receipt` benutzt dieselben Modelle und liefert
+`read_by` – woher der Text kam und welches Feld von welchem Modell stammt.
+
+**Wohin Beleginhalt geht.**
+- `local` und OCR-Modell: Belegtext oder Seitenbilder gehen nur an den eingestellten Endpunkt, und der muss auf diesem Rechner oder
+  im privaten Netz liegen (`127.x`, `::1`, `10.x`, `172.16-31.x`, `192.168.x`, `localhost`, `*.local`; http/https; Standard
+  `http://127.0.0.1:11434`). Jeder andere Rechner wird abgelehnt. Ein Name wird einmal aufgelöst, und Trove verbindet sich genau
+  mit der geprüften Adresse. Modellaufrufe folgen keiner Weiterleitung und nutzen keinen Proxy. Braucht der Endpunkt einen Schlüssel, kommt der als Hermes-Geheimnis `TROVE_ERKENNUNG_API_KEY`.
+- `provider`: **Belegtext verlässt diesen Rechner** und geht an den in Hermes eingerichteten KI-Anbieter. Hermes ruft auf und hält
+  die Zugangsdaten; Trove sieht und speichert nie einen Anbieter-Schlüssel. Trove verweigert das, solange `erkennung_extern_erlaubt`
+  aus ist, und Hermes muss das Überschreiben unter `plugins.entries.reraise-trove.llm` erlauben (`allow_model_override`, bei
+  benanntem Anbieter auch `allow_provider_override`; wahlweise `allowed_models`).
+- Grafikkarte: jeder Ollama-Aufruf schickt `keep_alive` aus `erkennung_halten` (Standard `0`: das Modell wird direkt nach dem Lesen
+  entladen).
+- Fehlertexte schreibt Trove selbst und geschwärzt; Antworttexte des Modelldienstes werden nie weitergegeben.
+
 **Sprache.** Die Oberfläche ist standardmäßig Englisch und über die Plugin-Übersetzung von Hermes auch Deutsch (folgt deiner Hermes-Spracheinstellung). Meldungen des Backends sind englisch.
 
 ## Was heute funktioniert
