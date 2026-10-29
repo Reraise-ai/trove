@@ -242,6 +242,50 @@ def bauen(mandant=None, client=None):
                  ("; reason given by the agent: " + reason.strip() if (reason or "").strip() else "")
         return antrag(ctx, "wissen", body, titel, detail)
 
+    if hasattr(api, "umbenennen"):
+        @server.tool(annotations=ANTRAG, description="Request renaming one file or folder in place (same folder). The source must be writable; "
+                     "an existing entry is never replaced. " + HINWEIS)
+        def request_rename(source: str, name: str, new_name: str, path: str = "", reason: str = "", ctx: Context = None) -> str:
+            try:
+                q = quelle(source)
+                if q.get("nur_lesen", True):
+                    raise ValueError("The folder '%s' is read-only. Only the human can mark it writable in the Trove tab." % q["name"])
+                rufen(api._namen_pruefen, [name])
+                if hasattr(api, "_eintragsname_pruefen"):
+                    rufen(api._eintragsname_pruefen, new_name, "new_name")
+                ordner = rufen(api._sicher, q["pfad"], path)
+                if not name or not os.path.lexists(os.path.join(ordner, name)):
+                    raise ValueError("not found in %s: %s" % (ort(q, path), name))
+                if os.path.lexists(os.path.join(ordner, new_name)) and name.casefold() != (new_name or "").casefold():
+                    raise ValueError("an entry named %r already exists in %s" % (new_name, ort(q, path)))
+            except (ValueError, ToolError) as ex:
+                return ablehnen(ctx, "umbenennen", str(ex))
+            body = {"quelle": q["id"], "pfad": path, "name": name, "neu": new_name}
+            detail = "reason given by the agent: " + reason.strip() if (reason or "").strip() else ""
+            return antrag(ctx, "umbenennen", body, "rename %s -> %s in %s" % (name, new_name, ort(q, path)), detail)
+
+    if hasattr(api, "ordner_neu"):
+        @server.tool(annotations=ANTRAG, description="Request a new, empty folder inside a writable source. " + HINWEIS)
+        def request_new_folder(source: str, name: str, path: str = "", reason: str = "", ctx: Context = None) -> str:
+            try:
+                q = quelle(source)
+                if q.get("nur_lesen", True):
+                    raise ValueError("The folder '%s' is read-only. Only the human can mark it writable in the Trove tab." % q["name"])
+                if hasattr(api, "_eintragsname_pruefen"):
+                    rufen(api._eintragsname_pruefen, name, "name")
+                else:
+                    rufen(api._namen_pruefen, [name])
+                ordner = rufen(api._sicher, q["pfad"], path)
+                if not os.path.isdir(ordner):
+                    raise ValueError("folder not found: " + ort(q, path))
+                if os.path.lexists(os.path.join(ordner, name)):
+                    raise ValueError("an entry named %r already exists in %s" % (name, ort(q, path)))
+            except (ValueError, ToolError) as ex:
+                return ablehnen(ctx, "ordner_neu", str(ex))
+            body = {"quelle": q["id"], "pfad": path, "name": name}
+            detail = "reason given by the agent: " + reason.strip() if (reason or "").strip() else ""
+            return antrag(ctx, "ordner_neu", body, "new folder %s in %s" % (name, ort(q, path)), detail)
+
     @server.tool(annotations=ANTRAG)
     def request_agent_task(title: str, text: str = "", ctx: Context = None) -> str:
         """Ask for work by a Hermes agent: creates a BLOCKED card on the Hermes kanban board (needs the hermes command line).

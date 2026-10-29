@@ -26,8 +26,8 @@ def _ergebnis(r):
     return (json.loads(text) if not fehler else text), fehler
 
 
-async def _ruf(c, name, **args):
-    r = await c.call_tool(name, args)
+async def _ruf(c, werkzeug, /, **args):
+    r = await c.call_tool(werkzeug, args)
     return _ergebnis(r)
 
 
@@ -135,6 +135,23 @@ async def stdio_teil(server_py, env, http, mod, tmp):
         assert e["status"] == "done", e
         zwillinge = [f for d, _, fs in os.walk(os.path.join(wiki, "raw", "trove", "mcp-test")) for f in fs if f.endswith(".md")]
         assert any(f.endswith("_note.md") for f in zwillinge), zwillinge
+        # ---- rename / new folder (only when the backend has them)
+        if hasattr(mod, "umbenennen"):
+            http.post(U + "/quellen/" + z["id"] + "/schreibbar", json={"nur_lesen": False})
+            r, err = await _ruf(c, "request_rename", source=z["id"], name="note.txt", new_name="renamed.txt")
+            assert not err and r["status"] == "blocked" and os.path.exists(os.path.join(archiv, "note.txt")), r
+            assert http.post(U + "/auftrag/%s/freigeben" % r["task_id"], json={}).status_code == 200
+            assert _warte(mq, mandant, r["task_id"])["status"] == "done"
+            assert os.path.exists(os.path.join(archiv, "renamed.txt")) and not os.path.exists(os.path.join(archiv, "note.txt"))
+            _, err = await _ruf(c, "request_rename", source=z["id"], name="renamed.txt", new_name="sub")
+            assert err  # would replace an existing entry
+            _, err = await _ruf(c, "request_rename", source=q["id"], name="note.txt", new_name="x.txt")
+            assert err  # read-only source
+        if hasattr(mod, "ordner_neu"):
+            r, err = await _ruf(c, "request_new_folder", source=z["id"], name="2026")
+            assert not err and not os.path.exists(os.path.join(archiv, "2026")), r
+            assert http.post(U + "/auftrag/%s/freigeben" % r["task_id"], json={}).status_code == 200
+            assert _warte(mq, mandant, r["task_id"])["status"] == "done" and os.path.isdir(os.path.join(archiv, "2026"))
     # ---- receipt log: every MCP step with the client's name, chain intact
     pf = bp.pfad_fuer(mandant)
     alle = list(bp.eintraege(pf))

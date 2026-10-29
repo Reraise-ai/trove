@@ -31,6 +31,8 @@ AUSFUEHRUNG = {
     "verschieben": ("aktion", "move"),
     "sync": ("aktion", "sync"),
     "wissen": ("wissen", "into knowledge"),
+    "umbenennen": ("umbenennen", "rename"),  # active once the backend has POST /umbenennen
+    "ordner_neu": ("ordner_neu", "new folder"),  # active once the backend has POST /ordner-neu
 }
 _LOCK_STALE_S = 60
 
