@@ -55,7 +55,16 @@ unter macOS `sips` für HEIC-Bilder.
 `trove` in `plugins.enabled` der Hermes-`config.yaml` eintragen (nach einer Sicherung) und nur mit `--dauerlauf` einen LaunchAgent (macOS) oder eine geplante Aufgabe (Windows) einrichten.
 Ohne dass du ihn startest, passiert nichts davon.
 
+**MCP-Server (nur wenn du ein anderes Agentensystem anschließt).** `plugin/dashboard/mcp_server.py` ist ein kleiner MCP-Server. Er startet nur, wenn du einen
+MCP-Client (Claude Desktop, Claude Code, Cursor …) selbst so einrichtest; der Client startet ihn als Unterprozess und spricht über stdin/stdout mit ihm.
+Er nutzt dieselben Backend-Funktionen und Prüfungen wie der Tab. MCP-Clients dürfen **lesen**. Sie dürfen **keine Dateien ändern**: Kopieren, Verschieben,
+Abgleichen und „Ins Wissen“ werden nur zu einem **gesperrten Antrag** in der Aufgabenliste des Trove-Tabs (mit dem Namen des Clients) und laufen erst,
+wenn du dort **Release** klickst. Es gibt kein MCP-Werkzeug, das freigibt. Jeder Antrag, jede Ablehnung, jede Freigabe und jedes Ergebnis steht mit dem
+Client-Namen im Belegprotokoll; Anträge liegen in `mcp_auftraege.json` im Datenordner. Grenze: Die Freigabe schützt vor dem, was ein Agent *über Trove* tut.
+Ein Agent, der zusätzlich freien Shell- oder Dateizugriff auf deinen Rechner hat, kann jedes Werkzeug umgehen, auch Trove.
+
 **Netzwerk und Telemetrie.** Keine Telemetrie, keine Statistik, kein Auto-Update. Trove selbst verbindet sich nur mit den oben genannten lokalen Diensten, falls du sie betreibst.
+Trove öffnet keinen Port, außer dem optionalen MCP-HTTP-Zugang auf `127.0.0.1`, wenn du den Server mit `--http` startest.
 
 **Sprache.** Die Oberfläche ist standardmäßig Englisch und über die Plugin-Übersetzung von Hermes auch Deutsch (folgt deiner Hermes-Spracheinstellung). Meldungen des Backends sind englisch.
 
@@ -63,7 +72,7 @@ Ohne dass du ihn startest, passiert nichts davon.
 
 Trove ist in früher Alpha. Eine Tabelle mit allen Funktionen und ihrem Stand steht in der [englischen README](README.md#what-works-today).
 Kurz: zwei Spalten mit Vorschau, verifiziertes Kopieren/Verschieben/Abgleichen, Änderungsprüfung, Suche, PDF-Stapel trennen, Aufgaben an Hermes-Agenten (gesperrt bis zur Freigabe),
-fälschungssicheres Protokoll, Belege lesen (E-Rechnung → PDF-Text → lokale OCR) mit Regelprüfung für Deutschland und Argentinien, „Ins Wissen“ (Zwilling + Karte).
+MCP-Zugang für andere Agentensysteme (gleiche Freigabe), fälschungssicheres Protokoll, Belege lesen (E-Rechnung → PDF-Text → lokale OCR) mit Regelprüfung für Deutschland und Argentinien, „Ins Wissen“ (Zwilling + Karte).
 
 ## Schnellstart
 
@@ -86,6 +95,42 @@ Zum Kopieren in einen Ordner diesen zuerst auf **Make writable** stellen.
 
 Einstellungen (Umgebungsvariablen, dann `trove.json`, dann Standardwerte) sind in der [englischen README](README.md#configuration) aufgelistet.
 
+## Trove aus anderen Agentensystemen nutzen (MCP)
+
+Claude, Cursor oder jeder andere MCP-Client arbeitet am selben Schreibtisch wie du und deine Hermes-Agenten, mit derselben Freigabe.
+
+- **Lesen, sofort:** `status`, `list_sources`, `list_folder`, `preview`, `search`, `file_trail`, `task_status`, `list_tasks`; dazu `read_receipt` und
+  `check_changes` (schreiben nur in Troves eigenen Datenordner und ins Protokoll).
+- **Ändern, nur als Antrag:** `request_copy`, `request_move`, `request_sync`, `request_into_knowledge`, `request_agent_task` legen einen **gesperrten Antrag** an.
+  Er erscheint im Trove-Tab als `MCP <Client-Name>: <was>`. **Release** führt ihn mit den Ordnerrechten aus, die in dem Moment gelten; **Archive** lehnt ihn ab.
+  Der Agent fragt mit `task_status` und der erhaltenen Nummer nach. Anträge in einen nur lesbaren Ordner werden sofort abgelehnt.
+
+**Einrichten.** Python 3.10+ mit den Paketen `mcp` (getestet mit 2.3.0, der Version, die Hermes festlegt) und `fastapi`: `python3 -m pip install mcp fastapi`.
+Pfad: `<HERMES_HOME>/plugins/reraise-trove/dashboard/mcp_server.py` (Katalog-Installation) oder `<repo>/plugin/dashboard/mcp_server.py`.
+
+Claude Desktop (`claude_desktop_config.json`, *Einstellungen → Entwickler → Konfiguration bearbeiten*):
+
+```json
+{
+  "mcpServers": {
+    "trove": {
+      "command": "python3",
+      "args": ["/pfad/zu/trove/plugin/dashboard/mcp_server.py"]
+    }
+  }
+}
+```
+
+Claude Code:
+
+```bash
+claude mcp add trove -- python3 /pfad/zu/trove/plugin/dashboard/mcp_server.py
+```
+
+Unter Windows `python` und einen Pfad wie `C:/pfad/zu/trove/plugin/dashboard/mcp_server.py`. Hast du Datenordner oder Mandant (`TROVE_DATEN`, `TROVE_MANDANT`)
+nur in der Hermes-Umgebung geändert, gib dieselben Werte im `env`-Block des Clients mit (oder `--mandant <name>`). Optional: `python3 mcp_server.py --http 8765`
+bedient MCP über HTTP unter `http://127.0.0.1:8765/mcp` (nur lokal).
+
 ## FAQ
 
 **Ist Trove GoBD-konform?** Trove unterstützt eine ordentliche Ablage: nichts wird überschrieben, jede Bewegung wird protokolliert, das Protokoll ist fälschungssicher.
@@ -95,7 +140,8 @@ Einstellungen (Umgebungsvariablen, dann `trove.json`, dann Standardwerte) sind i
 
 **Wie kommen Mails und Cloud-Dateien zu Trove?** Über deine Hermes-Agenten: Ein Agent holt Anhänge oder Dateien mit den Hermes-Verbindungen und legt sie in einen Quellordner. Trove braucht nie deine Zugangsdaten.
 
-**Welche Agenten arbeiten mit Trove?** Heute die Agenten in Hermes (Aufgaben landen gesperrt auf dem Hermes-Kanban-Board). MCP-Zugang für andere Systeme ist geplant.
+**Welche Agenten arbeiten mit Trove?** Die Agenten in Hermes (Aufgaben landen gesperrt auf dem Hermes-Kanban-Board) und jeder MCP-Client (Claude Desktop, Claude Code, Cursor …)
+über Troves MCP-Server: Er liest frei, jede Änderung wartet als gesperrter Antrag im Trove-Tab auf deine Freigabe.
 
 **Braucht das Lesen von Belegen Cloud oder bezahlte KI-Token?** Nein. Erst eingebettete E-Rechnungsdaten, dann der PDF-Text, zuletzt lokale OCR. Ob ein Beleg besteht, entscheiden feste Regeln, keine KI.
 

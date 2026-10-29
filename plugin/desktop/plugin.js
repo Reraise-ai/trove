@@ -365,7 +365,7 @@ function Tasks() {
       jsx('span', { className: 'font-mono', children: a.id }),
       jsx('span', { className: 'flex-1 truncate', title: a.ergebnis_kommentar || a.zusammenfassung || '', children: a.titel + (a.zusammenfassung ? ' — ' + a.zusammenfassung : a.ergebnis_kommentar ? ' — ' + a.ergebnis_kommentar : '') }),
       a.status === 'blocked' ? jsx(Button, { size: 'sm', onClick: () => act(a.id, 'freigeben'), children: t('release') }) : null,
-      ['done', 'blocked', 'review'].includes(a.status) ? jsx(Button, { size: 'sm', variant: 'ghost', onClick: () => act(a.id, 'archivieren'), children: t('archive') }) : null
+      ['done', 'blocked', 'review', 'failed'].includes(a.status) ? jsx(Button, { size: 'sm', variant: 'ghost', onClick: () => act(a.id, 'archivieren'), children: t('archive') }) : null
     ] }, a.id))
   ] })
 }

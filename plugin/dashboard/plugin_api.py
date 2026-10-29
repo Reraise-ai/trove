@@ -34,6 +34,7 @@ import belegprotokoll as bp  # noqa: E402
 import aenderungen  # noqa: E402
 import gesundheit  # noqa: E402
 import gemeinsam as gm  # noqa: E402
+import mcp_queue  # noqa: E402
 
 
 TROVE_DATEN = bp.WURZEL  # eine Datenwurzel (Umgebungsvariable TROVE_DATEN, siehe belegprotokoll)
@@ -589,6 +590,13 @@ def auftrag_anlegen(body: dict):
 @router.post("/auftrag/{kid}/freigeben")
 def auftrag_freigeben(kid: str, body: dict = None):
     mandant = (body or {}).get("mandant") or MANDANT
+    if mcp_queue.ist_mcp(kid):  # request from an MCP client: a human click here is its only way to run
+        try:
+            return mcp_queue.freigeben(_mandant_pruefen(mandant), kid, sys.modules[__name__])
+        except KeyError:
+            raise HTTPException(404, "Unknown task %s" % kid)
+        except ValueError as ex:
+            raise HTTPException(409, str(ex))
     _hermes("kanban", "unblock", kid, "--reason", "Freigabe durch Mensch im Trove-Tab")
     try:
         _hermes("kanban", "dispatch", "--max", "1", timeout=60)
@@ -601,6 +609,11 @@ def auftrag_freigeben(kid: str, body: dict = None):
 @router.post("/auftrag/{kid}/archivieren")
 def auftrag_archivieren(kid: str, body: dict = None):
     mandant = (body or {}).get("mandant") or MANDANT
+    if mcp_queue.ist_mcp(kid):
+        try:
+            return mcp_queue.ablehnen(_mandant_pruefen(mandant), kid)
+        except ValueError as ex:
+            raise HTTPException(409, str(ex))
     _hermes("kanban", "archive", kid)
     liste = _auftraege_lesen(mandant)
     for a in liste:
@@ -615,10 +628,11 @@ def auftrag_archivieren(kid: str, body: dict = None):
 def auftraege(mandant: str = MANDANT):
     """Trove-Karten mit Stand; Ergebnisse (Kommentare, Zusammenfassung) fertiger Karten landen einmalig im Belegprotokoll."""
     liste = _auftraege_lesen(mandant)
+    mcp = mcp_queue.fuer_tab(_mandant_pruefen(mandant))  # requests from MCP clients (mcp_server.py), blocked until released here
     try:
         board = {k["id"]: k for k in _hermes_json("kanban", "ls", timeout=60)}
     except HTTPException as ex:
-        return {"auftraege": liste, "fehler": str(ex.detail)}
+        return {"auftraege": mcp + list(reversed(liste)), "fehler": str(ex.detail)}
     geaendert = False
     for a in liste:
         k = board.get(a["id"])
@@ -647,7 +661,7 @@ def auftraege(mandant: str = MANDANT):
             a.setdefault("protokolliert", []).append(a["status"]); a["ergebnis_kommentar"] = letzter[:1500]; geaendert = True
     if geaendert:
         _auftraege_speichern(mandant, liste)
-    return {"auftraege": list(reversed(liste))}
+    return {"auftraege": mcp + list(reversed(liste))}
 
 
 # ---------- F3/F4/F6: Lesen, Verproben, Stapel zerlegen (alles lokal, keine bezahlten Token) ----------
