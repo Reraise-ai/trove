@@ -32,6 +32,17 @@ const QUIET_STYLE = { fontSize: 12, color: 'var(--ui-text-tertiary)' }
 const GROUP = { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 4, padding: '2px 6px', border: '1px solid var(--ui-stroke-secondary)', borderRadius: 4, minWidth: 0 }
 const PAIR = { display: 'flex', gap: 4, whiteSpace: 'nowrap' }
 
+// Sort choice per pane, kept in memory for the session (survives switching between one-pane and two-pane view)
+const SORT_BY_PANE = {}
+const SORT_KEYS = ['name', 'size', 'date', 'type']
+const extOf = (n) => { const i = String(n).lastIndexOf('.'); return i > 0 ? String(n).slice(i + 1).toLowerCase() : '' }
+function sortEntries(list, s) {
+  const dir = s.dir === 'desc' ? -1 : 1
+  const byName = (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })
+  const cmp = ({ name: byName, size: (a, b) => a.groesse - b.groesse, date: (a, b) => a.mtime - b.mtime, type: (a, b) => extOf(a.name).localeCompare(extOf(b.name)) })[s.key] || byName
+  return list.slice().sort((a, b) => (a.ordner !== b.ordner ? (a.ordner ? -1 : 1) : (cmp(a, b) || byName(a, b)) * dir))
+}
+
 function group(name, buttons) {
   const present = buttons.filter(Boolean)
   return present.length ? jsxs('div', { role: 'group', 'aria-label': name, style: GROUP, children: [jsx('span', { style: { ...QUIET_STYLE, fontSize: 11, marginRight: 2 }, children: name }), ...present] }, name) : null
@@ -198,6 +209,9 @@ function Side({ side, sources, state, setState, selection, setSelection, reload,
   const [list, setList] = useState(null); const [error, setError] = useState(null); const [adding, setAdding] = useState(false); const [active, setActive] = useState(null)
   const [filter, setFilter] = useState('all'); const [panel, setPanel] = useState(null); const [changes, setChanges] = useState(null)
   const [askWritable, setAskWritable] = useState(false)
+  const [sort, setSortRaw] = useState(() => SORT_BY_PANE[side] || { key: 'name', dir: 'asc' })
+  const [edit, setEdit] = useState(null)   // { mode: 'rename' | 'mkdir', value, busy }
+  const setSort = (z) => { SORT_BY_PANE[side] = z; setSortRaw(z) }
   const q = sources.find((x) => x.id === state.quelle)
   const knowledgeReason = !state.quelle ? t('pickSourceFirst') : !q ? t('sourceLoading') : null
   const load = useCallback(() => {
@@ -208,11 +222,11 @@ function Side({ side, sources, state, setState, selection, setSelection, reload,
     }).catch((e) => setError(errText(e)))
   }, [state.quelle, state.pfad, q && q.id])
   useEffect(() => { load() }, [load, reload])
-  useEffect(() => { setAskWritable(false) }, [state.quelle])
+  useEffect(() => { setAskWritable(false); setEdit(null) }, [state.quelle, state.pfad])
   const go = (path) => { setState({ ...state, pfad: path }); setSelection([]); setActive(null); setPanel(null) }
   const parts = (state.pfad || '').split('/').filter(Boolean)
   const entries = list ? list.eintraege : []
-  const visible = entries.filter((e) => filter === 'all' || e.ordner || (filter === 'only' ? e.dublette : !e.dublette))
+  const visible = sortEntries(entries.filter((e) => filter === 'all' || e.ordner || (filter === 'only' ? e.dublette : !e.dublette)), sort)
   const picked = entries.filter((e) => !e.ordner && selection.includes(e.name)).map((e) => e.rel)
   const intoKnowledge = () => knowledgeReason ? null : setPanel({ art: 'wissen', datei: state.pfad || q.name, quelle: q.id, pfad: state.pfad || '', dateien: picked, anzahl: entries.filter((e) => !e.ordner).length })
   const toggle = (name) => setSelection(selection.includes(name) ? selection.filter((n) => n !== name) : [...selection, name])
@@ -244,6 +258,31 @@ function Side({ side, sources, state, setState, selection, setSelection, reload,
     setError(null)
     try { await rest('/quellen/' + q.id + '/schreibbar', { method: 'POST', body: { mandant: MANDANT, nur_lesen: !writable } }); setAskWritable(false); onSourcesChanged() } catch (e) { setError(errText(e)) }
   }
+  const canWrite = !!(q && !q.nur_lesen)
+  const startRename = () => {
+    const e = entries.find((x) => x.name === active)
+    if (!e) { host.notify({ kind: 'warning', message: 'Trove: ' + t('clickEntryFirst') }); return }
+    setEdit({ mode: 'rename', value: e.name, from: e.name })
+  }
+  const submitEdit = async () => {
+    if (!edit || edit.busy || !edit.value.trim()) return
+    const value = edit.value.trim()
+    setEdit({ ...edit, busy: true }); setError(null)
+    try {
+      if (edit.mode === 'rename') {
+        await rest('/umbenennen', { method: 'POST', body: { mandant: MANDANT, quelle: q.id, pfad: state.pfad || '', name: edit.from, neu: value } })
+        host.notify({ kind: 'info', message: 'Trove: ' + t('renamed', edit.from, value) })
+        setActive(value); setSelection(selection.map((n) => n === edit.from ? value : n))
+      } else {
+        await rest('/ordner-neu', { method: 'POST', body: { mandant: MANDANT, quelle: q.id, pfad: state.pfad || '', name: value } })
+        host.notify({ kind: 'info', message: 'Trove: ' + t('folderCreated', value) })
+      }
+      setEdit(null); load()
+    } catch (e) {
+      const m = errText(e)
+      setError(/receipt log is busy/.test(m) ? t('logBusy') : /is used as /.test(m) ? t('inUse') : m); setEdit({ ...edit, busy: false })
+    }
+  }
   const fileBtn = (text, art, title) => btn(text, () => fileAction(art), active ? { title } : { title: t('clickFileFirst'), disabled: true })
   const preview = jsx(Preview, { source: q && q.id, entry: entries.find((e) => e.name === active) })
   const bottom = panel && panel.art === 'wissen' ? jsx(IntoKnowledge, { r: panel }) : panel ? jsx(ResultPanel, { r: panel, back: () => setPanel(null) }) : preview
@@ -270,10 +309,18 @@ function Side({ side, sources, state, setState, selection, setSelection, reload,
         ...parts.map((p, i) => jsxs('span', { children: [' / ', jsx('button', { className: 'underline', onClick: () => go(parts.slice(0, i + 1).join('/')), children: p })] }, i))] }) : jsx('span', { style: { flex: '1 1 140px' } }),
       q ? btn(list && list.indexiert ? t('indexed') : t('indexFiles'), register, { title: t('indexTip') }) : null,
       q ? btn(t('checkChanges'), checkChanges, { title: t('checkChangesTip') }) : null,
+      q ? jsxs('select', { className: selectCls, 'aria-label': t('sortBy'), title: t('sortTip'), value: sort.key, onChange: (e) => setSort({ ...sort, key: e.target.value }), children: SORT_KEYS.map((k) => jsx('option', { value: k, children: t('sortBy') + ': ' + t('sort' + k.charAt(0).toUpperCase() + k.slice(1)) }, k)) }) : null,
+      q ? btn(sort.dir === 'desc' ? '↓' : '↑', () => setSort({ ...sort, dir: sort.dir === 'desc' ? 'asc' : 'desc' }), { title: t('sortDirTip', sort.dir === 'desc' ? t('sortDesc') : t('sortAsc')) }) : null,
       q ? jsxs('select', { className: selectCls, value: filter, onChange: (e) => setFilter(e.target.value), children: [jsx('option', { value: 'all', children: t('fAll') }), jsx('option', { value: 'only', children: t('fDup') }), jsx('option', { value: 'without', children: t('fNoDup') })] }) : null,
       jsx(Button, { size: 'sm', disabled: !!knowledgeReason, title: knowledgeReason ? t('notNow', knowledgeReason) : t('intoKnowledgeTip'), onClick: intoKnowledge, children: knowledgeReason ? t('intoKnowledge') + ' – ' + knowledgeReason : picked.length ? t('intoKnowledgeN', picked.length) : t('intoKnowledgeAll') })
     ] }),
     error ? jsx('div', { className: 'text-xs text-destructive', children: error }) : null,
+    edit ? jsxs('div', { 'data-zeile': 'bearbeiten', className: box + ' p-2 text-xs flex gap-2 items-center flex-wrap', children: [
+      jsx('span', { className: quiet, children: edit.mode === 'rename' ? t('renameLabel', edit.from) : t('newFolderLabel') }),
+      jsx(Input, { autoFocus: true, placeholder: t('newNamePlaceholder'), value: edit.value, className: 'text-xs flex-1', style: { minWidth: 140 }, onChange: (e) => setEdit({ ...edit, value: e.target.value }),
+        onKeyDown: (e) => { if (e.key === 'Enter') submitEdit(); else if (e.key === 'Escape') setEdit(null) } }),
+      jsx(Button, { size: 'sm', disabled: edit.busy || !edit.value.trim(), onClick: submitEdit, children: t('confirmBtn') }),
+      jsx(Button, { size: 'sm', variant: 'ghost', onClick: () => setEdit(null), children: t('cancel') })] }) : null,
     changes ? jsxs('div', { className: box + ' p-2 text-xs', children: [
       jsx('span', { className: 'font-medium', children: changes.laeuft ? t('checkingChanges') : t('changesRun', changes.lauf) + (changes.erster_lauf ? ' ' + t('baselineTaken') : '') + ': ' + Object.entries(changes.zusammen || {}).map(([k, v]) => k + ' ' + v).join(' · ') }),
       !changes.laeuft ? jsx(Button, { size: 'sm', variant: 'ghost', onClick: () => setChanges(null), children: '×' }) : null,
@@ -293,6 +340,8 @@ function Side({ side, sources, state, setState, selection, setSelection, reload,
     ] }),
     jsxs('div', { 'data-zeile': 'fuss', className: 'text-xs', style: BAR, children: [
       jsx('span', { className: quiet, style: { whiteSpace: 'nowrap' }, children: list ? t('entriesMarked', list.eintraege.length, selection.length) : '' }),
+      btn(t('renameBtn'), startRename, !canWrite ? { title: q ? t('needWritableTip') : t('chooseSource'), disabled: true } : active ? { title: t('renameTip') } : { title: t('clickEntryFirst'), disabled: true }),
+      btn(t('newFolderBtn'), () => setEdit({ mode: 'mkdir', value: '' }), canWrite ? { title: t('newFolderTip') } : { title: q ? t('needWritableTip') : t('chooseSource'), disabled: true }),
       fileBtn(t('read'), 'lesen', t('readTip')),
       fileBtn(t('split'), 'stapel', t('splitTip')),
       jsxs('span', { 'data-paar': true, style: { ...PAIR, marginLeft: 'auto' }, children: [
@@ -524,7 +573,15 @@ const EN = {
   tasksTitle: 'Tasks for your agents (Hermes Kanban)', nOpen: (n) => n + ' open', close: 'close', newTask: '+ Task',
   taskTitlePlaceholder: 'Title (e.g. review the batch in the left source and list duplicates)', taskTextPlaceholder: 'Task text: what exactly should be done. The card stays blocked until you release it.',
   agent: 'Agent:', defaultAgent: '(Hermes default)', creating: 'creating …', titleFirst: 'enter a title or text first', createCard: 'Create card (blocked)',
-  startsAfterRelease: 'The agent starts only after you press "Release" in the list.', release: 'Release', archive: 'Archive'
+  startsAfterRelease: 'The agent starts only after you press "Release" in the list.', release: 'Release', archive: 'Archive',
+  sortBy: 'Sort', sortName: 'Name', sortSize: 'Size', sortDate: 'Date modified', sortType: 'Type', sortAsc: 'ascending', sortDesc: 'descending',
+  sortTip: 'Sort this pane (folders always first)', sortDirTip: (d) => 'Sort order: ' + d + '. Click to reverse.',
+  renameBtn: 'Rename', renameTip: 'Rename the clicked file or folder (never overwrites)', newFolderBtn: 'New folder', newFolderTip: 'Create a new folder here',
+  needWritableTip: 'This folder is read-only. Mark it as writable first.', clickEntryFirst: 'click a file or folder first',
+  renameLabel: (n) => 'Rename "' + n + '" to:', newFolderLabel: 'Name of the new folder:', newNamePlaceholder: 'name', confirmBtn: 'OK',
+  logBusy: 'The receipt log is busy right now (another run is writing to it). Nothing was changed. Try again in a moment.',
+  inUse: 'This folder is used as a source or watched by "Into knowledge". Renaming it would break that. Remove it there first.',
+  renamed: (a, b) => 'renamed "' + a + '" to "' + b + '"', folderCreated: (n) => 'folder "' + n + '" created'
 }
 // </i18n:en>
 // <i18n:de>
@@ -583,6 +640,14 @@ const DE = {
   tasksTitle: 'Aufträge an deine Agenten (Hermes Kanban)', nOpen: (n) => n + ' offen', close: 'schließen', newTask: '+ Auftrag',
   taskTitlePlaceholder: 'Titel (z. B. Belegstapel in der linken Quelle sichten und Dubletten listen)', taskTextPlaceholder: 'Auftragstext: was genau getan werden soll. Die Karte bleibt gesperrt, bis du sie freigibst.',
   agent: 'Agent:', defaultAgent: '(Hermes-Standard)', creating: 'lege an …', titleFirst: 'erst Titel oder Text eingeben', createCard: 'Karte anlegen (gesperrt)',
-  startsAfterRelease: 'Der Agent startet erst nach „Freigeben“ in der Liste.', release: 'Freigeben', archive: 'Archivieren'
+  startsAfterRelease: 'Der Agent startet erst nach „Freigeben“ in der Liste.', release: 'Freigeben', archive: 'Archivieren',
+  sortBy: 'Sortierung', sortName: 'Name', sortSize: 'Größe', sortDate: 'Änderungsdatum', sortType: 'Typ', sortAsc: 'aufsteigend', sortDesc: 'absteigend',
+  sortTip: 'Dieses Fenster sortieren (Ordner stehen immer oben)', sortDirTip: (d) => 'Reihenfolge: ' + d + '. Klick kehrt sie um.',
+  renameBtn: 'Umbenennen', renameTip: 'Angeklickte Datei oder angeklickten Ordner umbenennen (überschreibt nie)', newFolderBtn: 'Neuer Ordner', newFolderTip: 'Hier einen neuen Ordner anlegen',
+  needWritableTip: 'Dieser Ordner ist nur lesbar. Zuerst auf „beschreibbar“ stellen.', clickEntryFirst: 'erst eine Datei oder einen Ordner anklicken',
+  renameLabel: (n) => '„' + n + '“ umbenennen in:', newFolderLabel: 'Name des neuen Ordners:', newNamePlaceholder: 'Name', confirmBtn: 'OK',
+  logBusy: 'Das Belegprotokoll ist gerade belegt (ein anderer Lauf schreibt hinein). Es wurde nichts geändert. Gleich noch einmal versuchen.',
+  inUse: 'Dieser Ordner ist als Quelle eingetragen oder wird von „Ins Wissen“ beobachtet. Umbenennen würde das zerstören. Zuerst dort entfernen.',
+  renamed: (a, b) => '„' + a + '“ umbenannt in „' + b + '“', folderCreated: (n) => 'Ordner „' + n + '“ angelegt'
 }
 // </i18n:de>

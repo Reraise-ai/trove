@@ -40,6 +40,7 @@ Alte eigenständige Anbindungen, die Zugangsdaten lasen, liegen in [`extras/`](e
 - *Kopieren*: wird durch Zurücklesen und sha256-Prüfsumme bestätigt; vorhandene Dateien werden nie überschrieben.
 - *Verschieben*: kopiert, prüft und **löscht dann das Original**. Quelle und Ziel müssen beschreibbar sein; es braucht einen zweiten Klick.
 - *Abgleichen*: kopiert fehlende Dateien von links nach rechts, überschreibt nie.
+- *Umbenennen* und *Neuer Ordner*: nur in beschreibbaren Ordnern, überschreiben nie einen vorhandenen Eintrag, nehmen nur einen schlichten Namen (kein Pfad, kein `..`, keine unter Windows reservierten Namen) und landen im Belegprotokoll.
 
 **Was Trove außerhalb deiner Ordner schreibt:** den eigenen Datenordner (`TROVE_DATEN`, Standard `~/Trove`: Belegprotokoll, Dateiregister, Quellenliste, Aufgabenliste);
 bei „Ins Wissen“ Markdown-Zwillinge unter `<wiki>/../raw/trove/` und Karten unter `<wiki>/quellen/` (Standard-Wiki: `<TROVE_DATEN>/knowledge/wiki`, oder `TROVE_WIKI`)
@@ -62,7 +63,7 @@ Ohne dass du ihn startest, passiert nichts davon.
 ## Was heute funktioniert
 
 Trove ist in früher Alpha. Eine Tabelle mit allen Funktionen und ihrem Stand steht in der [englischen README](README.md#what-works-today).
-Kurz: zwei Spalten mit Vorschau, verifiziertes Kopieren/Verschieben/Abgleichen, Änderungsprüfung, Suche, PDF-Stapel trennen, Aufgaben an Hermes-Agenten (gesperrt bis zur Freigabe),
+Kurz: zwei Spalten mit Vorschau und Sortierung (Name, Größe, Datum, Typ), verifiziertes Kopieren/Verschieben/Abgleichen, Umbenennen und neuer Ordner, Änderungsprüfung, Suche, PDF-Stapel trennen, Aufgaben an Hermes-Agenten (gesperrt bis zur Freigabe),
 fälschungssicheres Protokoll, Belege lesen (E-Rechnung → PDF-Text → lokale OCR) mit Regelprüfung für Deutschland und Argentinien, „Ins Wissen“ (Zwilling + Karte).
 
 ## Schnellstart

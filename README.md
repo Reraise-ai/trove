@@ -112,10 +112,11 @@ agent fetch them with Hermes's own connections and save them into a source folde
 live in [`extras/`](extras/integrations/README.md), outside the plugin, and are not part of the catalog build.)
 
 **Write permission is per folder.** A folder you add is **read-only**. You switch it to writable per folder, with a confirmation, and can switch
-it back. Trove only writes into writable folders (copy, move, sync, and the twin files of "Into knowledge" if they land in one):
+it back. Trove only writes into writable folders (copy, move, sync, rename, new folder, and the twin files of "Into knowledge" if they land in one):
 - *Copy* is verified by reading the copy back and comparing the sha256 checksum. Existing files are never overwritten (conflicts are logged).
 - *Move* copies, verifies, and **then deletes the original**. It needs the source and the target to be writable, and asks for a second click.
 - *Sync* copies missing files from the left folder to the right folder and never overwrites.
+- *Rename* and *New folder* work only in writable folders, never overwrite an existing entry, accept a single plain name (no path, no `..`, no names Windows reserves) and are entered in the receipt log.
 
 **What Trove writes outside your folders** (all under your control):
 - Its own data folder (`TROVE_DATEN`, default `~/Trove`): the receipt log (`belegprotokoll`), the file register (`register.db`), the list of sources, the task list.
@@ -152,7 +153,7 @@ Trove is early alpha. Here is what exists and what is next.
 | | Check changes: new, gone, moved, changed from outside | ✅ |
 | | Search the file register and the receipt log | ✅ |
 | | Split PDF stacks into single documents (via [Stirling-PDF](https://github.com/Stirling-Tools/Stirling-PDF)) | ✅ |
-| | Rename, new folder, sort | 🔜 |
+| | Rename, new folder, sort (name, size, date, type; folders first) | ✅ |
 | | Print, merge PDFs, compare file contents | 🔜 |
 | **Agents** | Tasks for Hermes agents (Kanban), blocked until you release them | ✅ |
 | | MCP access, so other agent systems use the same desk and approval step | 🔜 |

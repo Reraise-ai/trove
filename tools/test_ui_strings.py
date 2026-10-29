@@ -57,7 +57,7 @@ kde = SCHLUESSEL.findall(m_de.group(1))
 pruefe(len(ken) == len(set(ken)) and len(kde) == len(set(kde)), "no duplicate keys inside a bundle")
 pruefe(set(ken) == set(kde), "en and de have the same keys" + ("" if set(ken) == set(kde) else " (diff: %s)" % sorted(set(ken) ^ set(kde))))
 verwendet = set(re.findall(r"\b[tT]\('([A-Za-z_][A-Za-z0-9_]*)'\s*[,)]", ohne_de))
-dynamisch = {"act_": ["kopieren", "verschieben", "sync", "lesen", "stapel", "spur"], "art_": ["lesen", "stapel"],
+dynamisch = {"sort": ["Name", "Size", "Date", "Type"], "act_": ["kopieren", "verschieben", "sync", "lesen", "stapel", "spur"], "art_": ["lesen", "stapel"],
              "trace_": ["direkt", "rueckwaerts", "vorwaerts", "gleicher_inhalt"]}
 for pre, namen in dynamisch.items():
     verwendet |= {pre + n for n in namen}
