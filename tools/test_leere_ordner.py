@@ -80,6 +80,15 @@ def main():
         r = aktion("verschieben", ["clash"])
         pruef("name clash at target: source folder kept, file untouched", os.path.isdir(os.path.join(von, "clash"))
               and os.path.isfile(os.path.join(nach, "clash")) and r.status_code == 200 and r.json()["ergebnis"][0]["konflikt"] == 1, r.text)
+        # an empty folder is never created through a link inside the target (B3); a move keeps it at the source
+        os.makedirs(os.path.join(von, "lk", "leer_unten"))
+        os.makedirs(os.path.join(nach, "lk"))
+        draussen = os.path.join(tmp, "draussen")
+        os.makedirs(draussen)
+        os.symlink(draussen, os.path.join(nach, "lk", "leer_unten"))
+        r = aktion("verschieben", ["lk"])
+        pruef("empty folder not created through a target link, source kept", r.status_code == 200 and os.listdir(draussen) == []
+              and os.path.isdir(os.path.join(von, "lk", "leer_unten")) and r.json()["ergebnis"][0]["konflikt"] == 1, (r.text, os.listdir(draussen)))
         pruef("receipt-log chain ok", bp.pruefen(bp.pfad_fuer(mod.MANDANT)).get("kette") == "ok")
         if fehler:
             sys.exit("FAILED: " + ", ".join(fehler))

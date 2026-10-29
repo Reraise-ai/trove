@@ -623,8 +623,8 @@ def aktion(body: dict):
                         continue
                     ziel_d = os.path.join(nach_ordner, rel_d)
                     grund = _ziel_sicher(qn["pfad"], ziel_d)  # B3: no folder is created through a link inside the target
-                    if grund:
-                        zusammen["fehler"] += 1
+                    if grund:  # counted as a conflict (the files below are counted one by one); a move keeps the source folder
+                        zusammen["konflikt"] += 1
                         prot.schreiben("fehler", quelle=wurzel, ziel=ziel_d, werkzeug="trove-plugin", mandant=mandant, lauf=lauf,
                                        meldung="folder not created (%s); source kept" % grund)
                         dirs[:] = []

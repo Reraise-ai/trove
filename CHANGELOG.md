@@ -35,7 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   DocuSeal origin.
 - **Links are never followed**: copy, move, sync, rename, new folder, the file register and MCP requests refuse an entry
   that is a link or a path that goes through one; links inside a copied or moved folder are skipped and logged. This covers
-  symlinks and Windows NTFS junctions (one check, `ist_verknuepfung`).
+  symlinks, Windows NTFS junctions and other redirecting reparse points (one check, `ist_verknuepfung`). Nothing is written
+  through a link inside the target (checked per file and folder; on a move the original is kept).
 - Releasing or archiving an MCP request works only through the local dashboard (loopback host, JSON with confirmation);
   at most 50 open MCP requests in total.
 
