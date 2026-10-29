@@ -16,8 +16,9 @@ import tempfile
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DASH = os.path.join(REPO, "plugin", "dashboard")
 SELBSTTESTS = [("belegprotokoll.py", "--selbsttest"), ("gemeinsam.py",), ("konfig.py",), ("oeffentlich.py",), ("wissenskarte.py",),
-               ("wissen.py", "--selbsttest")]
-EXTRAS = os.path.join(REPO, "extras", "integrations")
+               ("wissen.py", "--selbsttest"),
+               # optional integrations: credentials only from a Hermes mock, services only on 127.0.0.1 (never real ones)
+               ("zugang.py",), ("docuseal.py",), ("mail_abholer.py",), ("spiegel_erpnext.py", "--selbsttest"), ("reraise_hochladen.py", "--selbsttest")]
 
 
 def lauf(cmd, cwd, env=None):
@@ -31,8 +32,6 @@ def lauf(cmd, cwd, env=None):
 
 def main():
     erg = [lauf(list(t), DASH) for t in SELBSTTESTS]
-    if os.path.isdir(EXTRAS):
-        erg.append(lauf([os.path.join(REPO, "tools", "run_extras_tests.py")], REPO))
     erg.append(lauf([os.path.join(REPO, "tools", "installieren.py"), "--selbsttest"], REPO))
     erg.append(lauf([os.path.join(REPO, "tools", "test_wissen.py")], REPO))
     erg.append(lauf([os.path.join(REPO, "tools", "test_ui_strings.py")], REPO))

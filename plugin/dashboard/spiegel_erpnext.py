@@ -1,76 +1,69 @@
-"""Trove F11 — Spiegel des Belegprotokolls in ERPNext (A-09) und Historie je Dokument.
+"""Trove F11 — mirror of the receipt log into the user's OWN ERPNext, plus history per document (optional, inactive by default).
 
-Datei bleibt die Wahrheit (F8); ERPNext bekommt einen Spiegel fuer Suche und Verknuepfung im Betrieb:
-  Doctype "Trove Belegereignis": eine Zeile je Protokollzeile (nr, zeit, ereignis, quelle, ziel, sha256, ...) — nur anfuegend.
-  Doctype "Trove Beleg": ein Satz je Inhalt (sha256) mit letztem Ort, erster Sicht, Anzahl Ereignisse und den Feldern aus dem
-  Zwilling (Datum, Brutto, Waehrung, Rechnungsnummer, Aussteller-Kennung) — die Geschaeftshistorie aus dem Inhalt.
-Stand je Mandant: <TROVE_DATEN>\\<mandant>\\spiegel_erpnext.json (letzte gespiegelte nr) und spiegel_belege.json (Marke je sha256); je ein Lauf
-(belegprotokoll.Sperre art "lauf" auf spiegel_erpnext.lock / spiegel_belege.lock; belegt -> LaufLaeuft).
-Zugang (je Aufruf frisch, Reihenfolge Umgebung > trove.json "umgebung" > Standard nur unter Windows):
-  TROVE_ERPNEXT       Basis-URL            (Pflichtangabe, keine Vorgabe)
-  TROVE_ERPNEXT_HOST  Host-Kopf, optional  (keine Vorgabe)
-  TROVE_ERPNEXT_KEYS  Ordner mit api_key.txt / api_secret.txt (Pflichtangabe)
-Schluessel nie im Code, nie im Repo. Auf Mac/Linux ohne Konfiguration -> NichtEingerichtet (kein stiller Windows-Pfad).
-Einrichten (einmalig, mit Administrator-Zugang): Doctypes wie auf dem Server, Rolle "Trove Spiegel" nur fuer diese zwei Doctypes,
-Agentenbenutzer trove-mirror@erp.example nur mit dieser Rolle, API-Schluessel in den Schluesselordner (0600), trove.json "umgebung".
+The file stays the truth (F8); ERPNext, the user's accounting system, gets a mirror for search and linking:
+  Doctype "Trove Belegereignis": one row per log line (nr, time, event, source, target, sha256, ...), append-only.
+  Doctype "Trove Beleg": one record per content (sha256) with last location, first sighting, number of events and the fields of the
+  twin (date, gross, currency, invoice number, issuer id).
+State per client: <TROVE_DATEN>/<client>/spiegel_erpnext.json (last mirrored line) and spiegel_belege.json (mark per sha256); one run at a
+time (belegprotokoll.Sperre "lauf" on spiegel_erpnext.lock / spiegel_belege.lock; busy -> LaufLaeuft).
+Configuration only through Hermes: setting erpnext_url (no default), optional erpnext_host_header, secrets TROVE_ERPNEXT_API_KEY and
+TROVE_ERPNEXT_API_SECRET (an API key pair the user creates in ERPNext for a user with the role "Trove Spiegel"). Without them every call
+raises zugang.NichtEingerichtet and nothing goes out. Trove never asks for an administrator password; doctypes_anlegen() uses the
+configured key and needs a key whose user may create doctypes (or the user creates the two doctypes by hand).
 """
-import argparse, http.cookiejar, json, os, sys, time, urllib.parse, urllib.request
+import json, os, sys, urllib.error, urllib.parse, urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "plugin", "dashboard"))  # Trove core modules
 import belegprotokoll as bp
-import konfig
+import zugang
+from zugang import NichtEingerichtet
 
 DT_EREIGNIS, DT_BELEG = "Trove Belegereignis", "Trove Beleg"
-ROLLE, AGENT = "Trove Spiegel", "trove-mirror@erp.example"
-WINDOWS_STANDARD = {}
+ROLLE = "Trove Spiegel"
 
 
-class NichtEingerichtet(RuntimeError):
-    pass
-
-
-def einstellung(var):
-    """Umgebung > trove.json "umgebung" (frisch gelesen, wirkt ohne Neuladen) > Windows-Standard (nur win32)."""
-    w = os.environ.get(var)
-    if w:
-        return w
+def eingerichtet():
+    """(active, missing settings) without any network call."""
+    fehlt = []
     try:
-        w = (konfig.lesen().get("umgebung") or {}).get(var)
-    except (OSError, ValueError):
-        w = None
-    if w:
-        return str(w)
-    return WINDOWS_STANDARD.get(var) if sys.platform == "win32" else None
-
-
-def ziel():
-    url, keys = einstellung("TROVE_ERPNEXT"), einstellung("TROVE_ERPNEXT_KEYS")
-    if not url or not keys:
-        raise NichtEingerichtet("ERPNext-Spiegel nicht eingerichtet: TROVE_ERPNEXT und TROVE_ERPNEXT_KEYS fehlen (trove.json umgebung) - "
-                                "einmalig: spiegel_erpnext.py einrichten --url ... --schluessel ...")
-    return url.rstrip("/"), einstellung("TROVE_ERPNEXT_HOST"), keys
+        if not zugang.url_einstellung("erpnext_url"):
+            fehlt.append("erpnext_url")
+    except NichtEingerichtet:
+        fehlt.append("erpnext_url")
+    for n in (zugang.ERPNEXT_KEY, zugang.ERPNEXT_SECRET):
+        if not zugang.ist_gesetzt(n):
+            fehlt.append(n)
+    return not fehlt, fehlt
 
 
 def _kopf():
-    url, host, keys = ziel()
-    k = open(os.path.join(keys, "api_key.txt")).read().strip()
-    s = open(os.path.join(keys, "api_secret.txt")).read().strip()
+    url = zugang.url_einstellung("erpnext_url")
+    k, s = zugang.geheimnis(zugang.ERPNEXT_KEY), zugang.geheimnis(zugang.ERPNEXT_SECRET)
+    if not (url and k and s):
+        raise NichtEingerichtet("ERPNext mirror is not configured in Hermes (erpnext_url, %s, %s)" % (zugang.ERPNEXT_KEY, zugang.ERPNEXT_SECRET))
     h = {"Authorization": "token %s:%s" % (k, s), "Content-Type": "application/json", "Accept": "application/json"}
+    host = str(zugang.einstellung("erpnext_host_header") or "").strip()
     if host:
         h["Host"] = host
     return url, h
 
 
-def api(path, body=None, method=None, timeout=120, zugang=None):
-    """zugang: (url, kopf, oeffner) fuer den Einrichter (Administrator-Sitzung); sonst Agenten-Schluessel aus der Konfiguration."""
-    url, kopf, oeffner = zugang if zugang else (*_kopf(), urllib.request.urlopen)
+class _KeinUmleiten(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *a, **k):
+        return None  # a redirect would carry the key elsewhere
+
+
+OPENER = urllib.request.build_opener(_KeinUmleiten)
+
+
+def api(path, body=None, method=None, timeout=120):
+    url, kopf = _kopf()
     req = urllib.request.Request(url + path, data=json.dumps(body).encode() if body is not None else None, method=method or ("POST" if body is not None else "GET"), headers=kopf)
     try:
-        with oeffner(req, timeout=timeout) as h:
+        with OPENER.open(req, timeout=timeout) as h:
             return h.status, json.loads(h.read() or b"{}")
     except urllib.error.HTTPError as e:
-        return e.code, e.read().decode("utf-8", "replace")[:600]
+        return e.code, zugang.schwaerzen(e.read().decode("utf-8", "replace")[:600])
 
 
 def feld(fieldname, label, fieldtype="Data", **kw):
@@ -108,16 +101,16 @@ def definitionen():
             "permissions": RECHTE + [RECHTE_AGENT]}}
 
 
-def doctypes_anlegen(zugang=None):
-    """Legt fehlende Doctypes an, ruestet "zeile" nach und traegt die Agentenrolle nach (idempotent). Braucht Administrator-Rechte."""
-    q = lambda *a, **k: api(*a, zugang=zugang, **k)
+def doctypes_anlegen():
+    """Creates missing doctypes, adds "zeile" and the mirror role (idempotent). Needs a key whose user may create doctypes."""
+    q = api
     if not q("/api/resource/Role/" + urllib.parse.quote(ROLLE))[0] == 200:
         st, r = q("/api/resource/Role", {"role_name": ROLLE, "desk_access": 1})
         if st != 200:
-            raise RuntimeError("Rolle %s: %s %s" % (ROLLE, st, str(r)[:200]))
+            raise RuntimeError("ERPNext role %s: %s %s" % (ROLLE, st, str(r)[:200]))
     st, r = q("/api/resource/DocType?filters=" + urllib.parse.quote(json.dumps([["name", "like", "Trove%"]])) + "&fields=" + urllib.parse.quote(json.dumps(["name"])))
     if st != 200:
-        raise RuntimeError("DocType-Liste: %s %s" % (st, str(r)[:200]))
+        raise RuntimeError("ERPNext doctype list: %s %s" % (st, str(r)[:200]))
     vorhanden = {x["name"] for x in r.get("data", [])}
     ergebnis = {}
     for name, d in definitionen().items():
@@ -138,85 +131,6 @@ def doctypes_anlegen(zugang=None):
             st, r = q("/api/resource/DocType/" + urllib.parse.quote(name), {"permissions": dt["data"]["permissions"] + [RECHTE_AGENT]}, "PUT")
             ergebnis["rolle_" + name] = st if st == 200 else (st, str(r)[:200])
     return {"vorhanden": sorted(vorhanden), "angelegt": ergebnis}
-
-
-def _admin_sitzung(url, benutzer, passwort, host=None):
-    oeffner = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar())).open
-    kopf = {"Content-Type": "application/json", "Accept": "application/json", **({"Host": host} if host else {})}
-    st, r = api("/api/method/login", {"usr": benutzer, "pwd": passwort}, zugang=(url, kopf, oeffner))
-    if st != 200:
-        raise RuntimeError("Administrator-Anmeldung abgelehnt (%s)" % st)
-    return url, kopf, oeffner
-
-
-def zugang_aus_datei(pfad):
-    """ERPNext-Zugangsdatei (Zeilen "Schluessel: Wert"); liefert nur Administrator-Benutzer/-Passwort, gibt nichts aus."""
-    z = {}
-    with open(pfad, encoding="utf-8") as f:
-        for l in f:
-            if ":" in l:
-                k, v = l.split(":", 1)
-                z[k.strip()] = v.strip()
-    return z.get("Administrator-Benutzer") or "Administrator", z["Administrator-Passwort"]
-
-
-def _agent_prueft(url, host, keys):
-    try:
-        k = open(os.path.join(keys, "api_key.txt")).read().strip(); s = open(os.path.join(keys, "api_secret.txt")).read().strip()
-    except OSError:
-        return False
-    kopf = {"Authorization": "token %s:%s" % (k, s), "Accept": "application/json", **({"Host": host} if host else {})}
-    st, r = api("/api/method/frappe.auth.get_logged_user", zugang=(url, kopf, urllib.request.urlopen))
-    return st == 200 and r.get("message") == AGENT
-
-
-def einrichten(url, schluessel, benutzer, passwort, host=None, konfig_schreiben=True):
-    """Einmalig mit Administrator-Zugang: Rolle + Doctypes, Agentenbenutzer nur mit ROLLE, Schluessel (0600), trove.json umgebung."""
-    url = url.rstrip("/")
-    za = _admin_sitzung(url, benutzer, passwort, host)
-    erg = {"doctypes": doctypes_anlegen(za)}
-    q = lambda *a, **k: api(*a, zugang=za, **k)
-    st, r = q("/api/resource/User/" + urllib.parse.quote(AGENT))
-    if st != 200:
-        st, r = q("/api/resource/User", {"email": AGENT, "first_name": "Trove Spiegel", "user_type": "System User", "send_welcome_email": 0, "enabled": 1, "roles": [{"role": ROLLE}]})
-        if st != 200:
-            raise RuntimeError("Agentenbenutzer: %s %s" % (st, str(r)[:200]))
-        erg["agent"] = "angelegt"
-    else:
-        rollen = sorted(x["role"] for x in r["data"].get("roles", []))
-        if rollen != [ROLLE]:  # nur diese eine Rolle (minimal)
-            st, r = q("/api/resource/User/" + urllib.parse.quote(AGENT), {"roles": [{"role": ROLLE}], "user_type": "System User", "enabled": 1}, "PUT")
-        erg["agent"] = "vorhanden"
-    os.makedirs(schluessel, exist_ok=True)
-    os.chmod(schluessel, 0o700)
-    if _agent_prueft(url, host, schluessel):
-        erg["schluessel"] = "vorhanden und gueltig"
-    else:
-        st, r = q("/api/method/frappe.core.doctype.user.user.generate_keys", {"user": AGENT})
-        if st != 200:
-            raise RuntimeError("Schluessel erzeugen: %s" % st)
-        geheim = r["message"]["api_secret"]
-        schl = r["message"].get("api_key") or q("/api/resource/User/" + urllib.parse.quote(AGENT))[1]["data"]["api_key"]
-        for name, wert in (("api_key.txt", schl), ("api_secret.txt", geheim)):
-            p = os.path.join(schluessel, name)
-            fd = os.open(p + ".neu", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            with os.fdopen(fd, "w") as f:
-                f.write(wert)
-            os.replace(p + ".neu", p)
-        erg["schluessel"] = "neu erzeugt" if _agent_prueft(url, host, schluessel) else "erzeugt, aber Anmeldung scheitert"
-    if konfig_schreiben:
-        k = konfig.lesen()
-        u = dict(k.get("umgebung") or {})
-        u.update({"TROVE_ERPNEXT": url, "TROVE_ERPNEXT_KEYS": schluessel})
-        if host:
-            u["TROVE_ERPNEXT_HOST"] = host
-        k["umgebung"] = u
-        p = konfig.konfig_pfad()
-        with open(p + ".neu", "w", encoding="utf-8") as f:
-            json.dump(k, f, ensure_ascii=False, indent=1)
-        os.replace(p + ".neu", p)
-        erg["konfig"] = p
-    return erg
 
 
 def _stand_pfad(mandant, name="spiegel_erpnext.json"):
@@ -274,7 +188,7 @@ def spiegeln(mandant, max_zeilen=None, batch=200):
                 docs.append(d)
             st, r = api("/api/method/frappe.client.insert_many", {"docs": docs}, timeout=600)
             if st != 200:
-                raise RuntimeError("insert_many fehlgeschlagen bei Zeile %d: %s %s" % (teil[0]["_zeile"], st, str(r)[:300]))
+                raise RuntimeError("ERPNext insert_many failed at line %d: %s %s" % (teil[0]["_zeile"], st, str(r)[:300]))
             gesendet += len(teil)
             s["letzte_zeile"] = teil[-1]["_zeile"]; s["letzte_nr"] = teil[-1]["nr"]
             stand_speichern(mandant, s)
@@ -330,18 +244,18 @@ def belege_aktualisieren(mandant, max_belege=None):
             teil = docs[i:i + 100]
             st, r = api("/api/method/frappe.client.get_list", {"doctype": DT_BELEG, "filters": [["sha256", "in", [t[0] for t in teil]]], "fields": ["name"], "limit_page_length": 1000})
             if st != 200:
-                raise RuntimeError("get_list Belege: %s %s" % (st, str(r)[:300]))
+                raise RuntimeError("ERPNext get_list documents: %s %s" % (st, str(r)[:300]))
             da = {x["name"] for x in r.get("message", [])}
             neu = [d for sha, m, d in teil if sha not in da]
             if neu:
                 st, r = api("/api/method/frappe.client.insert_many", {"docs": neu}, timeout=600)
                 if st != 200:
-                    raise RuntimeError("insert_many Belege: %s %s" % (st, str(r)[:300]))
+                    raise RuntimeError("ERPNext insert_many documents: %s %s" % (st, str(r)[:300]))
             for sha, m, d in teil:
                 if sha in da:
                     st, r = api("/api/resource/%s/%s" % (urllib.parse.quote(DT_BELEG), sha), {k: v for k, v in d.items() if k not in ("doctype", "sha256")}, method="PUT")
                     if st != 200:
-                        raise RuntimeError("PUT Beleg %s: %s %s" % (sha[:12], st, str(r)[:200]))
+                        raise RuntimeError("ERPNext update document %s: %s %s" % (sha[:12], st, str(r)[:200]))
                 s["belege"][sha] = m
             gesendet += len(teil)
             stand_speichern(mandant, s, "spiegel_belege.json")
@@ -375,43 +289,54 @@ def _selbsttest():
         g["api"], bp.WURZEL = alt
 
 
-def main():
-    if sys.argv[1:] == ["--selbsttest"]:
-        _selbsttest()
-        print("selbsttest ok")
-        return
-    ap = argparse.ArgumentParser(description="Trove F11 ERPNext-Spiegel")
-    sub = ap.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("doctypes")
-    s = sub.add_parser("einrichten", help="einmalig mit Administrator-Zugang (Datei oder TROVE_ERPNEXT_ADMIN_PASSWORT)")
-    s.add_argument("--url", required=True); s.add_argument("--schluessel", required=True); s.add_argument("--host")
-    s.add_argument("--zugang", help="ERPNext-Zugangsdatei mit Administrator-Benutzer/-Passwort"); s.add_argument("--ohne-konfig", action="store_true")
-    s = sub.add_parser("spiegeln"); s.add_argument("--mandant", default=bp.konfig.mandant()); s.add_argument("--max", type=int)
-    s = sub.add_parser("belege"); s.add_argument("--mandant", default=bp.konfig.mandant()); s.add_argument("--max", type=int)
-    s = sub.add_parser("historie"); s.add_argument("sha256")
-    s = sub.add_parser("zaehlen")
-    a = ap.parse_args()
-    if a.cmd == "einrichten":
-        if a.zugang:
-            ben, pw = zugang_aus_datei(a.zugang)
-        else:
-            ben, pw = os.environ.get("TROVE_ERPNEXT_ADMIN_BENUTZER", "Administrator"), os.environ["TROVE_ERPNEXT_ADMIN_PASSWORT"]
-        print(json.dumps(einrichten(a.url, os.path.expanduser(a.schluessel), ben, pw, a.host, not a.ohne_konfig), ensure_ascii=False))
-    elif a.cmd == "doctypes":
-        print(json.dumps(doctypes_anlegen(), ensure_ascii=False))
-    elif a.cmd == "spiegeln":
-        r = spiegeln(a.mandant, a.max)
-        bp.schreiben(bp.pfad_fuer(a.mandant), ereignis="notiz", werkzeug="spiegel_erpnext.py", mandant=a.mandant, meldung="ERPNext-Spiegel: %d Zeilen gespiegelt bis Zeile %d (nr %d)" % (r["gespiegelt"], r["letzte_zeile"], r["letzte_nr"]))
-        print(json.dumps(r))
-    elif a.cmd == "belege":
-        print(json.dumps(belege_aktualisieren(a.mandant, a.max)))
-    elif a.cmd == "historie":
-        print(json.dumps(historie(a.sha256), ensure_ascii=False, indent=1))
-    elif a.cmd == "zaehlen":
-        for dt in (DT_EREIGNIS, DT_BELEG):
-            st, r = api("/api/method/frappe.client.get_count?doctype=" + urllib.parse.quote(dt))
-            print(dt, st, r.get("message") if st == 200 else r)
+def _selbsttest_zugang():
+    """Inactive without Hermes configuration (no network); with mocked Hermes secrets the key pair goes only to the configured URL
+    and never into the result."""
+    import http.server, tempfile, threading
+    alt = zugang.geheimnis_quelle, zugang.einstellungen_quelle, bp.WURZEL
+    anfragen = []
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def antwort(self):
+            n = int(self.headers.get("Content-Length") or 0)
+            body = json.loads(self.rfile.read(n) or b"{}")
+            anfragen.append((self.command, self.path, self.headers.get("Authorization"), body))
+            d = {"message": []} if "get_list" in self.path else {"message": "ok"}
+            b = json.dumps(d).encode()
+            self.send_response(200); self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
+        do_GET = do_POST = do_PUT = antwort
+
+        def log_message(self, *a):
+            pass
+    srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        with tempfile.TemporaryDirectory() as w:
+            bp.WURZEL = w
+            bp.schreiben(bp.pfad_fuer("t"), ereignis="notiz", meldung="test")
+            zugang.geheimnis_quelle = lambda n: None
+            zugang.einstellungen_quelle = lambda: {}
+            assert eingerichtet() == (False, ["erpnext_url", zugang.ERPNEXT_KEY, zugang.ERPNEXT_SECRET])
+            try:
+                spiegeln("t")
+                raise AssertionError("mirror ran without configuration")
+            except NichtEingerichtet:
+                pass
+            assert not anfragen
+            zugang.geheimnis_quelle = lambda n: {zugang.ERPNEXT_KEY: "erp-key-1234", zugang.ERPNEXT_SECRET: "erp-secret-5678"}.get(n)
+            zugang.einstellungen_quelle = lambda: {"erpnext_url": "http://127.0.0.1:%d" % srv.server_address[1]}
+            assert eingerichtet() == (True, [])
+            r = spiegeln("t")
+            assert r["gespiegelt"] == 1 and "erp-secret-5678" not in json.dumps(r), r
+            ins = [a for a in anfragen if "insert_many" in a[1]]
+            assert ins and ins[0][2] == "token erp-key-1234:erp-secret-5678" and ins[0][3]["docs"][0]["ereignis"] == "notiz", anfragen
+    finally:
+        srv.shutdown()
+        zugang.geheimnis_quelle, zugang.einstellungen_quelle, bp.WURZEL = alt
 
 
 if __name__ == "__main__":
-    main()
+    if sys.argv[1:] == ["--selbsttest"]:
+        _selbsttest()
+        _selbsttest_zugang()
+        print("selbsttest ok")

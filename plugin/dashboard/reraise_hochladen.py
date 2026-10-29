@@ -7,8 +7,8 @@ Harte Regel: nur Zwillinge mit sichtbarkeit "oeffentlich" — und kein Zwilling 
 Kein Zwilling -> "erst Ins Wissen", nichts raten. Karte nur aus der Positivliste oeffentlich.kartenfelder: nichts aus Belegtext
 oder Dateiname; source = "Trove-Beleg sha256 <hex>"; jede Karte geht durch oeffentlich.pruefe_karte.
 Gesendet wird nur, was nach der Probe bestaetigt wurde: --nur-sha <Datei> oder --bestaetigt sha,sha (ohne Liste und ohne --probe:
-Fehler). Schluessel nur aus Datei (TROVE_RERAISE_SCHLUESSEL, Standard ~/.trove/reraise-schluessel.txt), von main gelesen
-und an hochladen() uebergeben. Die Probe liest nur: kein Netz, kein Protokoll, kein Stand, keine Sperre.
+Fehler). Schluessel NUR ueber Hermes (Geheimnis TROVE_RERAISE_KEY, zugang.geheimnis); ohne Schluessel ist die Funktion aus: kein
+Hochladen, keine Probe ueber die Plugin-Oberflaeche (dort nur ein Link auf reraise.ai). Trove legt nie selbst Schluessel an. Die Probe liest nur: kein Netz, kein Protokoll, kein Stand, keine Sperre.
 Reraise kennt fuer Mitglieder kein Loeschen: ein Upload ist endgueltig. Darum nie wiederholen: vor JEDEM POST ein Abgleich per
 GET ?q=<sha256> (gefunden -> "schon_da", gebucht; auch wenn die Stand-Datei verloren ist), dann steht die Pruefsumme in
 reraise.json unter "unterwegs", nach der Buchung nicht mehr. Zurueckgesetzt wird nur bei klar abgewiesener Antwort
@@ -41,13 +41,13 @@ import urllib.request
 from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "plugin", "dashboard"))  # Trove core modules
 import belegprotokoll as bp
 import gemeinsam as gm
 import oeffentlich as oe
+import zugang
+from zugang import NichtEingerichtet
 
-RERAISE = os.environ.get("TROVE_RERAISE", "https://reraise.ai").rstrip("/")
-SCHLUESSEL_DATEI = os.environ.get("TROVE_RERAISE_SCHLUESSEL", os.path.join(os.path.expanduser("~"), ".trove", "reraise-schluessel.txt"))
+RERAISE = "https://reraise.ai"  # fixed; the self-tests point it at 127.0.0.1
 VERSUCHE = 4
 ABGEWIESEN = (400, 401, 403, 413, 422, 429)  # nur diese gelten als "nichts angelegt"; alles andere -> unklar
 WERKZEUG = "reraise_hochladen.py"
@@ -99,15 +99,27 @@ class _KeinUmleiten(urllib.request.HTTPRedirectHandler):
 OPENER = urllib.request.build_opener(_KeinUmleiten)
 
 
+WISSEN_TEST = None  # self-test seam: callable(mandant) -> folder of the twins
+
+
+def wissen_wurzel(mandant):
+    """Folder whose sub-folders are the collections of markdown twins (as written by wissen.py: <wiki>/../raw/trove)."""
+    if WISSEN_TEST is not None:
+        return WISSEN_TEST(mandant)
+    import wissenskarte as wk
+    return os.path.dirname(wk.raw_ziel("x"))
+
+
+def eingerichtet():
+    """True only with a Reraise key in Hermes. No network."""
+    return zugang.ist_gesetzt(zugang.RERAISE_KEY)
+
+
 def _schluessel():
-    try:
-        with open(SCHLUESSEL_DATEI, encoding="utf-8-sig") as f:
-            s = f.read().strip()
-    except OSError:
-        s = ""
+    s = zugang.geheimnis(zugang.RERAISE_KEY)
     if not s or len(s) > 100 or any(c.isspace() for c in s):
-        raise RuntimeError("kein Reraise-Schlüssel in %s (Schlüssel auf reraise.ai/trade/ holen und als Datei dort ablegen; Pfad in TROVE_RERAISE_SCHLUESSEL)"
-                           % (SCHLUESSEL_DATEI or "(TROVE_RERAISE_SCHLUESSEL nicht gesetzt)"))
+        raise NichtEingerichtet("no Reraise key in Hermes (%s): get one on reraise.ai and enter it in the Hermes settings of Trove"
+                                % zugang.RERAISE_KEY)
     return s
 
 
@@ -199,10 +211,9 @@ def senden(karte, schluessel):
             except (OSError, http.client.HTTPException, ValueError):
                 d = {}  # Code ist klar abgewiesen; ohne Body nur keine Einzelheiten
             if e.code == 401:
-                raise AbgewiesenAbbruch(401, "Reraise kennt den Schlüssel nicht (401) — neuen Schlüssel auf reraise.ai/trade/ "
-                                        "holen und in %s legen" % SCHLUESSEL_DATEI)
+                raise AbgewiesenAbbruch(401, "Reraise does not know this key (401): enter a new key in Hermes (%s)" % zugang.RERAISE_KEY)
             if e.code == 403 and d.get("error") == "origin":
-                raise AbgewiesenAbbruch(403, "Reraise lehnt die Herkunft ab (403 origin) — TROVE_RERAISE pruefen: %s" % RERAISE)
+                raise AbgewiesenAbbruch(403, "Reraise rejected the origin (403 origin): %s" % RERAISE)
             if e.code == 429 and d.get("error") == "limit":
                 raise AbgewiesenAbbruch(429, "Tageslimit von Reraise erreicht (30 Karten je Tag); gesendete stehen in "
                                         "reraise.json, morgen weiter")
@@ -247,7 +258,7 @@ def _datei(l, p, sha, stand, probe, schluessel):
         return {**e, "zustand": "unklar", "grund": "in diesem Lauf schon gesendet, Antwort unklar — kein zweiter POST"}
     if l.nur is not None and sha not in l.nur:
         return {**e, "zustand": "nicht_bestaetigt", "grund": "nicht in der bestaetigten Liste der Probe"}
-    wissen = os.path.join(bp.WURZEL, l.mandant, "wissen")
+    wissen = wissen_wurzel(l.mandant)
     privat = oe.privat_irgendwo(wissen, sha, l.index)
     if privat:
         return {**e, "zustand": "verweigert_privat", "grund": "Zwilling in Sammlung %s ist nicht oeffentlich — privat bleibt privat"
@@ -308,7 +319,7 @@ def _dateien(pfad, max_dateien):
     if os.path.isfile(pfad):
         return [pfad]
     if not os.path.isdir(pfad):
-        raise ValueError("nicht gefunden: " + pfad)
+        raise ValueError("not found: " + os.path.basename(pfad))
     dateien = [os.path.join(r, fn) for r, d, f in os.walk(pfad) for fn in sorted(f)
                if fn.lower().endswith(gm.ENDUNGEN) and not fn.startswith("~$")]
     return dateien[:max_dateien] if max_dateien else dateien
@@ -321,11 +332,11 @@ def hochladen(mandant, pfad, sammlung, max_dateien=None, probe=False, nur=None, 
     sperre = contextlib.nullcontext()
     if not probe:
         if nur is None:
-            raise ValueError("ohne bestaetigte Liste (--nur-sha / --bestaetigt) wird nichts gesendet — erst --probe")
+            raise ValueError("nothing is sent without a confirmed list: run the preview first")
         if not RERAISE.startswith("https://"):
-            raise ValueError("TROVE_RERAISE muss mit https:// beginnen: %r" % RERAISE)
+            raise ValueError("Reraise address must start with https://: %r" % RERAISE)
         if not schluessel:
-            raise ValueError("kein Reraise-Schluessel uebergeben")
+            raise NichtEingerichtet("no Reraise key in Hermes")
         sperre = gm.laufsperre(mandant)
     dateien = _dateien(pfad, max_dateien)
     z = {"mandant": mandant, "sammlung": sammlung, "pfad": pfad, "probe": probe, "dateien": len(dateien), "gesendet": 0, "schon_da": 0,
@@ -334,7 +345,7 @@ def hochladen(mandant, pfad, sammlung, max_dateien=None, probe=False, nur=None, 
     erste = {}  # sha256 -> erste Fundstelle in diesem Lauf
     with sperre:
         try:
-            l.index = oe.zwillings_index(os.path.join(bp.WURZEL, mandant, "wissen"))
+            l.index = oe.zwillings_index(wissen_wurzel(mandant))
             stand = stand_lesen(mandant)
             if not probe:
                 _notiz(l, "notiz", meldung="Reraise-Hochladen Start: %s, Sammlung %s, %d Dateien" % (pfad, sammlung, len(dateien)))
@@ -386,7 +397,7 @@ def sha_liste(text):
             falsch.append(s)
         out[sha] = h or None
     if falsch or not out:
-        raise ValueError("bestaetigte Liste leer oder ungueltig: %s" % ", ".join(f[:20] for f in falsch[:3]))
+        raise ValueError("confirmed list empty or invalid: %s" % ", ".join(f[:20] for f in falsch[:3]))
     return out
 
 
@@ -424,6 +435,8 @@ def _http(code, d=None, body_reisst=False):
 
 def _selbsttest():
     """Karte nur aus Kopf-Feldern, Stand-Uebergaenge, sha-Liste; dann hochladen() ganz mit Netz-Attrappe (Temp-Ordner)."""
+    global WISSEN_TEST
+    WISSEN_TEST = lambda m: os.path.join(bp.WURZEL, m, "wissen")
     md = ('---\ntitel: "Juan Perez.pdf"\nquelle: "C:\\\\geheim\\\\r.pdf"\npruefsumme: "%s"\nbrutto: 1210.5\nwaehrung: "ARS"\n'
           'belegdatum: "2026-02-30"\niban: "DE89 3704 0044 0532 0130 00"\nverprobung: "bestanden"\ntraeger: "Person"\n'
           'aussteller_kennung: "20-12345678-9"\nrechnungsnummer: "12.345.678"\nsichtbarkeit: "oeffentlich"\nnotiz: "a\\u2028b"\n'
@@ -503,11 +516,10 @@ def _trockenlauf():
     import io
     import tempfile
     g = globals()
-    alt = bp.WURZEL, OPENER, SCHLUESSEL_DATEI, _prot
+    alt = bp.WURZEL, OPENER, zugang.geheimnis_quelle, _prot
     with tempfile.TemporaryDirectory() as w:
-        g.update(SCHLUESSEL_DATEI=os.path.join(w, "schluessel.txt"))
+        zugang.geheimnis_quelle = lambda n: {zugang.RERAISE_KEY: "k-123"}.get(n)  # Hermes mock
         bp.WURZEL = os.path.join(w, "trove")
-        gm.schreibe_atomar(SCHLUESSEL_DATEI, "k-123\n")
         kaputt = []
 
         def prot(m):
@@ -546,7 +558,7 @@ def _trockenlauf():
                 try:
                     hochladen("t", ein, "oeff", **falsch)
                     raise AssertionError("ohne bestaetigte Liste oder Schluessel gesendet")
-                except ValueError:
+                except (ValueError, NichtEingerichtet):
                     pass
 
             def kaputt_nach_500(i):
@@ -607,7 +619,7 @@ def _trockenlauf():
             _trockenlauf_u1(ein, shas)
         finally:
             bp.WURZEL = alt[0]
-            g.update(OPENER=alt[1], SCHLUESSEL_DATEI=alt[2], _prot=alt[3])
+            g.update(OPENER=alt[1], _prot=alt[3]); zugang.geheimnis_quelle = alt[2]
 
 
 def _main_json(args):
@@ -748,9 +760,9 @@ def main():
     if a.json:
         print(json.dumps(z, ensure_ascii=False))
     else:
-        print("%(dateien)d Dateien: %(gesendet)d gesendet, %(schon_da)d schon da, %(verweigert_privat)d privat verweigert, "
-              "%(ohne_zwilling)d ohne Zwilling, %(gebaut)d gebaut (Probe), %(unklar)d unklar, %(nicht_bestaetigt)d nicht bestaetigt, "
-              "%(dubletten)d Dubletten, %(fehler)d Fehler, %(protokoll_fehler)d Protokollfehler" % z + ("; ABBRUCH: " + z["abbruch"] if "abbruch" in z else ""))
+        print("%(dateien)d files: %(gesendet)d sent, %(schon_da)d already there, %(verweigert_privat)d refused (private), "
+              "%(ohne_zwilling)d without twin, %(gebaut)d built (preview), %(unklar)d unclear, %(nicht_bestaetigt)d not confirmed, "
+              "%(dubletten)d duplicates, %(fehler)d errors, %(protokoll_fehler)d log errors" % z + ("; ABORTED: " + z["abbruch"] if "abbruch" in z else ""))
     return 2 if "abbruch" in z else 0
 
 

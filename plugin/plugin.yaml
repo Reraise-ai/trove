@@ -10,3 +10,38 @@ python_dependencies:
   - "pikepdf>=8,<11"
   - "numpy>=1.26,<3"
   - "pillow>=10,<13"
+# Optional integrations. All are OFF until you fill in these settings in Hermes (Settings -> Plugins -> Trove, or
+# `hermes config`). Secrets are stored by Hermes (.env of the active profile) and read only with agent.secret_scope.get_secret.
+# Nothing here gates loading: Trove works fully without any of them.
+config_schema:
+  docuseal_url: {type: str, default: "", label: "DocuSeal URL", description: "Address of your own DocuSeal (e.g. http://127.0.0.1:3000). Empty = signing off."}
+  docuseal_api_key: {type: secret, env: TROVE_DOCUSEAL_API_KEY, label: "DocuSeal API key", description: "From your DocuSeal: Settings -> API."}
+  erpnext_url: {type: str, default: "", label: "ERPNext URL", description: "Address of your own ERPNext (your accounting system). Empty = mirror off."}
+  erpnext_host_header: {type: str, default: "", label: "ERPNext Host header", description: "Optional. Only if your ERPNext site name differs from its address."}
+  erpnext_api_key: {type: secret, env: TROVE_ERPNEXT_API_KEY, label: "ERPNext API key", description: "API key of an ERPNext user with the role Trove Spiegel."}
+  erpnext_api_secret: {type: secret, env: TROVE_ERPNEXT_API_SECRET, label: "ERPNext API secret", description: "API secret of that user."}
+  imap_host: {type: str, default: "", label: "IMAP server", description: "Mail server for fetching attachments (TLS, port 993). Empty = mail off."}
+  imap_port: {type: int, default: 993, label: "IMAP port"}
+  imap_user: {type: str, default: "", label: "IMAP user name"}
+  imap_folders: {type: str, default: "INBOX", label: "IMAP folders", description: "Comma-separated folder names."}
+  imap_password: {type: secret, env: TROVE_IMAP_PASSWORD, label: "IMAP password", description: "Preferably an app password."}
+  gmail_client_id: {type: secret, env: TROVE_GMAIL_CLIENT_ID, label: "Gmail OAuth client ID", description: "Your own Google Cloud OAuth client (Desktop app). Then sign in once: hermes auth add reraise-trove:gmail"}
+  gmail_client_secret: {type: secret, env: TROVE_GMAIL_CLIENT_SECRET, label: "Gmail OAuth client secret"}
+  gmail_query: {type: str, default: "", label: "Gmail search", description: "Optional Gmail search, e.g. has:attachment newer_than:30d. Empty = new mail since the last run."}
+  reraise_key: {type: secret, env: TROVE_RERAISE_KEY, label: "Reraise key", description: "Only for publishing public knowledge cards to reraise.ai. Without a key Trove only links to reraise.ai."}
+optional_env:
+  - name: TROVE_GMAIL_CLIENT_ID
+    description: "Gmail OAuth client ID (your own Google Cloud client); only for the optional Gmail fetch"
+  - name: TROVE_GMAIL_CLIENT_SECRET
+    description: "Gmail OAuth client secret"
+    secret: true
+oauth:
+  - id: gmail
+    authorize_url: https://accounts.google.com/o/oauth2/v2/auth
+    token_url: https://oauth2.googleapis.com/token
+    scopes:
+      - https://www.googleapis.com/auth/gmail.readonly
+    client_id_env: TROVE_GMAIL_CLIENT_ID
+    client_secret_env: TROVE_GMAIL_CLIENT_SECRET
+    hosts: [gmail.googleapis.com]
+    authorize_params: {access_type: offline, prompt: consent}

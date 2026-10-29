@@ -13,7 +13,7 @@ const here = path.dirname(new URL(import.meta.url).pathname)
 let src = fs.readFileSync(path.join(here, '..', 'plugin', 'desktop', 'plugin.js'), 'utf8')
 src = src.replace(/^import .*$/gm, '')   // imports come from globalThis.__T
 src = "const { host, Button, Badge, Input, SandboxedFrame, ROUTES_AREA, SIDEBAR_NAV_AREA, PALETTE_AREA, usePluginI18n, useI18n, useState, useEffect, useCallback, useRef, jsx, jsxs } = globalThis.__T\n" + src
-src += "\nexport { TrovePage, Side, IntoKnowledge, ResultPanel, Preview, AddSource, Tasks, Search, EN, DE }\n"
+src += "\nexport { TrovePage, Side, IntoKnowledge, ResultPanel, Preview, AddSource, Tasks, Search, Integrations, EN, DE }\n"
 
 let locale = 'en'; const bundles = {}; const notes = []; let storageData = {}
 const tr = (loc, key, args) => { const v = (bundles[loc] || {})[key] ?? (bundles.en || {})[key] ?? key; return typeof v === 'function' ? v(...args) : v }
@@ -23,7 +23,10 @@ const fake = {
   '/quellen': { quellen: [{ id: 'a1', art: 'ordner', name: 'Inbox', pfad: '/tmp/inbox', nur_lesen: true }, { id: 'b2', art: 'ordner', name: 'Archive', pfad: '/tmp/archive', nur_lesen: false }] },
   '/liste': { quelle: 'a1', pfad: '', eintraege: [{ name: 'a.pdf', ordner: false, groesse: 2048, mtime: 1700000000, pfad: '/tmp/inbox/a.pdf', dublette: true, fundorte: 2 }, { name: 'sub', ordner: true, groesse: 0, mtime: 1700000000, pfad: '/tmp/inbox/sub' }], indexiert: false },
   '/auftraege': { auftraege: [{ id: 't1', status: 'blocked', titel: 'Check' }] },
+  '/integrationen': { settings: '/settings?tab=plugins&plugin=reraise-trove', mail: { mailboxes: [{ id: 'imap', kind: 'imap', active: false, missing: ['imap_host'] }, { id: 'gmail', kind: 'gmail', active: false, missing: ['TROVE_GMAIL_CLIENT_ID'], signin: 'hermes auth add reraise-trove:gmail' }] },
+    docuseal: { active: false, missing: ['docuseal_url'] }, erpnext: { active: false, missing: ['erpnext_url'] }, reraise: { active: false, link: 'https://reraise.ai' } },
 }
+const opened = []
 globalThis.__T = {
   host: { notify: (n) => notes.push(n), navigate() {}, restartGateway() {} },
   Button: (p) => React.createElement('button', { disabled: p.disabled, title: p.title, onClick: p.onClick }, p.children),
@@ -46,6 +49,7 @@ const ctx = {
   files: { requestFolder: async () => ({ ok: true, folder: { id: 'f', name: 'Picked', path: '/tmp/picked' } }) },
   i18n: { register: (b) => { Object.assign(bundles, b) }, t: (k, ...a) => tr(locale, k, a) },
   registerMany: (items) => { ctx.items = items },
+  os: { openExternal: async (u) => { opened.push(u); return true } },
 }
 mod.default.register(ctx)
 ok(ctx.items.length === 5 && ctx.items.every((i) => i.id), 'register() contributes 5 areas')
@@ -82,6 +86,26 @@ const rp = await render(React.createElement(mod.ResultPanel, { r: { art: 'lesen'
 ok(text(rp).includes('passed (sure)'), 'ResultPanel (read) renders')
 const tk = await render(React.createElement(mod.Tasks, {}))
 ok(text(tk).includes('Release'), 'Tasks lists a blocked card with a Release button')
+// optional integrations: off by default; Reraise without a key is only a link (no upload call possible)
+for (const loc of ['en', 'de']) {
+  locale = loc
+  const it = await render(React.createElement(mod.Integrations, { left: { quelle: 'a1', pfad: '' } }))
+  const show = it.root.findAllByType('button').find((b) => /show|zeigen/.test(JSON.stringify(b.props.children)))
+  await TR.act(async () => { show.props.onClick(); await settle() })
+  const s2 = text(it)
+  ok(s2.includes(loc === 'en' ? 'needs in Hermes: docuseal_url' : 'braucht in Hermes: docuseal_url'), loc + ': integrations show what is missing in Hermes')
+  const labels = it.root.findAllByType('button').map((b) => JSON.stringify(b.props.children)).join(' ')
+  ok(!/Publish|veröffentlichen|Preview cards|Karten-Vorschau|Mirror now|Jetzt spiegeln|Send for signature|Fetch|abholen|Templates|Vorlagen/.test(labels), loc + ': no action buttons while unconfigured')
+  const visit = it.root.findAllByType('button').find((b) => /reraise\.ai/.test(JSON.stringify(b.props.children)))
+  await TR.act(async () => { visit.props.onClick(); await settle() })
+}
+ok(opened.length === 2 && opened.every((u) => u === 'https://reraise.ai'), 'Reraise without key opens only https://reraise.ai')
+ok(!calls.some((c) => c[0].startsWith('/integrationen/')), 'unconfigured integrations never call an action endpoint')
+fake['/integrationen'] = { ...fake['/integrationen'], reraise: { active: true, link: 'https://reraise.ai' } }
+locale = 'en'
+const it2 = await render(React.createElement(mod.Integrations, { left: { quelle: 'a1', pfad: '' } }))
+await TR.act(async () => { it2.root.findAllByType('button').find((b) => /show/.test(JSON.stringify(b.props.children))).props.onClick(); await settle() })
+ok(text(it2).includes('Preview cards (left folder)'), 'with a Reraise key: card preview offered')
 ok(calls.some((c) => c[0] === '/liste') && calls.some((c) => c[0] === '/status'), 'backend calls issued')
 ok(!calls.some((c) => c[1] === 'POST' && ['/aktion', '/wissen', '/register'].includes(c[0])), 'rendering alone never triggers a write action')
 console.log(failures ? failures + ' FAILED' : 'UI SMOKE PASSED')

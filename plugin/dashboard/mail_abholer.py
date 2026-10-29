@@ -1,20 +1,25 @@
-"""Trove F5 — E-Mail-Archiv: Postfaecher abholen, Mail als .eml ablegen, Anhaenge einzeln mit Pruefsumme ins Belegprotokoll (Mail <-> Beleg).
+"""Trove F5 — mail archive: fetch mailboxes, store each mail as .eml and every attachment with checksum in the receipt log (optional).
 
-Postfaecher je Mandant: <TROVE_DATEN>\\<mandant>\\postfaecher.json, Liste von
-  {"id": "privat", "art": "gmail", "token_datei": "<Ordner>\\google_token.json"}
-  {"id": "info",   "art": "imap",  "host": "imap.example.com", "user": "...", "passwort_datei": "C:\\...\\geheim.txt", "ordner": ["INBOX"]}
-Nie Passwoerter/Token in dieser Datei oder im Repo — nur Pfade. Das Gmail-Token wird gelesen, nie zurueckgeschrieben (Hermes bleibt Eigentuemer).
-
-Ablage: <TROVE_DATEN>\\<mandant>\\mail\\<postfach>\\<JJJJ>\\<kennung>\\mail.eml + anhaenge\\<name>; kennung = sha256(Message-ID)[:16].
-Protokoll (F8): "gesehen" je Mail (quelle mail:<postfach>/<message-id>, ziel .eml, sha256 der .eml, meldung Betreff/Absender/Datum),
-                 "kopiert" je Anhang (quelle mail:<postfach>/<message-id>/<name>, ziel Datei, sha256 nach Rueckleseprobe).
-Stand je Postfach: <mandant>\\mail\\<postfach>\\stand.json (gmail: letzte internalDate; imap: letzte UID je Ordner). Idempotent.
+Inactive by default. Mailboxes come only from Hermes:
+  "imap":  settings imap_host, imap_user, imap_port (993), imap_folders (comma list, default INBOX) + secret TROVE_IMAP_PASSWORD.
+           IMAP over TLS (IMAP4_SSL) only.
+  "gmail": the OAuth client declared under oauth: in plugin.yaml (TROVE_GMAIL_CLIENT_ID / TROVE_GMAIL_CLIENT_SECRET, read-only
+           scope). The user signs in once with `hermes auth add reraise-trove:gmail`; Hermes stores and refreshes the token and
+           attaches it to each request (zugang.anfrage_mit_anmeldung). Trove never holds or refreshes a token.
+Storage: <TROVE_DATEN>/<client>/mail/<mailbox>/<YYYY>/<id>/mail.eml + anhaenge/<name>; id = sha256(Message-ID)[:16].
+Log (F8): "gesehen" per mail, "kopiert" per attachment (sha256 after read-back). State per mailbox: .../mail/<mailbox>/stand.json
+(gmail: last internalDate; imap: last UID per folder). Idempotent, never overwrites.
 """
-import argparse, base64, email, email.policy, hashlib, imaplib, json, os, re, sys, time, urllib.parse, urllib.request
+import base64, email, email.policy, email.utils, hashlib, imaplib, json, os, re, sys, time, urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "plugin", "dashboard"))  # Trove core modules
 import belegprotokoll as bp
+import zugang
+from zugang import NichtEingerichtet
+
+WERKZEUG = "trove:mail"
+GMAIL_API = "https://gmail.googleapis.com/gmail/v1/users/me/"
+
 
 BAD = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
@@ -54,39 +59,25 @@ def _schreiben_und_pruefen(pfad, daten):
     return "neu", soll
 
 
-# ---------- Gmail (REST, nur stdlib; Token des Hermes-Skills google-workspace, nur lesen) ----------
+# ---------- Gmail (REST through Hermes: the sign-in stays in Hermes) ----------
 class Gmail:
-    def __init__(self, token_datei):
-        self.t = json.load(open(token_datei, encoding="utf-8"))
-        self.access = None
-        self.ablauf = 0
-
-    def _token(self):
-        if self.access and time.time() < self.ablauf - 60:
-            return self.access
-        body = urllib.parse.urlencode({"client_id": self.t["client_id"], "client_secret": self.t["client_secret"],
-                                       "refresh_token": self.t["refresh_token"], "grant_type": "refresh_token"}).encode()
-        with urllib.request.urlopen(urllib.request.Request(self.t.get("token_uri", "https://oauth2.googleapis.com/token"), data=body), timeout=60) as h:
-            r = json.loads(h.read())
-        self.access, self.ablauf = r["access_token"], time.time() + int(r.get("expires_in", 3600))
-        return self.access
-
     def api(self, path, params=None):
-        url = "https://gmail.googleapis.com/gmail/v1/users/me/" + path + ("?" + urllib.parse.urlencode(params) if params else "")
-        req = urllib.request.Request(url, headers={"Authorization": "Bearer " + self._token()})
+        url = GMAIL_API + path + ("?" + urllib.parse.urlencode(params) if params else "")
         for versuch in range(6):
             try:
-                with urllib.request.urlopen(req, timeout=120) as h:
-                    return json.loads(h.read())
-            except urllib.error.HTTPError as e:
-                text = e.read()[:300].decode("utf-8", "replace")
-                if (e.code in (429, 500, 503) or (e.code == 403 and ("Quota" in text or "ate limit" in text))) and versuch < 5:
-                    time.sleep(30 if e.code == 403 else 2 ** versuch); continue
-                raise RuntimeError("Gmail %s: %s %s" % (path, e.code, text))
-            except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+                st, body = zugang.anfrage_mit_anmeldung(zugang.GMAIL_OAUTH_ID, "GET", url, {"Accept": "application/json"}, 120)
+            except (OSError, TimeoutError) as e:
                 if versuch < 5:
                     time.sleep(2 ** versuch); continue
-                raise RuntimeError("Gmail %s: Netz: %s" % (path, e))
+                raise RuntimeError("Gmail %s: network: %s" % (path.split("?")[0], type(e).__name__))
+            if st == 200:
+                return json.loads(body or b"{}")
+            text = (body or b"")[:300].decode("utf-8", "replace")
+            if (st in (429, 500, 503) or (st == 403 and ("Quota" in text or "ate limit" in text))) and versuch < 5:
+                time.sleep(30 if st == 403 else 2 ** versuch); continue
+            if st == 401:
+                raise NichtEingerichtet("Gmail rejected the sign-in (401): run `hermes auth add %s:%s` again" % (zugang.PLUGIN_ID, zugang.GMAIL_OAUTH_ID))
+            raise RuntimeError("Gmail %s: %s %s" % (path.split("?")[0], st, zugang.schwaerzen(text)))
 
     def profil(self):
         return self.api("profile")
@@ -108,20 +99,25 @@ class Gmail:
                 return
 
     def roh(self, mid):
+        if not re.fullmatch(r"[0-9A-Za-z]{1,64}", str(mid)):
+            raise RuntimeError("Gmail: unexpected message id")
         r = self.api("messages/" + mid, {"format": "raw"})
         return base64.urlsafe_b64decode(r["raw"] + "=" * (-len(r["raw"]) % 4)), int(r.get("internalDate", 0)), r.get("labelIds", [])
 
 
 # ---------- IMAP (stdlib) ----------
 class Imap:
-    def __init__(self, host, user, passwort_datei, port=993):
-        self.c = imaplib.IMAP4_SSL(host, port)
-        self.c.login(user, open(passwort_datei, encoding="utf-8").read().strip())
+    def __init__(self, host, user, passwort, port=993):
+        self.c = imaplib.IMAP4_SSL(host, port, timeout=120)
+        try:
+            self.c.login(user, passwort)
+        except imaplib.IMAP4.error:
+            raise RuntimeError("IMAP login rejected for the configured user")
 
     def uids(self, ordner, ab_uid):
         typ, _ = self.c.select('"%s"' % ordner, readonly=True)
         if typ != "OK":
-            raise RuntimeError("IMAP Ordner nicht waehlbar: " + ordner)
+            raise RuntimeError("IMAP folder not selectable: " + ordner)
         uv = (self.c.response("UIDVALIDITY")[1] or [b""])[0]
         self.uidvalidity = uv.decode() if isinstance(uv, bytes) else str(uv or "")
         typ, d = self.c.uid("search", None, "UID %d:*" % (ab_uid + 1))
@@ -170,10 +166,10 @@ def ablegen(prot, mandant, postfach, roh, internal_ms=0, nur_anhaenge=False):
     quelle_mail = "mail:%s/%s" % (postfach, kopf["message_id"] or kennung)
     erg = {"kennung": kennung, "eml": eml, "eml_status": st, "anhaenge": []}
     if st == "neu":
-        prot.schreiben("gesehen", quelle=quelle_mail, ziel=eml, sha256=sha, bytes_=len(roh), werkzeug="mail_abholer.py", mandant=mandant, lauf="mail-" + postfach,
+        prot.schreiben("gesehen", quelle=quelle_mail, ziel=eml, sha256=sha, bytes_=len(roh), werkzeug=WERKZEUG, mandant=mandant, lauf="mail-" + postfach,
                        meldung="Mail: %s | von %s | %s | %d Anhaenge" % (kopf["betreff"], kopf["von"], kopf["datum"], len(anh)), **kopf, anhaenge=len(anh))
     elif st in ("konflikt", "lesefehler"):
-        prot.schreiben("fehler", quelle=quelle_mail, ziel=eml, werkzeug="mail_abholer.py", mandant=mandant, lauf="mail-" + postfach,
+        prot.schreiben("fehler", quelle=quelle_mail, ziel=eml, werkzeug=WERKZEUG, mandant=mandant, lauf="mail-" + postfach,
                        meldung="Mail nicht abgelegt: " + ("Datei vorhanden mit anderem Inhalt, nichts ueberschrieben" if st == "konflikt" else "Rueckleseprobe fehlgeschlagen"), **kopf)
         return {"kennung": kennung, "eml": eml, "eml_status": st, "anhaenge": []}
     belegt = set()
@@ -188,10 +184,10 @@ def ablegen(prot, mandant, postfach, roh, internal_ms=0, nur_anhaenge=False):
         st2, sha2 = _schreiben_und_pruefen(p, daten)
         erg["anhaenge"].append({"name": n, "status": st2, "sha256": sha2, "bytes": len(daten)})
         if st2 == "neu":
-            prot.schreiben("kopiert", quelle=quelle_mail + "/" + n, ziel=p, sha256=sha2, bytes_=len(daten), werkzeug="mail_abholer.py", mandant=mandant, lauf="mail-" + postfach,
+            prot.schreiben("kopiert", quelle=quelle_mail + "/" + n, ziel=p, sha256=sha2, bytes_=len(daten), werkzeug=WERKZEUG, mandant=mandant, lauf="mail-" + postfach,
                            meldung="Anhang aus Mail: %s | %s" % (kopf["betreff"][:120], typ), message_id=kopf["message_id"], betreff=kopf["betreff"], von=kopf["von"], datum=kopf["datum"], mime=typ)
         elif st2 in ("konflikt", "lesefehler"):
-            prot.schreiben("fehler", quelle=quelle_mail + "/" + n, ziel=p, werkzeug="mail_abholer.py", mandant=mandant, lauf="mail-" + postfach, meldung="Anhang: " + st2)
+            prot.schreiben("fehler", quelle=quelle_mail + "/" + n, ziel=p, werkzeug=WERKZEUG, mandant=mandant, lauf="mail-" + postfach, meldung="Anhang: " + st2)
     return erg
 
 
@@ -220,9 +216,9 @@ def abholen(mandant, pf, max_n=None, nur_anhaenge=False, abfrage=None, prot=None
     z = {"postfach": pf["id"], "mails": 0, "neu": 0, "schon_da": 0, "anhaenge_neu": 0, "fehler": 0}
     s = _stand(mandant, pf["id"])
     try:
-        prot.schreiben("notiz", werkzeug="mail_abholer.py", mandant=mandant, lauf="mail-" + pf["id"], meldung="Abholung Start: %s (%s)" % (pf["id"], pf["art"]))
+        prot.schreiben("notiz", werkzeug=WERKZEUG, mandant=mandant, lauf="mail-" + pf["id"], meldung="Abholung Start: %s (%s)" % (pf["id"], pf["art"]))
         if pf["art"] == "gmail":
-            g = Gmail(pf["token_datei"])
+            g = Gmail()
             konto = g.profil().get("emailAddress", "?")
             ab = int(s.get("letzte_internal_ms", 0)) // 1000
             q = abfrage or ("" if alles else ("after:%d" % max(0, ab - 86400) if ab else ""))
@@ -240,7 +236,7 @@ def abholen(mandant, pf, max_n=None, nur_anhaenge=False, abfrage=None, prot=None
                     e = ablegen(prot, mandant, pf["id"], roh, ims, nur_anhaenge)
                 except Exception as ex:
                     z["fehler"] += 1
-                    prot.schreiben("fehler", quelle="mail:%s/gmail-id-%s" % (pf["id"], mid), werkzeug="mail_abholer.py", mandant=mandant, lauf="mail-" + pf["id"], meldung="Ablage: " + str(ex)[:300])
+                    prot.schreiben("fehler", quelle="mail:%s/gmail-id-%s" % (pf["id"], mid), werkzeug=WERKZEUG, mandant=mandant, lauf="mail-" + pf["id"], meldung="Ablage: " + zugang.schwaerzen(ex)[:300])
                     continue
                 z["mails"] += 1
                 if e.get("eml_status") in ("konflikt", "lesefehler"):
@@ -256,7 +252,10 @@ def abholen(mandant, pf, max_n=None, nur_anhaenge=False, abfrage=None, prot=None
                 s["letzte_internal_ms"] = hoechst
             s["konto"] = konto; s["fertig"] = sorted(fertig)
         elif pf["art"] == "imap":
-            im = Imap(pf["host"], pf["user"], pf["passwort_datei"], int(pf.get("port", 993)))
+            passwort = zugang.geheimnis(zugang.IMAP_PASSWORT)
+            if not passwort:
+                raise NichtEingerichtet("IMAP is not configured in Hermes (%s)" % zugang.IMAP_PASSWORT)
+            im = Imap(pf["host"], pf["user"], passwort, int(pf.get("port", 993)))
             uids = s.setdefault("uid", {})
             if alles:
                 uids.clear()
@@ -272,7 +271,7 @@ def abholen(mandant, pf, max_n=None, nur_anhaenge=False, abfrage=None, prot=None
                         e = ablegen(prot, mandant, pf["id"], roh, 0, nur_anhaenge)
                     except Exception as ex:
                         z["fehler"] += 1
-                        prot.schreiben("fehler", quelle="mail:%s/%s/uid-%d" % (pf["id"], ordner, uid), werkzeug="mail_abholer.py", mandant=mandant, lauf="mail-" + pf["id"], meldung="Ablage: " + str(ex)[:300])
+                        prot.schreiben("fehler", quelle="mail:%s/%s/uid-%d" % (pf["id"], ordner, uid), werkzeug=WERKZEUG, mandant=mandant, lauf="mail-" + pf["id"], meldung="Ablage: " + zugang.schwaerzen(ex)[:300])
                         continue
                     z["mails"] += 1
                     if e.get("eml_status") in ("konflikt", "lesefehler"):
@@ -282,9 +281,9 @@ def abholen(mandant, pf, max_n=None, nur_anhaenge=False, abfrage=None, prot=None
                         z["anhaenge_neu"] += sum(1 for a in e["anhaenge"] if a["status"] == "neu")
                     uids[ordner] = max(int(uids.get(ordner, 0)), uid)
         else:
-            raise ValueError("Postfach-Art unbekannt: " + str(pf.get("art")))
+            raise ValueError("unknown mailbox kind: " + str(pf.get("art")))
         _stand_speichern(mandant, pf["id"], s)
-        prot.schreiben("notiz", werkzeug="mail_abholer.py", mandant=mandant, lauf="mail-" + pf["id"], meldung="Abholung Ende: " + json.dumps(z, ensure_ascii=False), **z)
+        prot.schreiben("notiz", werkzeug=WERKZEUG, mandant=mandant, lauf="mail-" + pf["id"], meldung="Abholung Ende: " + json.dumps(z, ensure_ascii=False), **z)
         prot.anker_setzen(mandant, "mail-" + pf["id"])
     finally:
         if eigen:
@@ -292,28 +291,101 @@ def abholen(mandant, pf, max_n=None, nur_anhaenge=False, abfrage=None, prot=None
     return z
 
 
-def postfaecher(mandant):
-    p = os.path.join(bp.WURZEL, mandant, "postfaecher.json")
-    return json.load(open(p, encoding="utf-8")) if os.path.exists(p) else []
+def postfaecher():
+    """Mailboxes configured in Hermes, each with (active, missing settings). No network."""
+    e = zugang.einstellungen()
+    fehlt = [n for n in ("imap_host", "imap_user") if not str(e[n] or "").strip()]
+    if not zugang.ist_gesetzt(zugang.IMAP_PASSWORT):
+        fehlt.append(zugang.IMAP_PASSWORT)
+    try:
+        port = int(e["imap_port"] or 993)
+    except (TypeError, ValueError):
+        port = 993
+    ordner = [o.strip() for o in (e["imap_folders"] if isinstance(e["imap_folders"], list) else str(e["imap_folders"] or "INBOX").split(",")) if str(o).strip()]
+    imap = {"id": "imap", "art": "imap", "host": str(e["imap_host"] or "").strip(), "user": str(e["imap_user"] or "").strip(), "port": port,
+            "ordner": ordner or ["INBOX"], "aktiv": not fehlt, "fehlt": fehlt}
+    gfehlt = [] if zugang.ist_gesetzt(zugang.GMAIL_CLIENT_ID) else [zugang.GMAIL_CLIENT_ID]
+    gmail = {"id": "gmail", "art": "gmail", "abfrage": str(e["gmail_query"] or "").strip(), "aktiv": not gfehlt, "fehlt": gfehlt,
+             "anmeldung": "hermes auth add %s:%s" % (zugang.PLUGIN_ID, zugang.GMAIL_OAUTH_ID)}
+    return [imap, gmail]
 
 
-def main():
-    ap = argparse.ArgumentParser(description="Trove F5 Mail-Abholer")
-    ap.add_argument("--mandant", default="haus")
-    ap.add_argument("--postfach", help="nur dieses Postfach (id)")
-    ap.add_argument("--max", type=int, help="hoechstens so viele Mails je Postfach (Probe)")
-    ap.add_argument("--nur-anhaenge", action="store_true")
-    ap.add_argument("--abfrage", help="Gmail-Suchausdruck statt Stand (z. B. 'newer_than:30d has:attachment')")
-    ap.add_argument("--alles", action="store_true", help="Stand ignorieren, ganzes Postfach durchgehen (Erstbefuellung; idempotent)")
-    ap.add_argument("--json", action="store_true")
-    a = ap.parse_args()
-    out = []
-    for pf in postfaecher(a.mandant):
-        if a.postfach and pf["id"] != a.postfach:
-            continue
-        out.append(abholen(a.mandant, pf, a.max, a.nur_anhaenge, a.abfrage, alles=a.alles))
-    print(json.dumps(out, ensure_ascii=False) if a.json else "\n".join("%(postfach)s: %(mails)d Mails, %(neu)d neu, %(schon_da)d schon da, %(anhaenge_neu)d Anhaenge neu, %(fehler)d Fehler" % z for z in out))
+def postfach(pid):
+    pf = next((p for p in postfaecher() if p["id"] == pid), None)
+    if pf is None:
+        raise ValueError("unknown mailbox: %s (imap | gmail)" % pid)
+    if not pf["aktiv"]:
+        raise NichtEingerichtet("mailbox %s is not configured in Hermes (missing: %s)" % (pid, ", ".join(pf["fehlt"])))
+    return pf
+
+
+def _selbsttest():
+    """No configuration -> inactive, no request. Gmail through a mocked Hermes sign-in: mail + attachment stored, logged, idempotent.
+    IMAP with a mocked Hermes password and a fake server class: the password goes only to login()."""
+    import tempfile
+    from email.message import EmailMessage
+    alt = zugang.geheimnis_quelle, zugang.einstellungen_quelle, zugang.anfrage_quelle, bp.WURZEL, globals()["Imap"]
+    anfragen = []
+    try:
+        with tempfile.TemporaryDirectory() as w:
+            bp.WURZEL = w
+            zugang.geheimnis_quelle = lambda n: None
+            zugang.einstellungen_quelle = lambda: {}
+            zugang.anfrage_quelle = lambda *a: anfragen.append(a) or (500, b"")
+            assert [p["aktiv"] for p in postfaecher()] == [False, False]
+            for pid in ("imap", "gmail"):
+                try:
+                    postfach(pid)
+                    raise AssertionError("mailbox active without configuration")
+                except NichtEingerichtet:
+                    pass
+            assert not anfragen
+            m = EmailMessage()
+            m["Message-ID"] = "<t1@example.invalid>"; m["Subject"] = "Invoice"; m["From"] = "a@example.invalid"; m["Date"] = "Tue, 20 Oct 2026 10:00:00 +0000"
+            m.set_content("hello")
+            m.add_attachment(b"%PDF-1.4 test", maintype="application", subtype="pdf", filename="r.pdf")
+            raw = base64.urlsafe_b64encode(m.as_bytes()).decode()
+
+            def gmail(provider, methode, url, headers, timeout):
+                anfragen.append((provider, methode, url))
+                assert provider == "gmail" and methode == "GET" and url.startswith(GMAIL_API) and "Authorization" not in headers
+                if url.startswith(GMAIL_API + "profile"):
+                    return 200, b'{"emailAddress": "me@example.invalid"}'
+                if url.startswith(GMAIL_API + "messages?"):
+                    return 200, b'{"messages": [{"id": "abc123"}]}'
+                return 200, json.dumps({"raw": raw, "internalDate": "1792490400000"}).encode()
+            zugang.anfrage_quelle = gmail
+            zugang.geheimnis_quelle = lambda n: {zugang.GMAIL_CLIENT_ID: "client-id.apps.example"}.get(n)
+            pf = postfach("gmail")
+            z = abholen("t", pf)
+            assert z["neu"] == 1 and z["anhaenge_neu"] == 1 and z["fehler"] == 0, z
+            z = abholen("t", pf)
+            assert z["neu"] == 0 and z["schon_da"] == 1, z
+            ereignisse = [e["ereignis"] for e in bp.eintraege(bp.pfad_fuer("t"))]
+            assert "gesehen" in ereignisse and "kopiert" in ereignisse, ereignisse
+            gesehen_pw = []
+
+            class FakeImap:
+                def __init__(self, host, user, passwort, port=993):
+                    gesehen_pw.append((host, user, passwort, port))
+                    self.uidvalidity = "1"
+
+                def uids(self, ordner, ab_uid):
+                    return [1] if ab_uid < 1 else []
+
+                def roh(self, uid):
+                    return m.as_bytes()
+            globals()["Imap"] = FakeImap
+            zugang.geheimnis_quelle = lambda n: {zugang.IMAP_PASSWORT: "imap-pw-9876"}.get(n)
+            zugang.einstellungen_quelle = lambda: {"imap_host": "127.0.0.1", "imap_user": "u", "imap_port": 9}
+            z = abholen("t", postfach("imap"))
+            assert gesehen_pw == [("127.0.0.1", "u", "imap-pw-9876", 9)] and z["mails"] == 1 and z["fehler"] == 0, (gesehen_pw, z)
+            with open(bp.pfad_fuer("t"), encoding="utf-8") as f:
+                assert "imap-pw-9876" not in f.read()
+    finally:
+        zugang.geheimnis_quelle, zugang.einstellungen_quelle, zugang.anfrage_quelle, bp.WURZEL, globals()["Imap"] = alt
 
 
 if __name__ == "__main__":
-    main()
+    _selbsttest()
+    print("mail selftest ok")

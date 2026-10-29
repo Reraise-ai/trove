@@ -1,46 +1,72 @@
-"""Trove F7 — Unterschreiben und versenden in beide Richtungen ueber DocuSeal (lokal, http://127.0.0.1:8091).
+"""Trove F7 — send for signature and fetch signed documents through the user's own DocuSeal (optional, inactive by default).
 
-Richtung 1 (wir senden): aus einer DocuSeal-Vorlage einen Vorgang anlegen (Unterzeichner, optional Mail durch DocuSeal), Link
-  ins Belegprotokoll ("versendet", Bezug zum Beleg ueber sha256 des Originals).
-Richtung 2 (wir empfangen): Stand aller Vorgaenge abfragen; fertige Vorgaenge: unterschriebene PDFs + Audit-Log holen nach
-  <TROVE_DATEN>\\<mandant>\\unterschrieben\\<vorgang>\\, Pruefsumme, Ereignis "unterschrieben" (rueckwaerts bis zum Original).
-Grenze der freien Edition (gemessen 18.10.2026): Vorlagen/Dokumente per API hochladen = Pro. Vorlagen entstehen deshalb in der
-  DocuSeal-Web-UI (Mensch); alles Weitere laeuft per API. API-Schluessel: Zeile "api-key:" in
-  <TROVE_DATEN>\\_geheim\\docuseal_erstanmeldung.txt (nur Pfad, nie Inhalt im Repo).
-Stand je Mandant: <TROVE_DATEN>\\<mandant>\\docuseal.json (Vorgang -> Beleg-sha, Status, abgeholt).
+Direction 1 (send): create a submission from a DocuSeal template (signer, optional e-mail by DocuSeal); receipt log "versendet",
+  linked to the original by its sha256.
+Direction 2 (receive): poll all submissions; completed ones: signed PDFs + audit log to
+  <TROVE_DATEN>/<client>/unterschrieben/vorgang_<id>/, checksum, receipt-log event "unterschrieben" (back to the original).
+Configuration only through Hermes: setting docuseal_url (the user's own DocuSeal, no default) and the secret
+  TROVE_DOCUSEAL_API_KEY (zugang.geheimnis). Without both, every call raises zugang.NichtEingerichtet and nothing goes out.
+The key is sent only to the configured DocuSeal origin, never to download URLs on other hosts.
+State per client: <TROVE_DATEN>/<client>/docuseal.json (submission -> original sha, status, fetched).
 """
-import argparse, hashlib, json, os, re, sys, urllib.request
+import hashlib, json, os, re, sys, urllib.error, urllib.parse, urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "plugin", "dashboard"))  # Trove core modules
 import belegprotokoll as bp
+import zugang
+from zugang import NichtEingerichtet
 
-DOCUSEAL = os.environ.get("TROVE_DOCUSEAL", "http://127.0.0.1:8091")
-SCHLUESSEL_DATEI = os.environ.get("TROVE_DOCUSEAL_SCHLUESSEL", os.path.join(bp.WURZEL, "_geheim", "docuseal_erstanmeldung.txt"))
+
+def eingerichtet():
+    """(active, missing settings) without any network call."""
+    fehlt = []
+    try:
+        if not zugang.url_einstellung("docuseal_url"):
+            fehlt.append("docuseal_url")
+    except NichtEingerichtet:
+        fehlt.append("docuseal_url")
+    if not zugang.ist_gesetzt(zugang.DOCUSEAL_KEY):
+        fehlt.append(zugang.DOCUSEAL_KEY)
+    return not fehlt, fehlt
 
 
-def _schluessel():
-    m = re.search(r"api-key:\s*(\S+)", open(SCHLUESSEL_DATEI, encoding="utf-8").read())
-    if not m:
-        raise RuntimeError("kein api-key in " + SCHLUESSEL_DATEI)
-    return m.group(1)
+def _ziel():
+    url, key = zugang.url_einstellung("docuseal_url"), zugang.geheimnis(zugang.DOCUSEAL_KEY)
+    if not url or not key:
+        raise NichtEingerichtet("DocuSeal is not configured in Hermes (docuseal_url and %s)" % zugang.DOCUSEAL_KEY)
+    return url, key
+
+
+def _origin(u):
+    x = urllib.parse.urlsplit(u)
+    return (x.scheme.lower(), (x.hostname or "").lower(), x.port or (443 if x.scheme.lower() == "https" else 80))
+
+
+class _KeinUmleiten(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *a, **k):
+        return None  # a redirect would carry the key elsewhere
+
+
+OPENER = urllib.request.build_opener(_KeinUmleiten)
 
 
 def api(pfad, body=None, method=None, roh=False):
-    req = urllib.request.Request(DOCUSEAL + "/api" + pfad, data=json.dumps(body).encode() if body is not None else None,
+    basis, key = _ziel()
+    req = urllib.request.Request(basis + "/api" + pfad, data=json.dumps(body).encode() if body is not None else None,
                                  method=method or ("POST" if body is not None else "GET"),
-                                 headers={"X-Auth-Token": _schluessel(), "Content-Type": "application/json", "Accept": "application/json"})
+                                 headers={"X-Auth-Token": key, "Content-Type": "application/json", "Accept": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=120) as h:
+        with OPENER.open(req, timeout=120) as h:
             d = h.read()
             return h.status, (d if roh else json.loads(d or b"null"))
     except urllib.error.HTTPError as e:
-        return e.code, e.read()[:400].decode("utf-8", "replace")
+        return e.code, zugang.schwaerzen(e.read()[:400].decode("utf-8", "replace"))
 
 
 def _laden(url):
-    req = urllib.request.Request(url, headers=({"X-Auth-Token": _schluessel()} if url.startswith(DOCUSEAL) else {}))  # Schluessel nie an Fremdziele
-    with urllib.request.urlopen(req, timeout=300) as h:
+    basis, key = _ziel()
+    kopf = {"X-Auth-Token": key} if _origin(url) == _origin(basis) else {}  # key never to other hosts
+    with OPENER.open(urllib.request.Request(url, headers=kopf), timeout=300) as h:
         return h.read()
 
 
@@ -72,7 +98,7 @@ def stand_speichern(mandant, s):
 def vorlagen():
     st, r = api("/templates?limit=100")
     if st != 200:
-        raise RuntimeError("DocuSeal templates: %s %s" % (st, r))
+        raise RuntimeError("DocuSeal templates: %s %s" % (st, str(r)[:200]))
     return [{"id": t["id"], "name": t["name"], "felder": [f["name"] for f in t.get("fields", [])], "rollen": [s["name"] for s in t.get("submitters", [])]} for t in r.get("data", [])]
 
 
@@ -80,7 +106,7 @@ def senden(mandant, vorlage_id, an, name="", rolle=None, beleg=None, mail=False,
     """Richtung 1: Vorgang aus Vorlage anlegen. beleg = Pfad des Originals (sha wird gemerkt, Rueckverfolgung)."""
     st, t = api("/templates/%d" % vorlage_id)
     if st != 200:
-        raise RuntimeError("Vorlage %d: %s %s" % (vorlage_id, st, t))
+        raise RuntimeError("DocuSeal template %d: %s %s" % (vorlage_id, st, str(t)[:200]))
     rolle = rolle or (t.get("submitters") or [{"name": "First Party"}])[0]["name"]
     sub = {"role": rolle, "email": an}
     if name:
@@ -100,20 +126,20 @@ def senden(mandant, vorlage_id, an, name="", rolle=None, beleg=None, mail=False,
 def _senden_mit_protokoll(prot, mandant, vorlage_id, t, body, an, name, rolle, beleg, mail):
     st, r = api("/submissions", body)
     if st not in (200, 201):
-        raise RuntimeError("Vorgang anlegen: %s %s" % (st, r))
+        raise RuntimeError("DocuSeal create submission: %s %s" % (st, str(r)[:200]))
     submitters = r if isinstance(r, list) else r.get("submitters", [r])
     s0 = submitters[0]
     vorgang = s0.get("submission_id") or (s0.get("submission") or {}).get("id")
     if vorgang is None:
-        raise RuntimeError("DocuSeal lieferte keine Vorgangsnummer: " + str(r)[:200])
-    link = s0.get("embed_src") or (DOCUSEAL + "/s/" + s0["slug"] if s0.get("slug") else "")
+        raise RuntimeError("DocuSeal returned no submission id")
+    link = s0.get("embed_src") or (_ziel()[0] + "/s/" + s0["slug"] if s0.get("slug") else "")
     beleg_sha = _sha_datei(beleg) if beleg and os.path.isfile(beleg) else ""
     s = stand_lesen(mandant)
     s["vorgaenge"][str(vorgang)] = {"vorlage": vorlage_id, "vorlage_name": t.get("name"), "an": an, "rolle": rolle, "link": link, "beleg": beleg or "", "beleg_sha256": beleg_sha,
                                    "angelegt": bp._jetzt(), "status": "pending", "abgeholt": False, "mail": bool(mail)}
     stand_speichern(mandant, s)
     prot.schreiben("versendet", quelle=beleg or ("docuseal:vorlage/%d" % vorlage_id), ziel="docuseal:vorgang/%s" % vorgang, sha256=beleg_sha,
-                   werkzeug="docuseal.py", mandant=mandant, lauf="docuseal-%s" % vorgang,
+                   werkzeug="trove:docuseal", mandant=mandant, lauf="docuseal-%s" % vorgang,
                    meldung="Zur Unterschrift: Vorlage '%s' an %s%s (Vorgang %s)%s" % (t.get("name"), an, " (" + name + ")" if name else "", vorgang, "" if mail else "; keine Mail, Link im Stand docuseal.json"),
                    vorgang=vorgang, vorlage=vorlage_id, an=an, mail=bool(mail))  # Signier-Link bewusst nicht ins Protokoll (wirkt wie ein Schluessel, wird nach ERPNext gespiegelt)
     return {"vorgang": vorgang, "link": link, "an": an, "vorlage": t.get("name")}
@@ -173,12 +199,12 @@ def _vorgang_abholen(prot, mandant, s, vid, v, erg):
                         f.write(daten)
                     sha = _sha_datei(p + ".teil")
                     if sha != hashlib.sha256(daten).hexdigest():
-                        os.remove(p + ".teil"); raise RuntimeError("Rueckleseprobe fehlgeschlagen: " + p)
+                        os.remove(p + ".teil"); raise RuntimeError("read-back check failed: " + os.path.basename(p))
                     os.replace(p + ".teil", p); zustand = "neu"
                 dateien.append({"datei": p, "sha256": sha, "zustand": zustand})
                 if not v.get("abgeholt"):  # Ereignis auch fuer Dateien, die ein abgebrochener Lauf schon abgelegt hatte
                     prot.schreiben("unterschrieben", quelle="docuseal:vorgang/%s/%s" % (vid, nm), ziel=p, sha256=sha, bytes_=os.path.getsize(p),
-                                 werkzeug="docuseal.py", mandant=mandant, lauf="docuseal-%s" % vid,
+                                 werkzeug="trove:docuseal", mandant=mandant, lauf="docuseal-%s" % vid,
                                  meldung="Unterschrieben zurueck: %s (%s) von %s; Original sha %s" % (nm, v.get("vorlage_name"), v.get("an"), (v.get("beleg_sha256") or "-")[:16]),
                                  vorgang=int(vid), original=v.get("beleg") or "", original_sha256=v.get("beleg_sha256") or "", unterzeichner=v["unterzeichner"])
             v["abgeholt"] = True; v["dateien"] = dateien; v["abgeholt_am"] = bp._jetzt()
@@ -186,25 +212,51 @@ def _vorgang_abholen(prot, mandant, s, vid, v, erg):
         erg.append(z)
 
 
-def main():
-    ap = argparse.ArgumentParser(description="Trove F7 DocuSeal")
-    sub = ap.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("vorlagen")
-    s = sub.add_parser("senden"); s.add_argument("--mandant", default="haus"); s.add_argument("--vorlage", type=int, required=True); s.add_argument("--an", required=True)
-    s.add_argument("--name", default=""); s.add_argument("--rolle"); s.add_argument("--beleg", help="Original (Pfad) fuer die Rueckverfolgung"); s.add_argument("--mail", action="store_true", help="DocuSeal verschickt die Einladung per E-Mail")
-    s.add_argument("--betreff")
-    s = sub.add_parser("abholen"); s.add_argument("--mandant", default="haus"); s.add_argument("--vorgang")
-    s = sub.add_parser("stand"); s.add_argument("--mandant", default="haus")
-    a = ap.parse_args()
-    if a.cmd == "vorlagen":
-        print(json.dumps(vorlagen(), ensure_ascii=False, indent=1))
-    elif a.cmd == "senden":
-        print(json.dumps(senden(a.mandant, a.vorlage, a.an, a.name, a.rolle, a.beleg, a.mail, a.betreff), ensure_ascii=False))
-    elif a.cmd == "abholen":
-        print(json.dumps(abholen(a.mandant, a.vorgang), ensure_ascii=False, indent=1))
-    elif a.cmd == "stand":
-        print(json.dumps(stand_lesen(a.mandant), ensure_ascii=False, indent=1))
+def _selbsttest():
+    """Inactive without configuration (no network); with a mocked Hermes the key goes only to the configured origin."""
+    import http.server, tempfile, threading
+    alt = zugang.geheimnis_quelle, zugang.einstellungen_quelle, bp.WURZEL
+    try:
+        zugang.geheimnis_quelle = lambda n: None
+        zugang.einstellungen_quelle = lambda: {}
+        assert eingerichtet() == (False, ["docuseal_url", zugang.DOCUSEAL_KEY])
+        try:
+            vorlagen()
+            raise AssertionError("DocuSeal called without configuration")
+        except NichtEingerichtet:
+            pass
+        gesehen = []
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                gesehen.append((self.path, self.headers.get("X-Auth-Token")))
+                b = json.dumps({"data": [{"id": 1, "name": "NDA", "fields": [], "submitters": [{"name": "First Party"}]}]}).encode()
+                self.send_response(200); self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
+
+            def log_message(self, *a):
+                pass
+        srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            zugang.geheimnis_quelle = lambda n: {zugang.DOCUSEAL_KEY: "ds-key-4711"}.get(n)
+            zugang.einstellungen_quelle = lambda: {"docuseal_url": "http://127.0.0.1:%d" % srv.server_address[1]}
+            assert eingerichtet() == (True, [])
+            assert vorlagen()[0]["name"] == "NDA" and gesehen[-1] == ("/api/templates?limit=100", "ds-key-4711"), gesehen
+            _laden("http://127.0.0.1:%d/file" % srv.server_address[1])
+            assert gesehen[-1][1] == "ds-key-4711"
+            try:
+                _laden("http://127.0.0.1:9/elsewhere")  # other origin: no key (and nothing listens there)
+            except OSError:
+                pass
+            with tempfile.TemporaryDirectory() as w:
+                bp.WURZEL = w
+                assert stand_lesen("t") == {"vorgaenge": {}}
+        finally:
+            srv.shutdown()
+    finally:
+        zugang.geheimnis_quelle, zugang.einstellungen_quelle, bp.WURZEL = alt
 
 
 if __name__ == "__main__":
-    main()
+    _selbsttest()
+    print("docuseal selftest ok")

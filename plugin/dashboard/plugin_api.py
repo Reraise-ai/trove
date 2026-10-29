@@ -4,7 +4,7 @@ Sources (local folders), two panes (list + preview), actions copy / move / sync.
 receipt log (F8) with a read-back check (sha256 of the file as written to disk). Duplicates via the register (F1, SQLite per client).
 Nothing is overwritten. Writing is per source folder: a source is read-only unless it was explicitly added as writable.
 Copy needs a writable target; move additionally deletes the source file after the read-back check, so it needs a writable source too.
-Trove never asks for or stores credentials; mail and cloud files reach it as files in a watched folder (put there by Hermes agents).
+Optional integrations (mail, DocuSeal, ERPNext, Reraise) are inactive until configured in Hermes; their credentials come only from Hermes (zugang.py).
 """
 from __future__ import annotations
 
@@ -839,3 +839,153 @@ def wissen(body: dict):
     return {"ok": True, "nachgefuehrt": folgen, **{k: v for k, v in r.items() if k != "eintraege"}, "eintraege": r.get("eintraege", [])[:200]}
 
 
+
+
+# ---------- Optional integrations (mail, DocuSeal, ERPNext mirror, Reraise): inactive until configured in Hermes ----------
+# Credentials only through Hermes (zugang.py: get_secret / oauth sign-in held by Hermes). No secret value ever appears in a
+# response or a log line: every result and error passes zugang.schwaerzen().
+RERAISE_LINK = "https://reraise.ai"
+EINSTELLUNGEN_LINK = "/settings?tab=plugins&plugin=reraise-trove"
+
+
+def _int_ergebnis(r):
+    import zugang
+    return json.loads(zugang.schwaerzen(json.dumps(r, ensure_ascii=False, default=str)))
+
+
+def _int_lauf(f):
+    """Run one integration call: not configured -> 403, run active -> 409, other errors -> 502; all texts masked."""
+    import zugang
+    try:
+        return _int_ergebnis(f())
+    except zugang.NichtEingerichtet as ex:
+        raise _fehler(403, zugang.schwaerzen(ex))
+    except bp.LaufLaeuft as ex:
+        raise _fehler(409, zugang.schwaerzen(ex))
+    except HTTPException:
+        raise
+    except (ValueError, KeyError) as ex:
+        raise _fehler(400, zugang.schwaerzen(ex))
+    except Exception as ex:
+        raise _fehler(502, "%s: %s" % (type(ex).__name__, zugang.schwaerzen(ex)[:400]))
+
+
+@router.get("/integrationen")
+def integrationen():
+    """Which integrations are active. Names of missing settings only, never values. No network."""
+    import docuseal
+    import mail_abholer
+    import reraise_hochladen
+    import spiegel_erpnext
+    ds, ds_fehlt = docuseal.eingerichtet()
+    erp, erp_fehlt = spiegel_erpnext.eingerichtet()
+    boxen = [{"id": p["id"], "kind": p["art"], "active": p["aktiv"], "missing": p["fehlt"], **({"signin": p["anmeldung"]} if "anmeldung" in p else {})}
+             for p in mail_abholer.postfaecher()]
+    return {"settings": EINSTELLUNGEN_LINK, "mail": {"mailboxes": boxen},
+            "docuseal": {"active": ds, "missing": ds_fehlt}, "erpnext": {"active": erp, "missing": erp_fehlt},
+            "reraise": {"active": reraise_hochladen.eingerichtet(), "link": RERAISE_LINK}}
+
+
+def _int_max(body, name="max"):
+    v = body.get(name)
+    if v is None:
+        return None
+    if isinstance(v, bool) or not isinstance(v, int) or v < 1:
+        raise HTTPException(400, name + ": whole number, at least 1")
+    return v
+
+
+@router.post("/integrationen/mail/abholen")
+def int_mail_abholen(body: dict):
+    import mail_abholer
+    mandant = _mandant_pruefen(body.get("mandant") or MANDANT)
+    pf = _int_lauf(lambda: mail_abholer.postfach(str(body.get("postfach") or "")))
+    n = _int_max(body)
+    return _int_lauf(lambda: {"ok": True, **mail_abholer.abholen(mandant, pf, n, body.get("nur_anhaenge") is True, pf.get("abfrage") or None)})
+
+
+@router.get("/integrationen/docuseal/vorlagen")
+def int_docuseal_vorlagen():
+    import docuseal
+    return _int_lauf(lambda: {"vorlagen": docuseal.vorlagen()})
+
+
+@router.post("/integrationen/docuseal/senden")
+def int_docuseal_senden(body: dict):
+    import docuseal
+    mandant = _mandant_pruefen(body.get("mandant") or MANDANT)
+    vorlage = body.get("vorlage")
+    if isinstance(vorlage, bool) or not isinstance(vorlage, int):
+        raise HTTPException(400, "vorlage: template id (number)")
+    an = str(body.get("an") or "").strip()
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", an):
+        raise HTTPException(400, "an: e-mail address of the signer")
+    beleg = _quell_datei(mandant, body) if body.get("quelle") else None
+    return _int_lauf(lambda: {"ok": True, **docuseal.senden(mandant, vorlage, an, str(body.get("name") or ""), None, beleg, body.get("mail") is True,
+                                                           str(body.get("betreff") or "") or None)})
+
+
+@router.post("/integrationen/docuseal/abholen")
+def int_docuseal_abholen(body: dict = None):
+    import docuseal
+    mandant = _mandant_pruefen((body or {}).get("mandant") or MANDANT)
+    return _int_lauf(lambda: {"ok": True, "vorgaenge": docuseal.abholen(mandant)})
+
+
+@router.post("/integrationen/erpnext/doctypes")
+def int_erpnext_doctypes(body: dict = None):
+    import spiegel_erpnext
+    return _int_lauf(lambda: {"ok": True, **spiegel_erpnext.doctypes_anlegen()})
+
+
+@router.post("/integrationen/erpnext/spiegeln")
+def int_erpnext_spiegeln(body: dict = None):
+    import spiegel_erpnext
+    body = body or {}
+    mandant = _mandant_pruefen(body.get("mandant") or MANDANT)
+    n = _int_max(body)
+
+    def lauf():
+        r = spiegel_erpnext.spiegeln(mandant, n)
+        b = spiegel_erpnext.belege_aktualisieren(mandant)
+        bp.schreiben(bp.pfad_fuer(mandant), ereignis="notiz", werkzeug="trove:erpnext", mandant=mandant,
+                     meldung="ERPNext-Spiegel: %d Zeilen bis Zeile %d, %d Belege" % (r["gespiegelt"], r["letzte_zeile"], b["belege_aktualisiert"]))
+        return {"ok": True, **r, **b}
+    return _int_lauf(lauf)
+
+
+@router.get("/integrationen/erpnext/historie")
+def int_erpnext_historie(sha256: str):
+    import spiegel_erpnext
+    if not re.fullmatch(r"[0-9a-f]{64}", sha256 or ""):
+        raise HTTPException(400, "sha256: 64 hex characters")
+    return _int_lauf(lambda: spiegel_erpnext.historie(sha256))
+
+
+def _reraise_vorbereiten(body):
+    """Fail closed: without a Reraise key in Hermes nothing happens here (no preview, no upload, no network)."""
+    import reraise_hochladen as rh
+    if not rh.eingerichtet():
+        raise _fehler(403, "Reraise is not configured: without a Reraise key in Hermes Trove only links to " + RERAISE_LINK)
+    mandant = _mandant_pruefen(body.get("mandant") or MANDANT)
+    q = _quelle(mandant, body.get("quelle", ""))
+    pfad = _sicher(q["pfad"], body.get("pfad", ""))
+    if not os.path.exists(pfad):
+        raise HTTPException(404, "File or folder not found")
+    return rh, mandant, pfad, _sammlung(mandant, body)
+
+
+@router.post("/integrationen/reraise/probe")
+def int_reraise_probe(body: dict):
+    rh, mandant, pfad, sammlung = _reraise_vorbereiten(body)
+    return _int_lauf(lambda: rh.hochladen(mandant, pfad, sammlung, _int_max(body), probe=True))
+
+
+@router.post("/integrationen/reraise/senden")
+def int_reraise_senden(body: dict):
+    rh, mandant, pfad, sammlung = _reraise_vorbereiten(body)
+    liste = body.get("bestaetigt")
+    if not isinstance(liste, list) or not liste or not all(isinstance(x, str) for x in liste) or len(liste) > 200:
+        raise HTTPException(400, "bestaetigt: list of 'sha256:card_hash' from the preview")
+    nur = _int_lauf(lambda: rh.sha_liste(" ".join(liste)))
+    return _int_lauf(lambda: rh.hochladen(mandant, pfad, sammlung, None, probe=False, nur=nur, schluessel=rh._schluessel()))

@@ -2,7 +2,7 @@
 // Two panes (source on the left, target on the right) with preview on both sides. Every action goes through the hash-chained
 // receipt log. Per file: Read (text layers, OCR, fixed plausibility checks), Split (multi-page PDFs), Trace (receipt history).
 // Per folder: Into knowledge (markdown twin + knowledge card in your wiki), Index files, Check changes.
-// Trove never asks for or stores passwords: mail attachments and drive files arrive in the source folders through your Hermes agents.
+// Trove never asks for or stores passwords. Optional integrations (mail, DocuSeal, ERPNext, Reraise) are off until configured in Hermes, which holds their credentials.
 // UI language: English by default, German as the second language through the Hermes plugin i18n (ctx.i18n.register).
 import { host, Button, Badge, Input, SandboxedFrame, ROUTES_AREA, SIDEBAR_NAV_AREA, PALETTE_AREA, usePluginI18n, useI18n } from '@hermes/plugin-sdk'
 import { useState, useEffect, useCallback, useRef } from 'react'
@@ -12,6 +12,7 @@ const ID = 'reraise-trove'
 let rest = null
 let storage = null
 let files = null          // ctx.files (the app's folder picker); may be missing on older Hermes builds
+let osDoor = null         // ctx.os (open-external); may be missing on older Hermes builds
 let T = (k) => k          // ctx.i18n.t, for code outside React (notifications)
 let MANDANT = ''          // comes from the backend (GET /status), no second source of truth
 let PROFILE = ['default']
@@ -370,6 +371,88 @@ function Tasks() {
   ] })
 }
 
+// ---------------------------------------------------------------- optional integrations (configured only in Hermes)
+// Mail, DocuSeal, ERPNext mirror and Reraise are off until their settings are filled in under Hermes Settings -> Plugins -> Trove.
+// Trove never shows, asks for or stores a credential here; Reraise without a key is only a link to reraise.ai.
+function Integrations({ left }) {
+  const t = usePluginI18n(ID)
+  const [open, setOpen] = useState(false); const [s, setS] = useState(null); const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false)
+  const [tpls, setTpls] = useState(null); const [tplId, setTplId] = useState(''); const [signer, setSigner] = useState(''); const [dsMail, setDsMail] = useState(false)
+  const [collection, setCollection] = useState(''); const [cards, setCards] = useState(null); const [picked, setPicked] = useState([])
+  const load = useCallback(() => rest('/integrationen').then(setS).catch((e) => setMsg({ err: errText(e) })), [])
+  useEffect(() => { if (open) load() }, [open, load])
+  const brief = (r) => Object.entries(r || {}).filter(([, v]) => typeof v === 'number').map(([k, v]) => k + ' ' + v).join(', ')
+  const call = async (what, path, opts) => {
+    setBusy(true); setMsg(null)
+    try { const r = await rest(path, opts); setMsg({ text: t('intDone', what, brief(r)) }); return r } catch (e) { setMsg({ err: errText(e) }); return null } finally { setBusy(false) }
+  }
+  const post = (body, ms) => ({ method: 'POST', body: { mandant: MANDANT, ...body }, timeoutMs: ms || 3600000 })
+  const state = (name, x) => jsxs('div', { className: 'flex items-center gap-2 flex-wrap', children: [
+    jsx('span', { className: 'font-medium', children: name }),
+    jsx(Badge, { children: x && x.active ? t('intActive') : t('intOff') }),
+    x && !x.active && (x.missing || []).length ? jsx('span', { className: quiet, children: t('intMissing', x.missing.join(', ')) }) : null] })
+  const openReraise = async () => {
+    const link = s.reraise.link
+    const ok = osDoor && typeof osDoor.openExternal === 'function' ? await osDoor.openExternal(link) : false
+    if (!ok) setMsg({ text: link })
+  }
+  const loadTpls = async () => { const r = await call(t('intTemplates'), '/integrationen/docuseal/vorlagen'); if (r) setTpls(r.vorlagen || []) }
+  const send = () => call(t('intSend'), '/integrationen/docuseal/senden', post({ vorlage: Number(tplId), an: signer.trim(), mail: dsMail }))
+  const where = { quelle: left.quelle, pfad: left.pfad || '', sammlung: collection.trim().toLowerCase() || DEFAULT_COLLECTION }
+  const preview = async () => {
+    setCards(null); setPicked([])
+    const r = await call(t('intPreviewCards'), '/integrationen/reraise/probe', post(where))
+    if (r) setCards((r.eintraege || []).filter((e) => e.zustand === 'gebaut'))
+  }
+  const publish = async () => {
+    const list = cards.filter((e) => picked.includes(e.sha256)).map((e) => e.sha256 + ':' + e.karte_hash)
+    const r = await call(t('intPublishDone'), '/integrationen/reraise/senden', post({ ...where, bestaetigt: list }))
+    if (r) { setCards(null); setPicked([]) }
+  }
+  const toggle = (sha) => setPicked(picked.includes(sha) ? picked.filter((x) => x !== sha) : [...picked, sha])
+  let body = null
+  if (open && !s) body = jsx('div', { className: quiet, children: t('loading') })
+  else if (open) body = jsxs('div', { className: 'flex flex-col gap-2', children: [
+    jsxs('div', { className: 'flex items-center gap-2 flex-wrap', children: [jsx('span', { className: quiet, children: t('intHint') }),
+      btn(t('intSettings'), () => host.navigate(s.settings)), btn(t('intReload'), load)] }),
+    jsxs('div', { className: box + ' p-2 flex flex-col gap-1', children: [state(t('intMail'), { active: s.mail.mailboxes.some((b) => b.active), missing: [] }),
+      ...s.mail.mailboxes.map((b) => jsxs('div', { className: 'flex items-center gap-2 flex-wrap', children: [
+        jsx('span', { className: 'font-mono', children: b.id }), jsx(Badge, { children: b.active ? t('intActive') : t('intOff') }),
+        !b.active && b.missing.length ? jsx('span', { className: quiet, children: t('intMissing', b.missing.join(', ')) }) : null,
+        b.signin ? jsx('span', { className: quiet, children: t('intGmailSignin', b.signin) }) : null,
+        b.active ? btn(t('intFetchMail', b.id), () => call(t('intFetchMail', b.id), '/integrationen/mail/abholen', post({ postfach: b.id })), { disabled: busy }) : null] }, b.id))] }),
+    jsxs('div', { className: box + ' p-2 flex flex-col gap-1', children: [state(t('intDocuseal'), s.docuseal),
+      s.docuseal.active ? jsxs('div', { className: 'flex items-center gap-2 flex-wrap', children: [
+        btn(t('intTemplates'), loadTpls, { disabled: busy }),
+        tpls ? jsxs('select', { className: selectCls, value: tplId, onChange: (e) => setTplId(e.target.value), children: [jsx('option', { value: '', children: t('intChooseTemplate') }),
+          ...tpls.map((x) => jsx('option', { value: String(x.id), children: x.name }, x.id))] }) : null,
+        tpls ? jsx(Input, { placeholder: t('intSignerPlaceholder'), value: signer, onChange: (e) => setSigner(e.target.value), className: 'text-xs w-56' }) : null,
+        tpls ? jsxs('label', { className: 'flex items-center gap-1', children: [jsx('input', { type: 'checkbox', checked: dsMail, onChange: (e) => setDsMail(e.target.checked) }), t('intDsMail')] }) : null,
+        tpls ? btn(t('intSend'), send, { disabled: busy || !tplId || !signer.trim() }) : null,
+        btn(t('intFetchSigned'), () => call(t('intFetchSigned'), '/integrationen/docuseal/abholen', post({})), { disabled: busy })] }) : null] }),
+    jsxs('div', { className: box + ' p-2 flex flex-col gap-1', children: [state(t('intErpnext'), s.erpnext),
+      s.erpnext.active ? jsxs('div', { className: 'flex items-center gap-2 flex-wrap', children: [
+        btn(t('intMirror'), () => call(t('intMirror'), '/integrationen/erpnext/spiegeln', post({})), { disabled: busy, title: t('intMirrorTip') }),
+        btn(t('intDoctypes'), () => call(t('intDoctypes'), '/integrationen/erpnext/doctypes', post({})), { disabled: busy, title: t('intDoctypesTip') })] }) : null] }),
+    jsxs('div', { className: box + ' p-2 flex flex-col gap-1', children: [state(t('intReraise'), { active: s.reraise.active, missing: [] }),
+      !s.reraise.active ? jsxs('div', { className: 'flex items-center gap-2 flex-wrap', children: [btn(t('intReraiseVisit'), openReraise), jsx('span', { className: quiet, children: t('intReraiseHint') })] })
+        : jsxs('div', { className: 'flex flex-col gap-1', children: [
+          jsxs('div', { className: 'flex items-center gap-2 flex-wrap', children: [
+            jsx(Input, { placeholder: t('collectionPlaceholder', DEFAULT_COLLECTION), value: collection, onChange: (e) => setCollection(e.target.value), className: 'text-xs w-44' }),
+            btn(t('intPreviewCards'), preview, { disabled: busy || !left.quelle, title: left.quelle ? t('intPreviewTip') : t('intPickLeft') }),
+            cards ? btn(t('intPublish', picked.length), publish, { disabled: busy || !picked.length }) : null] }),
+          cards && !cards.length ? jsx('div', { className: quiet, children: t('intNoCards') }) : null,
+          ...(cards || []).slice(0, 50).map((e) => jsxs('label', { className: 'flex items-center gap-1', children: [
+            jsx('input', { type: 'checkbox', checked: picked.includes(e.sha256), onChange: () => toggle(e.sha256) }),
+            jsx('span', { className: 'truncate', title: e.karte_probe && e.karte_probe.body, children: (e.karte_probe && e.karte_probe.title) || e.sha256 })] }, e.sha256))] })] }),
+    busy ? jsx('div', { className: quiet, children: t('running') }) : null,
+    msg ? jsx('div', { className: msg.err ? 'text-destructive' : quiet, children: msg.err || msg.text }) : null] })
+  return jsxs('div', { className: box + ' p-2 text-xs flex flex-col gap-1 shrink-0', children: [
+    jsxs('div', { className: 'flex items-center gap-2', children: [jsx('span', { className: 'font-medium', children: t('intTitle') }), jsx('span', { className: 'flex-1' }),
+      jsx(Button, { size: 'sm', variant: 'ghost', onClick: () => setOpen(!open), children: open ? t('close') : t('intOpen') })] }),
+    body] })
+}
+
 // ---------------------------------------------------------------- page
 function TrovePage({ only }) {
   const t = usePluginI18n(ID)
@@ -437,7 +520,7 @@ function TrovePage({ only }) {
   ] })
   const sideL = jsx(Side, { side: 'links', sources, state: left, setState: setLeft, selection: selL, setSelection: setSelL, reload, onSourcesChanged: loadSources })
   const sideR = jsx(Side, { side: 'rechts', sources, state: right, setState: setRight, selection: selR, setSelection: setSelR, reload, onSourcesChanged: loadSources })
-  const tasks = jsx(Tasks, {})
+  const tasks = jsxs('div', { className: 'flex flex-col gap-2 shrink-0', children: [jsx(Tasks, {}), jsx(Integrations, { left })] })
   const rootCls = 'flex h-full min-h-0 w-full min-w-0 flex-col gap-2 p-3 overflow-auto'
   const field = (inner) => jsx('div', { className: 'flex-1 flex flex-col min-w-0', style: { minHeight: 560 }, children: inner })
   const column = (inner) => jsx('div', { style: { flex: '1 1 300px', minWidth: 0, display: 'flex', flexDirection: 'column' }, children: inner })
@@ -453,7 +536,7 @@ export default {
   name: 'Trove',
   description: 'File hub: two panes with preview; copy/move/sync through a hash-chained receipt log; read, split and trace files; build knowledge cards in your wiki.',
   register(ctx) {
-    rest = ctx.rest; storage = ctx.storage; files = ctx.files || null
+    rest = ctx.rest; storage = ctx.storage; files = ctx.files || null; osDoor = ctx.os || null
     T = (k, ...a) => ctx.i18n.t(k, ...a)
     ctx.i18n.register({ en: EN, de: DE })
     ctx.registerMany([
@@ -524,7 +607,18 @@ const EN = {
   tasksTitle: 'Tasks for your agents (Hermes Kanban)', nOpen: (n) => n + ' open', close: 'close', newTask: '+ Task',
   taskTitlePlaceholder: 'Title (e.g. review the batch in the left source and list duplicates)', taskTextPlaceholder: 'Task text: what exactly should be done. The card stays blocked until you release it.',
   agent: 'Agent:', defaultAgent: '(Hermes default)', creating: 'creating …', titleFirst: 'enter a title or text first', createCard: 'Create card (blocked)',
-  startsAfterRelease: 'The agent starts only after you press "Release" in the list.', release: 'Release', archive: 'Archive'
+  startsAfterRelease: 'The agent starts only after you press "Release" in the list.', release: 'Release', archive: 'Archive',
+  intTitle: 'Integrations (optional: mail, signing, ERPNext, Reraise)', intOpen: 'show', intHint: 'All off until you configure them in Hermes. Trove never asks for passwords or keys here.',
+  intSettings: 'Open Hermes settings', intReload: 'Refresh', intActive: 'on', intOff: 'off', intMissing: (n) => 'needs in Hermes: ' + n,
+  intMail: 'Mail (attachments into the receipt log)', intFetchMail: (id) => 'Fetch ' + id, intGmailSignin: (c) => 'sign in once in a terminal: ' + c,
+  intDocuseal: 'Signing (your DocuSeal)', intTemplates: 'Templates', intChooseTemplate: '– template –', intSignerPlaceholder: 'Signer e-mail', intDsMail: 'DocuSeal sends the invitation e-mail',
+  intSend: 'Send for signature', intFetchSigned: 'Fetch signed documents',
+  intErpnext: 'ERPNext mirror (your accounting system)', intMirror: 'Mirror now', intMirrorTip: 'Append new receipt-log lines and update one record per document in your ERPNext',
+  intDoctypes: 'Create doctypes', intDoctypesTip: 'Create the two Trove doctypes in your ERPNext (the API user needs the right to create doctypes)',
+  intReraise: 'Reraise (public knowledge cards)', intReraiseVisit: 'Open reraise.ai', intReraiseHint: 'Publishing needs your own Reraise key in the Hermes settings; until then this is only a link.',
+  intPreviewCards: 'Preview cards (left folder)', intPreviewTip: 'Builds the public cards of the left folder from twins marked public; nothing is sent', intPickLeft: 'choose a source on the left first',
+  intPublish: (n) => 'Publish ' + n + ' ticked card(s)', intPublishDone: 'Publish', intNoCards: 'No public cards in this folder (run Into knowledge with public visibility first).',
+  intDone: (what, s) => what + ': done' + (s ? ' (' + s + ')' : '')
 }
 // </i18n:en>
 // <i18n:de>
@@ -583,6 +677,17 @@ const DE = {
   tasksTitle: 'Aufträge an deine Agenten (Hermes Kanban)', nOpen: (n) => n + ' offen', close: 'schließen', newTask: '+ Auftrag',
   taskTitlePlaceholder: 'Titel (z. B. Belegstapel in der linken Quelle sichten und Dubletten listen)', taskTextPlaceholder: 'Auftragstext: was genau getan werden soll. Die Karte bleibt gesperrt, bis du sie freigibst.',
   agent: 'Agent:', defaultAgent: '(Hermes-Standard)', creating: 'lege an …', titleFirst: 'erst Titel oder Text eingeben', createCard: 'Karte anlegen (gesperrt)',
-  startsAfterRelease: 'Der Agent startet erst nach „Freigeben“ in der Liste.', release: 'Freigeben', archive: 'Archivieren'
+  startsAfterRelease: 'Der Agent startet erst nach „Freigeben“ in der Liste.', release: 'Freigeben', archive: 'Archivieren',
+  intTitle: 'Anbindungen (optional: Mail, Unterschrift, ERPNext, Reraise)', intOpen: 'zeigen', intHint: 'Alle aus, bis du sie in Hermes einrichtest. Trove fragt hier nie nach Passwörtern oder Schlüsseln.',
+  intSettings: 'Hermes-Einstellungen öffnen', intReload: 'Neu laden', intActive: 'an', intOff: 'aus', intMissing: (n) => 'braucht in Hermes: ' + n,
+  intMail: 'Mail (Anhänge ins Belegprotokoll)', intFetchMail: (id) => id + ' abholen', intGmailSignin: (c) => 'einmal im Terminal anmelden: ' + c,
+  intDocuseal: 'Unterschrift (dein DocuSeal)', intTemplates: 'Vorlagen', intChooseTemplate: '– Vorlage –', intSignerPlaceholder: 'E-Mail der unterschreibenden Person', intDsMail: 'DocuSeal verschickt die Einladung per E-Mail',
+  intSend: 'Zur Unterschrift senden', intFetchSigned: 'Unterschriebenes abholen',
+  intErpnext: 'ERPNext-Spiegel (deine Buchhaltung)', intMirror: 'Jetzt spiegeln', intMirrorTip: 'Neue Zeilen des Belegprotokolls anfügen und je Beleg einen Satz in deinem ERPNext nachführen',
+  intDoctypes: 'Doctypes anlegen', intDoctypesTip: 'Die zwei Trove-Doctypes in deinem ERPNext anlegen (der API-Benutzer braucht das Recht dazu)',
+  intReraise: 'Reraise (öffentliche Wissenskarten)', intReraiseVisit: 'reraise.ai öffnen', intReraiseHint: 'Veröffentlichen braucht deinen eigenen Reraise-Schlüssel in den Hermes-Einstellungen; bis dahin ist das nur ein Link.',
+  intPreviewCards: 'Karten-Vorschau (linker Ordner)', intPreviewTip: 'Baut die öffentlichen Karten des linken Ordners aus Zwillingen mit Sichtbarkeit öffentlich; nichts wird gesendet', intPickLeft: 'erst links eine Quelle wählen',
+  intPublish: (n) => n + ' angehakte Karte(n) veröffentlichen', intPublishDone: 'Veröffentlichen', intNoCards: 'Keine öffentlichen Karten in diesem Ordner (erst „Ins Wissen“ mit Sichtbarkeit öffentlich).',
+  intDone: (what, s) => what + ': fertig' + (s ? ' (' + s + ')' : '')
 }
 // </i18n:de>
