@@ -13,7 +13,7 @@ const here = path.dirname(new URL(import.meta.url).pathname)
 let src = fs.readFileSync(path.join(here, '..', 'plugin', 'desktop', 'plugin.js'), 'utf8')
 src = src.replace(/^import .*$/gm, '')   // imports come from globalThis.__T
 src = "const { host, Button, Badge, Input, SandboxedFrame, ROUTES_AREA, SIDEBAR_NAV_AREA, PALETTE_AREA, usePluginI18n, useI18n, useState, useEffect, useCallback, useRef, jsx, jsxs } = globalThis.__T\n" + src
-src += "\nexport { TrovePage, Side, IntoKnowledge, ResultPanel, Preview, AddSource, Tasks, Search, EN, DE }\n"
+src += "\nexport { sortEntries, TrovePage, Side, IntoKnowledge, ResultPanel, Preview, AddSource, Tasks, Search, EN, DE }\n"
 
 let locale = 'en'; const bundles = {}; const notes = []; let storageData = {}
 const tr = (loc, key, args) => { const v = (bundles[loc] || {})[key] ?? (bundles.en || {})[key] ?? key; return typeof v === 'function' ? v(...args) : v }
@@ -70,8 +70,35 @@ for (const loc of ['en', 'de']) {
   ok(cp.length === 1 && !cp[0].props.disabled, loc + ': copy → enabled (target writable)')
   const mv = btns.filter((b) => /Move →|Verschieben →/.test(JSON.stringify(b.props.children)))
   ok(mv.length === 1 && mv[0].props.disabled, loc + ': move → disabled (source read-only)')
+  // new folder / rename: only on the writable pane (right = Archive), disabled with a reason on the read-only pane (left)
+  const nf = btns.filter((b) => /^(New folder|Neuer Ordner)$/.test(JSON.stringify(b.props.children).replace(/"/g, '')))
+  ok(nf.length === 2 && nf[0].props.disabled && !nf[1].props.disabled, loc + ': new folder disabled on read-only pane, enabled on writable pane')
+  const rn = btns.filter((b) => /^(Rename|Umbenennen)$/.test(JSON.stringify(b.props.children).replace(/"/g, '')))
+  ok(rn.length === 2 && rn.every((b) => b.props.disabled), loc + ': rename disabled until an entry is clicked (and on read-only pane)')
+  ok(tree.root.findAllByType('select').length >= 6, loc + ': sort selector present on each pane')
   const mvBack = btns.filter((b) => /← Move|← Verschieben/.test(JSON.stringify(b.props.children)))
   ok(mvBack.length === 1 && mvBack[0].props.disabled, loc + ': ← move disabled (target read-only)')
+}
+{
+  // interaction: new folder on the writable pane issues exactly one POST /ordner-neu, rename is blocked on the read-only pane
+  locale = 'en'
+  const tree = await render(React.createElement(mod.TrovePage, {}))
+  const nfBtn = tree.root.findAllByType('button').filter((b) => JSON.stringify(b.props.children) === '"New folder"')[1]
+  await TR.act(async () => { nfBtn.props.onClick(); await settle() })
+  const inp = tree.root.findAllByType('input').find((i) => i.props.placeholder === 'name')
+  ok(!!inp, 'new folder opens an inline name field (no window.prompt)')
+  await TR.act(async () => { inp.props.onChange({ target: { value: 'Taxes 2026' } }); await settle() })
+  const okBtn = tree.root.findAllByType('button').find((b) => JSON.stringify(b.props.children) === '"OK"')
+  await TR.act(async () => { okBtn.props.onClick(); await settle() })
+  const posts = calls.filter((c) => c[0] === '/ordner-neu')
+  ok(posts.length === 1 && posts[0][2].name === 'Taxes 2026' && posts[0][2].quelle === 'b2', 'new folder posts to /ordner-neu for the writable source')
+}
+{
+  const L = [{ name: 'b.txt', ordner: false, groesse: 5, mtime: 30 }, { name: 'a.pdf', ordner: false, groesse: 9, mtime: 10 }, { name: 'z', ordner: true, groesse: 0, mtime: 1 }, { name: 'c.md', ordner: false, groesse: 1, mtime: 20 }, { name: 'File10.txt', ordner: false, groesse: 2, mtime: 5 }, { name: 'File2.txt', ordner: false, groesse: 3, mtime: 6 }]
+  const names = (key, dir) => mod.sortEntries(L, { key, dir }).map((e) => e.name).join(',')
+  ok(names('name', 'asc') === 'z,a.pdf,b.txt,c.md,File2.txt,File10.txt' && names('name', 'desc') === 'z,File10.txt,File2.txt,c.md,b.txt,a.pdf', 'sort by name (folders first, natural order, both directions)')
+  ok(names('size', 'desc').split(',').slice(0, 2).join() === 'z,a.pdf' && names('date', 'asc').split(',').slice(1, 3).join() === 'File10.txt,File2.txt', 'sort by size and date keeps folders first')
+  ok(names('type', 'asc').split(',').slice(1, 3).join() === 'c.md,a.pdf', 'sort by type')
 }
 locale = 'en'
 const AddNode = await render(React.createElement(mod.AddSource, { onDone() {} }))
@@ -83,6 +110,6 @@ ok(text(rp).includes('passed (sure)'), 'ResultPanel (read) renders')
 const tk = await render(React.createElement(mod.Tasks, {}))
 ok(text(tk).includes('Release'), 'Tasks lists a blocked card with a Release button')
 ok(calls.some((c) => c[0] === '/liste') && calls.some((c) => c[0] === '/status'), 'backend calls issued')
-ok(!calls.some((c) => c[1] === 'POST' && ['/aktion', '/wissen', '/register'].includes(c[0])), 'rendering alone never triggers a write action')
+ok(!calls.some((c) => c[1] === 'POST' && ['/aktion', '/wissen', '/register', '/umbenennen'].includes(c[0])), 'rendering alone never triggers a write action')
 console.log(failures ? failures + ' FAILED' : 'UI SMOKE PASSED')
 process.exit(failures ? 1 : 0)
