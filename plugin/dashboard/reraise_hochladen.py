@@ -53,11 +53,11 @@ ABGEWIESEN = (400, 401, 403, 413, 422, 429)  # nur diese gelten als "nichts ange
 WERKZEUG = "reraise_hochladen.py"
 
 
-class Abbruch(RuntimeError):
+class Abbruch(zugang.DienstFehler):
     """Gilt fuer den ganzen Lauf (Schluessel abgelehnt, Tageslimit, Protokoll/Stand nach Versand): weitermachen waere falsch."""
 
 
-class Abgewiesen(RuntimeError):
+class Abgewiesen(zugang.DienstFehler):
     """Server hat klar abgelehnt (code in ABGEWIESEN): nichts angelegt, Stand darf zurueck."""
 
     def __init__(self, code, meldung):
@@ -69,7 +69,7 @@ class AbgewiesenAbbruch(Abgewiesen, Abbruch):
     """Abgewiesen und fuer den ganzen Lauf (Schluessel, Herkunft, Tageslimit)."""
 
 
-class Unklar(RuntimeError):
+class Unklar(zugang.DienstFehler):
     """Die Anfrage ging raus, die Antwort fehlt: die Karte kann existieren."""
 
 
@@ -203,7 +203,7 @@ def senden(karte, schluessel):
             with OPENER.open(urllib.request.Request(RERAISE + "/api/x/cards", data=daten, method="POST", headers=kopf), timeout=30) as h:
                 d = _antwort(h.read())
             if not (d.get("ok") and isinstance(d.get("card"), dict) and d["card"].get("id")):
-                raise Unklar("Reraise: unerwartete Antwort " + zugang.kurz(json.dumps(d, ensure_ascii=False), 200))
+                raise Unklar("Reraise: unexpected answer (details withheld) - the card may exist")
             return d["card"]
         except urllib.error.HTTPError as e:
             if e.code not in ABGEWIESEN:
@@ -220,7 +220,7 @@ def senden(karte, schluessel):
                 raise AbgewiesenAbbruch(429, "Tageslimit von Reraise erreicht (30 Karten je Tag); gesendete stehen in "
                                         "reraise.json, morgen weiter")
             if e.code != 429 or versuch == VERSUCHE:
-                raise Abgewiesen(e.code, "Reraise %d %s: %s" % (e.code, d.get("error") or "", d.get("message") or e.reason))
+                raise Abgewiesen(e.code, str(zugang.http_fehler("Reraise", e.code, d, "error")))
         except (OSError, http.client.HTTPException) as e:  # URLError ist OSError: Body kann angekommen sein
             raise Unklar("Reraise: keine Antwort (%s) — Karte kann existieren" % type(e).__name__)
         time.sleep(2 ** versuch)
@@ -234,9 +234,9 @@ def abgleich(sha):
                          timeout=30) as h:
             d = _antwort(h.read())
     except (OSError, http.client.HTTPException) as e:
-        raise RuntimeError("Abgleich mit Reraise gescheitert (%s) — nicht gesendet" % type(e).__name__)
+        raise zugang.DienstFehler("Abgleich mit Reraise gescheitert (%s) — nicht gesendet" % type(e).__name__)
     if not isinstance(d.get("cards"), list):
-        raise RuntimeError("Abgleich mit Reraise: unerwartete Antwort — nicht gesendet")
+        raise zugang.DienstFehler("Abgleich mit Reraise: unerwartete Antwort — nicht gesendet")
     for c in d["cards"]:
         if isinstance(c, dict) and c.get("id") and sha in str(c.get("source") or ""):
             return {**c, "url": RERAISE + "/trade/#card-" + c["id"]}
@@ -294,9 +294,9 @@ def _senden_buchen(l, p, sha, md, karte, stand, schluessel):
                 stand_speichern(l.mandant, stand_setzen(stand, sha, None))  # vom Server klar abgewiesen: nichts angelegt
                 raise
             stand_speichern(l.mandant, stand_setzen(stand, sha, "unklar"))
-            erg = {"zustand": "unklar", "grund": zugang.kurz(ex, 300)}
+            erg = {"zustand": "unklar", "grund": zugang.fehlertext(ex, 300)}
             try:
-                _notiz(l, "fehler", quelle=p, sha256=sha, meldung="Reraise unklar: %s" % zugang.kurz(ex, 250), sammlung=l.sammlung)
+                _notiz(l, "fehler", quelle=p, sha256=sha, meldung="Reraise unklar: %s" % zugang.fehlertext(ex, 250), sammlung=l.sammlung)
             except Exception as fx:
                 erg["protokoll_fehler"] = zugang.kurz(fx, 200)
             return erg
@@ -312,7 +312,7 @@ def _senden_buchen(l, p, sha, md, karte, stand, schluessel):
             stand_speichern(l.mandant, stand_setzen(stand, sha, "unklar"))
         except Exception:
             pass  # "unterwegs" steht seit vor dem POST im Stand: der naechste Lauf gleicht ab
-        raise Abbruch("Karte %s ist auf Reraise, aber Protokoll/Stand scheiterten: %s" % (k["id"], zugang.kurz(ex, 200))) from ex
+        raise Abbruch("Karte %s ist auf Reraise, aber Protokoll/Stand scheiterten: %s" % (k["id"], zugang.fehlertext(ex, 200))) from ex
     return {"zustand": "gesendet" if wie == "gesendet" else "schon_da", "karte": k["id"], "nr": k.get("no"), "url": k.get("url"),
             "titel": karte["title"], "wie": wie}
 
@@ -360,12 +360,12 @@ def hochladen(mandant, pfad, sammlung, max_dateien=None, probe=False, nur=None, 
                         erste[sha] = p
                         e = _datei(l, p, sha, stand, probe, schluessel)
                 except Exception as ex:
-                    e = {"datei": p, "zustand": "fehler", "grund": zugang.kurz(ex, 300)}
+                    e = {"datei": p, "zustand": "fehler", "grund": zugang.fehlertext(ex, 300)}
                     if isinstance(ex, Abbruch):
-                        z["abbruch"] = str(ex)
+                        z["abbruch"] = zugang.fehlertext(ex, 300)
                     if not probe:
                         try:
-                            _notiz(l, "fehler", quelle=p, meldung="Reraise: " + zugang.kurz(ex, 300))
+                            _notiz(l, "fehler", quelle=p, meldung="Reraise: " + zugang.fehlertext(ex, 300))
                         except Exception as fx:
                             e["protokoll_fehler"] = zugang.kurz(fx, 200)
                 z["dubletten" if e["zustand"] == "dublette" else e["zustand"]] += 1
@@ -374,7 +374,7 @@ def hochladen(mandant, pfad, sammlung, max_dateien=None, probe=False, nur=None, 
                 if "abbruch" in z:
                     break
         except Exception as ex:
-            z.setdefault("abbruch", zugang.kurz(ex, 300))
+            z.setdefault("abbruch", zugang.fehlertext(ex, 300))
         if not probe:
             try:
                 _notiz(l, "notiz", anker=True, meldung="Reraise-Hochladen Ende: "

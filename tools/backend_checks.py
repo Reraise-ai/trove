@@ -233,12 +233,18 @@ def run_integrationen(c, u, tmp, mod):
     assert [b["active"] for b in s["mail"]["mailboxes"]] == [False, False] and s["reraise"]["link"] == "https://reraise.ai", s
     assert "TROVE_RERAISE_KEY" not in json.dumps(s["reraise"]), s  # the Reraise row offers only the link
     for meth, pfad, body in (("get", "/integrationen/docuseal/vorlagen", None), ("post", "/integrationen/docuseal/abholen", {}),
-                             ("post", "/integrationen/erpnext/spiegeln", {}), ("post", "/integrationen/erpnext/doctypes", {}),
+                             ("post", "/integrationen/erpnext/spiegeln", {}), ("post", "/integrationen/erpnext/doctypes", {"confirm": True}),
+                             ("post", "/integrationen/docuseal/senden", {"vorlage": 1, "an": "a@example.invalid", "confirm": True}),
                              ("post", "/integrationen/mail/abholen", {"postfach": "imap"}), ("post", "/integrationen/mail/abholen", {"postfach": "gmail"}),
                              ("post", "/integrationen/reraise/probe", {"quelle": "x"}),
                              ("post", "/integrationen/reraise/senden", {"quelle": "x", "bestaetigt": ["a" * 64]})):
         r = getattr(c, meth)(u + pfad, **({"json": body} if body is not None else {}))
         assert r.status_code == 403, (pfad, r.status_code, r.text)
+    # K1: consequential actions need {"confirm": true} in the request, checked before anything else
+    for pfad, body in (("/integrationen/erpnext/doctypes", {}), ("/integrationen/erpnext/doctypes", {"confirm": "yes"}),
+                       ("/integrationen/docuseal/senden", {"vorlage": 1, "an": "a@example.invalid"})):
+        r = c.post(u + pfad, json=body)
+        assert r.status_code == 400 and "confirm" in r.text, (pfad, r.status_code, r.text)
     # 2) Hermes mock: secrets and settings as Hermes would hand them out (services at 127.0.0.1:9 = nothing listens)
     geheim = {"TROVE_DOCUSEAL_API_KEY": "ds-SECRET-1111", "TROVE_ERPNEXT_API_KEY": "erp-KEY-2222", "TROVE_ERPNEXT_API_SECRET": "erp-SECRET-3333",
               "TROVE_IMAP_PASSWORD": "imap-SECRET-4444", "TROVE_RERAISE_KEY": "rr-SECRET-5555"}

@@ -450,8 +450,8 @@ function Integrations({ left }) {
     if (!ok) setMsg({ text: link })
   }
   const loadTpls = async () => { const r = await call(t('intTemplates'), '/integrationen/docuseal/vorlagen'); if (r) setTpls(r.vorlagen || []) }
-  const send = () => { setAsk(null); return call(t('intSend'), '/integrationen/docuseal/senden', post({ vorlage: Number(tplId), an: signer.trim(), mail: dsMail })) }
-  const doctypes = () => { setAsk(null); return call(t('intDoctypes'), '/integrationen/erpnext/doctypes', post({})) }
+  const send = () => { setAsk(null); return call(t('intSend'), '/integrationen/docuseal/senden', post({ vorlage: Number(tplId), an: signer.trim(), mail: dsMail, confirm: true })) }
+  const doctypes = () => { setAsk(null); return call(t('intDoctypes'), '/integrationen/erpnext/doctypes', post({ confirm: true })) }
   const tplName = () => ((tpls || []).find((x) => String(x.id) === tplId) || {}).name || tplId
   const confirmBox = (text, go) => jsxs('div', { className: 'flex items-center gap-2 flex-wrap', children: [
     jsx('span', { className: 'font-medium text-destructive', children: text }),

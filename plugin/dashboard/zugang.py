@@ -40,10 +40,82 @@ _bekannt = set()
 _formen = set()
 _formen_sortiert = []
 _sperre = threading.Lock()
+_lokal = threading.local()
 
 
 class NichtEingerichtet(RuntimeError):
     """The integration is not configured in Hermes (inactive)."""
+
+
+class DienstFehler(RuntimeError):
+    """An outside service failed. The text is written by Trove only (service, HTTP status, at most a validated short error code);
+    a response body, reason phrase or other upstream text never goes into it."""
+
+
+RE_CODE = re.compile(r"[A-Za-z0-9_.-]{1,64}")
+
+
+def fehler_code(body, *felder):
+    """A short error code from an upstream JSON error body (dotted field paths, e.g. "error.status"), only if it matches RE_CODE."""
+    import json as _json
+    try:
+        d = body if isinstance(body, (dict, list)) else _json.loads(body.decode("utf-8", "replace") if isinstance(body, (bytes, bytearray)) else str(body))
+    except (ValueError, TypeError):
+        return ""
+    for feld in felder:
+        x = d
+        for teil in feld.split("."):
+            if isinstance(x, dict):
+                x = x.get(teil)
+            elif isinstance(x, list) and teil.isdigit() and int(teil) < len(x):
+                x = x[int(teil)]
+            else:
+                x = None
+                break
+        if isinstance(x, str) and RE_CODE.fullmatch(x):
+            return schwaerzen(x)
+    return ""
+
+
+def http_fehler(dienst, status, body=None, *felder):
+    """DienstFehler for a non-success answer: fixed text + status + optional validated code. The body itself is dropped."""
+    code = fehler_code(body, *felder) if body is not None and felder else ""
+    return DienstFehler("%s answered HTTP %s%s" % (dienst, status, " (code %s)" % code if code and code != "***" else ""))
+
+
+def fehlertext(ex, n=300):
+    """Text of an exception for responses, logs and the receipt log. Trove's own errors keep their text; anything that may carry
+    upstream text (HTTP errors with reason phrases, protocol errors, unknown exceptions) is reduced to its type."""
+    import http.client
+    import urllib.error
+    eigene = ("LaufLaeuft", "ProtokollGesperrt", "ProtokollDefekt")
+    if isinstance(ex, urllib.error.HTTPError):
+        t = "HTTP %s" % ex.code
+    elif isinstance(ex, (NichtEingerichtet, DienstFehler, ValueError, KeyError)) or type(ex).__name__ in eigene:
+        t = str(ex)
+    elif isinstance(ex, urllib.error.URLError):
+        r = ex.reason
+        t = "%s (%s)" % (type(ex).__name__, getattr(r, "strerror", None) or type(r).__name__)
+    elif isinstance(ex, OSError):
+        t = "%s (%s)" % (type(ex).__name__, ex.strerror or "no details")
+    elif isinstance(ex, http.client.HTTPException):
+        t = "%s: protocol error (details withheld)" % type(ex).__name__
+    else:
+        t = "%s: unexpected error (details withheld)" % type(ex).__name__
+    return kurz(t, n)
+
+
+_GET_SECRET = []
+
+
+def _hermes_get_secret():
+    if not _GET_SECRET:
+        try:
+            from agent.secret_scope import get_secret
+        except ImportError:
+            get_secret = None
+        _GET_SECRET.append(get_secret)
+    return _GET_SECRET[0]
 
 
 def geheimnis(name):
@@ -53,9 +125,8 @@ def geheimnis(name):
     if geheimnis_quelle is not None:
         wert = geheimnis_quelle(name)
     else:
-        try:
-            from agent.secret_scope import get_secret
-        except ImportError:
+        get_secret = _hermes_get_secret()
+        if get_secret is None:
             return None  # not running inside Hermes: nothing is configured
         try:
             wert = get_secret(name)
@@ -150,9 +221,23 @@ def _merken(wert):
                 _formen_sortiert[:] = sorted(_formen, key=len, reverse=True)
 
 
+def alle_laden():
+    """Read every declared secret once (through Hermes) so redaction knows them even in a process that has not used them yet."""
+    if getattr(_lokal, "laedt", False):
+        return
+    _lokal.laedt = True
+    try:
+        for n in GEHEIMNISSE:
+            geheimnis(n)
+    finally:
+        _lokal.laedt = False
+
+
 def schwaerzen(text):
-    """THE redaction for every outgoing text (HTTP responses, logging, receipt log, ERPNext mirror): every secret value read in
-    this process, in every spelling (_varianten), becomes ***. Redact first, truncate afterwards (kurz)."""
+    """THE redaction for every outgoing text (HTTP responses, logging, receipt log, ERPNext mirror): every declared secret (all
+    loaded first, alle_laden), in every spelling (_varianten), becomes ***. Redact first, truncate afterwards (kurz).
+    Second layer only: upstream bodies are not passed on in the first place (http_fehler, fehlertext)."""
+    alle_laden()
     t = text if isinstance(text, str) else str(text)
     with _sperre:
         formen = list(_formen_sortiert)

@@ -63,7 +63,11 @@ def api(path, body=None, method=None, timeout=120):
         with OPENER.open(req, timeout=timeout) as h:
             return h.status, json.loads(h.read() or b"{}")
     except urllib.error.HTTPError as e:
-        return e.code, zugang.kurz(e.read(), 600)
+        try:
+            body = e.read(4000)
+        except (OSError, ValueError):
+            body = b""
+        return e.code, body  # callers turn this into zugang.http_fehler (status + validated exc_type), never into text
 
 
 def feld(fieldname, label, fieldtype="Data", **kw):
@@ -107,16 +111,16 @@ def doctypes_anlegen():
     if not q("/api/resource/Role/" + urllib.parse.quote(ROLLE))[0] == 200:
         st, r = q("/api/resource/Role", {"role_name": ROLLE, "desk_access": 1})
         if st != 200:
-            raise RuntimeError("ERPNext role %s: %s %s" % (ROLLE, st, zugang.kurz(r, 200)))
+            raise zugang.http_fehler("ERPNext role " + ROLLE, st, r, "exc_type")
     st, r = q("/api/resource/DocType?filters=" + urllib.parse.quote(json.dumps([["name", "like", "Trove%"]])) + "&fields=" + urllib.parse.quote(json.dumps(["name"])))
     if st != 200:
-        raise RuntimeError("ERPNext doctype list: %s %s" % (st, zugang.kurz(r, 200)))
+        raise zugang.http_fehler("ERPNext doctype list", st, r, "exc_type")
     vorhanden = {x["name"] for x in r.get("data", [])}
     ergebnis = {}
     for name, d in definitionen().items():
         if name not in vorhanden:
             st, r = q("/api/resource/DocType", d)
-            ergebnis[name] = st if st == 200 else (st, zugang.kurz(r, 300))
+            ergebnis[name] = st if st == 200 else str(zugang.http_fehler("ERPNext", st, r, "exc_type"))
     # Nachruesten: Feld "zeile" + Namensregel nach Zeilenposition (nr kann nach vermerktem Kettenbruch doppelt vorkommen)
     st, dt = q("/api/resource/DocType/" + urllib.parse.quote(DT_EREIGNIS))
     if st == 200:
@@ -124,12 +128,12 @@ def doctypes_anlegen():
         if not any(f["fieldname"] == "zeile" for f in d["fields"]):
             d["fields"].insert(1, feld("zeile", "Zeile", "Int", in_list_view=1))
             st, r = q("/api/resource/DocType/" + urllib.parse.quote(DT_EREIGNIS), {"fields": d["fields"], "autoname": "format:TRV-{mandant}-{zeile}", "sort_field": "zeile"}, "PUT")
-            ergebnis["nachgeruestet_zeile"] = st if st == 200 else (st, zugang.kurz(r, 200))
+            ergebnis["nachgeruestet_zeile"] = st if st == 200 else str(zugang.http_fehler("ERPNext", st, r, "exc_type"))
     for name in definitionen():
         st, dt = q("/api/resource/DocType/" + urllib.parse.quote(name))
         if st == 200 and not any(p.get("role") == ROLLE for p in dt["data"]["permissions"]):
             st, r = q("/api/resource/DocType/" + urllib.parse.quote(name), {"permissions": dt["data"]["permissions"] + [RECHTE_AGENT]}, "PUT")
-            ergebnis["rolle_" + name] = st if st == 200 else (st, zugang.kurz(r, 200))
+            ergebnis["rolle_" + name] = st if st == 200 else str(zugang.http_fehler("ERPNext", st, r, "exc_type"))
     return {"vorhanden": sorted(vorhanden), "angelegt": ergebnis}
 
 
@@ -160,6 +164,7 @@ KERN = ("nr", "zeit", "ereignis", "quelle", "ziel", "sha256", "bytes", "werkzeug
 
 def spiegeln(mandant, max_zeilen=None, batch=200):
     _kopf()  # not configured -> NichtEingerichtet before any lock file is created
+    zugang.alle_laden()  # redaction knows every declared secret before anything is mirrored
     with _sperre(mandant, "spiegel_erpnext"):
         s = stand(mandant)
         if "letzte_zeile" not in s:  # Altstand (nach nr): bis dahin war nr == Zeile (vor dem ersten vermerkten Bruch)
@@ -189,7 +194,7 @@ def spiegeln(mandant, max_zeilen=None, batch=200):
                 docs.append(d)
             st, r = api("/api/method/frappe.client.insert_many", {"docs": docs}, timeout=600)
             if st != 200:
-                raise RuntimeError("ERPNext insert_many failed at line %d: %s %s" % (teil[0]["_zeile"], st, zugang.kurz(r, 300)))
+                raise zugang.http_fehler("ERPNext insert_many at line %d" % teil[0]["_zeile"], st, r, "exc_type")
             gesendet += len(teil)
             s["letzte_zeile"] = teil[-1]["_zeile"]; s["letzte_nr"] = teil[-1]["nr"]
             stand_speichern(mandant, s)
@@ -246,18 +251,18 @@ def belege_aktualisieren(mandant, max_belege=None):
             teil = docs[i:i + 100]
             st, r = api("/api/method/frappe.client.get_list", {"doctype": DT_BELEG, "filters": [["sha256", "in", [t[0] for t in teil]]], "fields": ["name"], "limit_page_length": 1000})
             if st != 200:
-                raise RuntimeError("ERPNext get_list documents: %s %s" % (st, zugang.kurz(r, 300)))
+                raise zugang.http_fehler("ERPNext get_list documents", st, r, "exc_type")
             da = {x["name"] for x in r.get("message", [])}
             neu = [d for sha, m, d in teil if sha not in da]
             if neu:
                 st, r = api("/api/method/frappe.client.insert_many", {"docs": neu}, timeout=600)
                 if st != 200:
-                    raise RuntimeError("ERPNext insert_many documents: %s %s" % (st, zugang.kurz(r, 300)))
+                    raise zugang.http_fehler("ERPNext insert_many documents", st, r, "exc_type")
             for sha, m, d in teil:
                 if sha in da:
                     st, r = api("/api/resource/%s/%s" % (urllib.parse.quote(DT_BELEG), sha), {k: v for k, v in d.items() if k not in ("doctype", "sha256")}, method="PUT")
                     if st != 200:
-                        raise RuntimeError("ERPNext update document %s: %s %s" % (sha[:12], st, zugang.kurz(r, 200)))
+                        raise zugang.http_fehler("ERPNext update document " + sha[:12], st, r, "exc_type")
                 s["belege"][sha] = m
             gesendet += len(teil)
             stand_speichern(mandant, s, "spiegel_belege.json")
@@ -267,7 +272,11 @@ def belege_aktualisieren(mandant, max_belege=None):
 def historie(sha):
     st, r = api("/api/resource/%s?filters=%s&fields=%s&order_by=creation%%20asc&limit_page_length=500" % (urllib.parse.quote(DT_EREIGNIS), urllib.parse.quote(json.dumps([["sha256", "=", sha]])), urllib.parse.quote(json.dumps(["nr", "zeit", "ereignis", "quelle", "ziel", "meldung"]))))
     st2, b = api("/api/resource/%s/%s" % (urllib.parse.quote(DT_BELEG), sha))
-    return {"ereignisse": r.get("data", []) if st == 200 else r, "beleg": b.get("data") if st2 == 200 else None}
+    out = {"ereignisse": (r.get("data") or []) if st == 200 and isinstance(r, dict) else [],
+           "beleg": b.get("data") if st2 == 200 and isinstance(b, dict) else None}
+    if st != 200:
+        out["fehler"] = str(zugang.http_fehler("ERPNext history", st, r, "exc_type"))  # never the upstream body
+    return out
 
 
 def _selbsttest():

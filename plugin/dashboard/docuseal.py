@@ -60,29 +60,37 @@ def api(pfad, body=None, method=None, roh=False):
             d = h.read()
             return h.status, (d if roh else json.loads(d or b"null"))
     except urllib.error.HTTPError as e:
-        return e.code, zugang.kurz(e.read(), 400)
+        try:
+            body = e.read(4000)
+        except (OSError, ValueError):
+            body = b""
+        return e.code, body  # callers turn this into zugang.http_fehler (status + validated code), never into text
 
 
 RE_VORGANG = re.compile(r"[0-9]{1,15}")
 
 
 def url_erlaubt(url, basis):
-    """Download only over https, or http to the configured DocuSeal itself; no file://, ftp:, data: or user info."""
+    """Download only from the configured DocuSeal itself (same scheme, host and port); no other host, no file://, ftp:, data:,
+    no user info. Documents that DocuSeal stores elsewhere (e.g. on object storage) are therefore not fetched."""
     x = urllib.parse.urlsplit(str(url or ""))
-    if x.username or x.password or not x.hostname:
+    if x.username or x.password or not x.hostname or x.scheme.lower() not in ("http", "https"):
         return False
-    if x.scheme.lower() == "https":
-        return True
-    return x.scheme.lower() == "http" and _origin(url) == _origin(basis)
+    try:
+        return _origin(url) == _origin(basis)
+    except ValueError:
+        return False
 
 
 def _laden(url):
     basis, key = _ziel()
     if not url_erlaubt(url, basis):
-        raise RuntimeError("DocuSeal download refused: only https or the configured DocuSeal address")
-    kopf = {"X-Auth-Token": key} if _origin(url) == _origin(basis) else {}  # key never to other hosts
-    with OPENER.open(urllib.request.Request(url, headers=kopf), timeout=300) as h:
-        return h.read()
+        raise zugang.DienstFehler("DocuSeal download refused: only from the configured DocuSeal address")
+    try:
+        with OPENER.open(urllib.request.Request(url, headers={"X-Auth-Token": key}), timeout=300) as h:
+            return h.read()
+    except urllib.error.HTTPError as e:
+        raise zugang.http_fehler("DocuSeal download", e.code)
 
 
 def _sha_datei(p):
@@ -113,7 +121,7 @@ def stand_speichern(mandant, s):
 def vorlagen():
     st, r = api("/templates?limit=100")
     if st != 200:
-        raise RuntimeError("DocuSeal templates: %s %s" % (st, zugang.kurz(r, 200)))
+        raise zugang.http_fehler("DocuSeal templates", st, r, "error")
     return [{"id": t["id"], "name": t["name"], "felder": [f["name"] for f in t.get("fields", [])], "rollen": [s["name"] for s in t.get("submitters", [])]} for t in r.get("data", [])]
 
 
@@ -121,7 +129,7 @@ def senden(mandant, vorlage_id, an, name="", rolle=None, beleg=None, mail=False,
     """Richtung 1: Vorgang aus Vorlage anlegen. beleg = Pfad des Originals (sha wird gemerkt, Rueckverfolgung)."""
     st, t = api("/templates/%d" % vorlage_id)
     if st != 200:
-        raise RuntimeError("DocuSeal template %d: %s %s" % (vorlage_id, st, zugang.kurz(t, 200)))
+        raise zugang.http_fehler("DocuSeal template %d" % vorlage_id, st, t, "error")
     rolle = rolle or (t.get("submitters") or [{"name": "First Party"}])[0]["name"]
     sub = {"role": rolle, "email": an}
     if name:
@@ -141,12 +149,12 @@ def senden(mandant, vorlage_id, an, name="", rolle=None, beleg=None, mail=False,
 def _senden_mit_protokoll(prot, mandant, vorlage_id, t, body, an, name, rolle, beleg, mail):
     st, r = api("/submissions", body)
     if st not in (200, 201):
-        raise RuntimeError("DocuSeal create submission: %s %s" % (st, zugang.kurz(r, 200)))
+        raise zugang.http_fehler("DocuSeal create submission", st, r, "error")
     submitters = r if isinstance(r, list) else r.get("submitters", [r])
     s0 = submitters[0]
     vorgang = s0.get("submission_id") or (s0.get("submission") or {}).get("id")
     if vorgang is None:
-        raise RuntimeError("DocuSeal returned no submission id")
+        raise zugang.DienstFehler("DocuSeal returned no submission id")
     link = s0.get("embed_src") or (_ziel()[0] + "/s/" + s0["slug"] if s0.get("slug") else "")
     beleg_sha = _sha_datei(beleg) if beleg and os.path.isfile(beleg) else ""
     s = stand_lesen(mandant)
@@ -179,7 +187,7 @@ def abholen(mandant, nur_vorgang=None):
         try:
             _vorgang_abholen(prot, mandant, s, vid, v, erg)
         except Exception as ex:
-            erg.append({"vorgang": vid, "fehler": zugang.kurz(ex, 200)})
+            erg.append({"vorgang": vid, "fehler": zugang.fehlertext(ex, 200)})
         stand_speichern(mandant, s)
     finally:
         prot.close()
@@ -191,7 +199,7 @@ def _vorgang_abholen(prot, mandant, s, vid, v, erg):
             erg.append({"vorgang": "?", "fehler": "invalid submission id, skipped"}); return
         st, d = api("/submissions/%s" % vid)
         if st != 200:
-            erg.append({"vorgang": vid, "fehler": "%s %s" % (st, zugang.kurz(d, 120))}); return
+            erg.append({"vorgang": vid, "fehler": str(zugang.http_fehler("DocuSeal submission", st, d, "error"))}); return
         status = d.get("status") or ("completed" if all(u.get("status") == "completed" for u in d.get("submitters", [])) else "pending")
         v["status"] = status
         v["unterzeichner"] = [{"email": u.get("email"), "status": u.get("status"), "completed_at": u.get("completed_at")} for u in d.get("submitters", [])]
@@ -200,36 +208,46 @@ def _vorgang_abholen(prot, mandant, s, vid, v, erg):
             wurzel = os.path.realpath(os.path.join(bp.WURZEL, mandant, "unterschrieben"))
             ordner = os.path.join(wurzel, "vorgang_%s" % vid)
             if os.path.dirname(os.path.realpath(ordner)) != wurzel:
-                raise RuntimeError("target folder outside the signed-documents folder")
+                raise zugang.DienstFehler("target folder outside the signed-documents folder")
             os.makedirs(ordner, exist_ok=True)
             dateien = []
             quellen = [(doc.get("name") or "dokument", doc.get("url")) for doc in d.get("documents", []) if doc.get("url")]
             if d.get("audit_log_url"):
                 quellen.append(("audit-log", d["audit_log_url"]))
+            fehlgeschlagen = []
             for i, (nm, url) in enumerate(quellen, 1):
                 nm = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", nm)[:100] or "dokument_%d" % i
                 if not nm.lower().endswith(".pdf"):
                     nm += ".pdf"
                 p = os.path.join(ordner, "%02d_%s" % (i, nm))  # laufende Nummer: gleiche Namen im Vorgang kollidieren nicht
-                if os.path.dirname(os.path.realpath(p)) != os.path.realpath(ordner):
-                    raise RuntimeError("file name leaves the target folder")
-                if os.path.exists(p):
-                    sha = _sha_datei(p); zustand = "schon_da"
-                else:
-                    daten = _laden(url)
-                    with open(p + ".teil", "wb") as f:
-                        f.write(daten)
-                    sha = _sha_datei(p + ".teil")
-                    if sha != hashlib.sha256(daten).hexdigest():
-                        os.remove(p + ".teil"); raise RuntimeError("read-back check failed: " + os.path.basename(p))
-                    os.replace(p + ".teil", p); zustand = "neu"
+                try:
+                    if os.path.dirname(os.path.realpath(p)) != os.path.realpath(ordner):
+                        raise zugang.DienstFehler("file name leaves the target folder")
+                    if os.path.exists(p):
+                        sha = _sha_datei(p); zustand = "schon_da"
+                    else:
+                        daten = _laden(url)
+                        with open(p + ".teil", "wb") as f:
+                            f.write(daten)
+                        sha = _sha_datei(p + ".teil")
+                        if sha != hashlib.sha256(daten).hexdigest():
+                            os.remove(p + ".teil"); raise zugang.DienstFehler("read-back check failed: " + os.path.basename(p))
+                        os.replace(p + ".teil", p); zustand = "neu"
+                except Exception as ex:  # only this file fails; the other files and submissions go on
+                    grund = zugang.fehlertext(ex, 200)
+                    fehlgeschlagen.append({"datei": nm, "fehler": grund})
+                    prot.schreiben("fehler", quelle="docuseal:vorgang/%s/%s" % (vid, nm), werkzeug="trove:docuseal", mandant=mandant,
+                                   lauf="docuseal-%s" % vid, meldung="DocuSeal: Datei nicht geholt: " + grund)
+                    continue
                 dateien.append({"datei": p, "sha256": sha, "zustand": zustand})
                 if not v.get("abgeholt"):  # Ereignis auch fuer Dateien, die ein abgebrochener Lauf schon abgelegt hatte
                     prot.schreiben("unterschrieben", quelle="docuseal:vorgang/%s/%s" % (vid, nm), ziel=p, sha256=sha, bytes_=os.path.getsize(p),
                                  werkzeug="trove:docuseal", mandant=mandant, lauf="docuseal-%s" % vid,
                                  meldung="Unterschrieben zurueck: %s (%s) von %s; Original sha %s" % (nm, v.get("vorlage_name"), v.get("an"), (v.get("beleg_sha256") or "-")[:16]),
                                  vorgang=int(vid), original=v.get("beleg") or "", original_sha256=v.get("beleg_sha256") or "", unterzeichner=v["unterzeichner"])
-            v["abgeholt"] = True; v["dateien"] = dateien; v["abgeholt_am"] = bp._jetzt()
+            if fehlgeschlagen:
+                z["fehler"] = fehlgeschlagen
+            v["abgeholt"] = not fehlgeschlagen; v["dateien"] = dateien; v["abgeholt_am"] = bp._jetzt()
             z["dateien"] = dateien
         erg.append(z)
 
@@ -285,7 +303,8 @@ def _selbsttest_download():
     """K2: only https / configured http; ids from the server are digits only; nothing lands outside unterschrieben/."""
     import http.server, tempfile, threading
     b = "http://127.0.0.1:8"
-    for url, ok in (("https://files.example.invalid/x.pdf", True), (b + "/file/1", True), ("http://127.0.0.1:9/x", False),
+    for url, ok in (("https://files.example.invalid/x.pdf", False), (b + "/file/1", True), ("http://127.0.0.1:9/x", False),
+                    ("https://127.0.0.1:8/x", False), ("HTTP://127.0.0.1:8/x", True), ("http://127.0.0.1:8@evil.example/x", False),
                     ("file:///tmp/trove-test-not-there", False), ("ftp://127.0.0.1:8/x", False), ("https://u:p@example.invalid/x", False),
                     ("data:text/plain,abc", False), ("", False)):
         assert url_erlaubt(url, b) == ok, url
@@ -298,7 +317,12 @@ def _selbsttest_download():
             if self.path.startswith("/api/submissions?"):
                 d = {"data": [{"id": "../../boese", "submitters": []}, {"id": 5, "submitters": []}]}
             elif self.path.startswith("/api/submissions/5"):
-                d = {"id": 5, "status": "completed", "submitters": [], "documents": [{"name": "../../../x", "url": "file:///tmp/trove-test-not-there"}]}
+                d = {"id": 5, "status": "completed", "submitters": [], "documents": [
+                    {"name": "../../../x", "url": "file:///tmp/trove-test-not-there"}, {"name": "gut", "url": "http://127.0.0.1:%d/file/1" % port},
+                    {"name": "fremd", "url": "https://files.example.invalid/y.pdf"}]}
+            elif self.path.startswith("/file/"):
+                body = b"%PDF-1.4 ok"
+                self.send_response(200); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body); return
             else:
                 d = {}
             body = json.dumps(d).encode()
@@ -307,6 +331,7 @@ def _selbsttest_download():
         def log_message(self, *a):
             pass
     srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+    port = srv.server_address[1]
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     try:
         with tempfile.TemporaryDirectory() as w:
@@ -315,7 +340,11 @@ def _selbsttest_download():
             zugang.einstellungen_quelle = lambda: {"docuseal_url": "http://127.0.0.1:%d" % srv.server_address[1]}
             erg = abholen("t")
             assert "../../boese" not in stand_lesen("t")["vorgaenge"] and not any("boese" in p for p in geholt), (geholt, erg)
-            assert any("refused" in str(e.get("fehler", "")) for e in erg), erg
+            v5 = next(e for e in erg if e.get("vorgang") == "5")
+            assert [d["datei"].rsplit("_", 1)[-1] for d in v5["dateien"]] == ["gut.pdf"], v5  # the good file is fetched
+            assert len(v5["fehler"]) == 2 and all("refused" in f["fehler"] for f in v5["fehler"]), v5  # the bad ones fail alone
+            assert not stand_lesen("t")["vorgaenge"]["5"]["abgeholt"]  # retried next run
+            assert not any("files.example" in p for p in geholt)
             dateien = [os.path.join(r, f) for r, _, fs in os.walk(w) for f in fs]
             assert not any("not-there" in f or "/x" in f for f in dateien), dateien
             assert all(os.path.realpath(f).startswith(os.path.realpath(bp.WURZEL)) for f in dateien), dateien

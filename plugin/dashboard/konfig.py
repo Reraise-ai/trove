@@ -59,7 +59,7 @@ def ist_geheimname(var):
     a key, secret, password or token. Those come only from Hermes."""
     try:
         import zugang
-        if var in zugang.GEHEIMNISSE:
+        if str(var).upper() in zugang.GEHEIMNISSE:  # case-insensitive: os.environ on Windows is
             return True
     except ImportError:
         pass
@@ -163,7 +163,7 @@ def python_finden(modul=None):
 def _selbsttest_geheim():
     import tempfile
     for n in ("TROVE_RERAISE_KEY", "TROVE_DOCUSEAL_API_KEY", "TROVE_ERPNEXT_API_SECRET", "TROVE_IMAP_PASSWORD", "GITHUB_TOKEN", "X_API_KEY",
-              "TROVE_GMAIL_CLIENT_ID", "MY_PASSWORD_FILE"):
+              "TROVE_GMAIL_CLIENT_ID", "trove_gmail_client_id", "Trove_Reraise_Key", "MY_PASSWORD_FILE"):
         assert ist_geheimname(n), n
     for n in ("TROVE_STIRLING", "TROVE_OLLAMA", "TROVE_QMD", "TROVE_WIKI", "TROVE_HERMES", "TROVE_ASSIGNEE", "TROVE_SKILL", "TROVE_CARD_STATUS",
               "TROVE_ARBEITSORDNER", "TROVE_REGISTER_DB", "TROVE_MONKEYS"):

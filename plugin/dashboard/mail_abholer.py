@@ -71,7 +71,7 @@ class Gmail:
             except (OSError, TimeoutError) as e:
                 if versuch < 5:
                     time.sleep(2 ** versuch); continue
-                raise RuntimeError("Gmail %s: network: %s" % (path.split("?")[0], type(e).__name__))
+                raise zugang.DienstFehler("Gmail %s: network: %s" % (path.split("?")[0], type(e).__name__))
             if st == 200:
                 return json.loads(body or b"{}")
             text = zugang.kurz(body or b"", 300)
@@ -79,7 +79,7 @@ class Gmail:
                 time.sleep(30 if st == 403 else 2 ** versuch); continue
             if st == 401:
                 raise NichtEingerichtet("Gmail rejected the sign-in (401): run `hermes auth add %s:%s` again" % (zugang.PLUGIN_ID, zugang.GMAIL_OAUTH_ID))
-            raise RuntimeError("Gmail %s: %s %s" % (path.split("?")[0], st, text))
+            raise zugang.http_fehler("Gmail " + path.split("?")[0].split("/")[0], st, body, "error.status")
 
     def profil(self):
         return self.api("profile")
@@ -102,7 +102,7 @@ class Gmail:
 
     def roh(self, mid):
         if not re.fullmatch(r"[0-9A-Za-z]{1,64}", str(mid)):
-            raise RuntimeError("Gmail: unexpected message id")
+            raise zugang.DienstFehler("Gmail: unexpected message id")
         r = self.api("messages/" + mid, {"format": "raw"})
         return base64.urlsafe_b64decode(r["raw"] + "=" * (-len(r["raw"]) % 4)), int(r.get("internalDate", 0)), r.get("labelIds", [])
 
@@ -114,12 +114,12 @@ class Imap:
         try:
             self.c.login(user, passwort)
         except imaplib.IMAP4.error:
-            raise RuntimeError("IMAP login rejected for the configured user")
+            raise zugang.DienstFehler("IMAP login rejected for the configured user")
 
     def uids(self, ordner, ab_uid):
         typ, _ = self.c.select('"%s"' % ordner, readonly=True)
         if typ != "OK":
-            raise RuntimeError("IMAP folder not selectable: " + ordner)
+            raise zugang.DienstFehler("IMAP folder not selectable: " + ordner)
         uv = (self.c.response("UIDVALIDITY")[1] or [b""])[0]
         self.uidvalidity = uv.decode() if isinstance(uv, bytes) else str(uv or "")
         typ, d = self.c.uid("search", None, "UID %d:*" % (ab_uid + 1))
@@ -128,7 +128,7 @@ class Imap:
     def roh(self, uid):
         typ, d = self.c.uid("fetch", str(uid), "(RFC822)")
         if typ != "OK" or not d or d[0] is None:
-            raise RuntimeError("IMAP fetch %s: %s" % (uid, typ))
+            raise zugang.DienstFehler("IMAP fetch %s: %s" % (uid, typ))
         return d[0][1]
 
 
@@ -239,7 +239,7 @@ def abholen(mandant, pf, max_n=None, nur_anhaenge=False, abfrage=None, prot=None
                     e = ablegen(prot, mandant, pf["id"], roh, ims, nur_anhaenge)
                 except Exception as ex:
                     z["fehler"] += 1
-                    prot.schreiben("fehler", quelle="mail:%s/gmail-id-%s" % (pf["id"], mid), werkzeug=WERKZEUG, mandant=mandant, lauf="mail-" + pf["id"], meldung="Ablage: " + zugang.kurz(ex, 300))
+                    prot.schreiben("fehler", quelle="mail:%s/gmail-id-%s" % (pf["id"], mid), werkzeug=WERKZEUG, mandant=mandant, lauf="mail-" + pf["id"], meldung="Ablage: " + zugang.fehlertext(ex, 300))
                     continue
                 z["mails"] += 1
                 if e.get("eml_status") in ("konflikt", "lesefehler"):
@@ -274,7 +274,7 @@ def abholen(mandant, pf, max_n=None, nur_anhaenge=False, abfrage=None, prot=None
                         e = ablegen(prot, mandant, pf["id"], roh, 0, nur_anhaenge)
                     except Exception as ex:
                         z["fehler"] += 1
-                        prot.schreiben("fehler", quelle="mail:%s/%s/uid-%d" % (pf["id"], ordner, uid), werkzeug=WERKZEUG, mandant=mandant, lauf="mail-" + pf["id"], meldung="Ablage: " + zugang.kurz(ex, 300))
+                        prot.schreiben("fehler", quelle="mail:%s/%s/uid-%d" % (pf["id"], ordner, uid), werkzeug=WERKZEUG, mandant=mandant, lauf="mail-" + pf["id"], meldung="Ablage: " + zugang.fehlertext(ex, 300))
                         continue
                     z["mails"] += 1
                     if e.get("eml_status") in ("konflikt", "lesefehler"):

@@ -1283,7 +1283,7 @@ def _int_lauf(f):
     except (ValueError, KeyError) as ex:
         raise _fehler(400, zugang.schwaerzen(ex))
     except Exception as ex:
-        raise _fehler(502, "%s: %s" % (type(ex).__name__, zugang.kurz(ex, 400)))
+        raise _fehler(502, zugang.fehlertext(ex, 400))  # never an upstream body or reason phrase
 
 
 @router.get("/integrationen")
@@ -1326,9 +1326,16 @@ def int_docuseal_vorlagen():
     return _int_lauf(lambda: {"vorlagen": docuseal.vorlagen()})
 
 
+def _bestaetigt(body):
+    """Consequential actions need an explicit confirmation in the request itself (the UI sends it after the second click)."""
+    if (body or {}).get("confirm") is not True:
+        raise HTTPException(400, 'confirmation required: send {"confirm": true} after showing the user what will happen')
+
+
 @router.post("/integrationen/docuseal/senden")
 def int_docuseal_senden(body: dict):
     import docuseal
+    _bestaetigt(body)
     mandant = _mandant_pruefen(body.get("mandant") or MANDANT)
     vorlage = body.get("vorlage")
     if isinstance(vorlage, bool) or not isinstance(vorlage, int):
@@ -1351,6 +1358,7 @@ def int_docuseal_abholen(body: dict = None):
 @router.post("/integrationen/erpnext/doctypes")
 def int_erpnext_doctypes(body: dict = None):
     import spiegel_erpnext
+    _bestaetigt(body)
     return _int_lauf(lambda: {"ok": True, **spiegel_erpnext.doctypes_anlegen()})
 
 
