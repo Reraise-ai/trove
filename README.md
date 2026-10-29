@@ -121,7 +121,7 @@ it back. Trove only writes into writable folders (copy, move, sync, rename, new 
 - *Move* copies, verifies, and **then deletes the original**. It needs the source and the target to be writable, and asks for a second click.
 - *Sync* copies missing files from the left folder to the right folder and never overwrites.
 - *Rename* and *New folder* work only in writable folders, never overwrite an existing entry, accept a single plain name (no path, no `..`, no names Windows reserves) and are entered in the receipt log.
-- Links (symlinks) are never followed: an action on a link, or on a path through a link, is refused; links inside a folder are skipped and logged.
+- Links (symlinks and Windows junctions) are never followed: copy, move, sync, rename and new folder refuse an action on a link or on a path through a link; links inside a folder are skipped and logged.
 - An action onto itself (same file or folder, target inside the moved folder) is refused before anything is touched.
 
 **What Trove writes outside your folders** (all under your control):

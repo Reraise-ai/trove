@@ -42,7 +42,7 @@ Die optionalen Anbindungen bekommen ihre Zugangsdaten nur von Hermes (siehe unte
 - *Verschieben*: kopiert, prüft und **löscht dann das Original**. Quelle und Ziel müssen beschreibbar sein; es braucht einen zweiten Klick.
 - *Abgleichen*: kopiert fehlende Dateien von links nach rechts, überschreibt nie.
 - *Umbenennen* und *Neuer Ordner*: nur in beschreibbaren Ordnern, überschreiben nie einen vorhandenen Eintrag, nehmen nur einen schlichten Namen (kein Pfad, kein `..`, keine unter Windows reservierten Namen) und landen im Belegprotokoll.
-- Verknüpfungen (Links) werden nie verfolgt; eine Aktion auf sich selbst wird abgelehnt, bevor etwas angefasst wird.
+- Verknüpfungen (Symlinks und Windows-Junctions) werden nie verfolgt: Kopieren, Verschieben, Abgleichen, Umbenennen und Neuer Ordner lehnen eine Aktion auf eine Verknüpfung oder durch sie hindurch ab; Verknüpfungen in einem Ordner werden übersprungen und protokolliert. Eine Aktion auf sich selbst wird abgelehnt, bevor etwas angefasst wird.
 
 **Was Trove außerhalb deiner Ordner schreibt:** den eigenen Datenordner (`TROVE_DATEN`, Standard `~/Trove`: Belegprotokoll, Dateiregister, Quellenliste, Aufgabenliste);
 bei „Ins Wissen“ Markdown-Zwillinge unter `<wiki>/../raw/trove/` und Karten unter `<wiki>/quellen/` (Standard-Wiki: `<TROVE_DATEN>/knowledge/wiki`, oder `TROVE_WIKI`)
