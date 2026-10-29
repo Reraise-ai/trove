@@ -524,10 +524,10 @@ const EN = {
   trace_direkt: 'direct', trace_rueckwaerts: 'backwards', trace_vorwaerts: 'forwards', trace_gleicher_inhalt: 'same content elsewhere',
   searchPlaceholder: 'Search the index and the receipt log: file name, invoice number, sender, sha256 …', search: 'Search', collapse: 'hide', expand: 'show', searching: 'searching …',
   foundUnder: (w, n) => 'located ' + w + ' (' + n + '):', receiptLogN: (n) => 'Receipt log (' + n + '):',
-  tasksTitle: 'Tasks for your agents (Hermes Kanban)', nOpen: (n) => n + ' open', close: 'close', newTask: '+ Task',
+  tasksTitle: 'Tasks for your agents (Hermes Kanban)', details: 'Details', nOpen: (n) => n + ' open', close: 'close', newTask: '+ Task',
   taskTitlePlaceholder: 'Title (e.g. review the batch in the left source and list duplicates)', taskTextPlaceholder: 'Task text: what exactly should be done. The card stays blocked until you release it.',
   agent: 'Agent:', defaultAgent: '(Hermes default)', creating: 'creating …', titleFirst: 'enter a title or text first', createCard: 'Create card (blocked)',
-  startsAfterRelease: 'The agent starts only after you press "Release" in the list.', release: 'Release', archive: 'Archive', details: 'Details'
+  startsAfterRelease: 'The agent starts only after you press "Release" in the list.', release: 'Release', archive: 'Archive'
 }
 // </i18n:en>
 // <i18n:de>
@@ -583,9 +583,9 @@ const DE = {
   trace_direkt: 'direkt', trace_rueckwaerts: 'rückwärts', trace_vorwaerts: 'vorwärts', trace_gleicher_inhalt: 'gleicher Inhalt anderswo',
   searchPlaceholder: 'Index und Belegprotokoll durchsuchen: Dateiname, Rechnungsnummer, Absender, sha256 …', search: 'Suchen', collapse: 'zu', expand: 'auf', searching: 'suche …',
   foundUnder: (w, n) => 'liegt ' + w + ' (' + n + '):', receiptLogN: (n) => 'Belegprotokoll (' + n + '):',
-  tasksTitle: 'Aufträge an deine Agenten (Hermes Kanban)', nOpen: (n) => n + ' offen', close: 'schließen', newTask: '+ Auftrag',
+  tasksTitle: 'Aufträge an deine Agenten (Hermes Kanban)', details: 'Details', nOpen: (n) => n + ' offen', close: 'schließen', newTask: '+ Auftrag',
   taskTitlePlaceholder: 'Titel (z. B. Belegstapel in der linken Quelle sichten und Dubletten listen)', taskTextPlaceholder: 'Auftragstext: was genau getan werden soll. Die Karte bleibt gesperrt, bis du sie freigibst.',
   agent: 'Agent:', defaultAgent: '(Hermes-Standard)', creating: 'lege an …', titleFirst: 'erst Titel oder Text eingeben', createCard: 'Karte anlegen (gesperrt)',
-  startsAfterRelease: 'Der Agent startet erst nach „Freigeben“ in der Liste.', release: 'Freigeben', archive: 'Archivieren', details: 'Details'
+  startsAfterRelease: 'Der Agent startet erst nach „Freigeben“ in der Liste.', release: 'Freigeben', archive: 'Archivieren'
 }
 // </i18n:de>
