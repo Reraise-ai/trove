@@ -528,6 +528,29 @@ def aktion(body: dict):
             if not os.path.exists(start):
                 ergebnis.append({"name": n, "status": "fehlt"}); continue
             zusammen = {"verifiziert": 0, "schon_da": 0, "konflikt": 0, "fehler": 0}
+            if os.path.isdir(start) and not os.path.islink(start):  # folders (also empty ones) exist at the target before any source is removed
+                for wurzel, dirs, _files in os.walk(start):
+                    dirs[:] = [d for d in dirs if not os.path.islink(os.path.join(wurzel, d))]
+                    rel_d = os.path.relpath(wurzel, os.path.dirname(start)) if n else os.path.relpath(wurzel, von_ordner)
+                    if rel_d == ".":
+                        continue
+                    ziel_d = os.path.join(nach_ordner, rel_d)
+                    if os.path.isdir(ziel_d) and not os.path.islink(ziel_d):
+                        continue
+                    if os.path.lexists(ziel_d):
+                        zusammen["konflikt"] += 1
+                        prot.schreiben("fehler", quelle=wurzel, ziel=ziel_d, werkzeug="trove-plugin", mandant=mandant, lauf=lauf,
+                                       meldung="folder not created: another entry with this name exists at the target; source kept")
+                        continue
+                    try:
+                        os.makedirs(ziel_d)
+                    except OSError as ex:
+                        zusammen["fehler"] += 1
+                        prot.schreiben("fehler", quelle=wurzel, ziel=ziel_d, werkzeug="trove-plugin", mandant=mandant, lauf=lauf,
+                                       meldung="folder not created: %s; source kept" % (ex.strerror or type(ex).__name__))
+                        continue
+                    prot.schreiben("notiz", quelle=wurzel, ziel=ziel_d, werkzeug="trove-plugin", mandant=mandant, lauf=lauf,
+                                   meldung="folder created at the target: %s" % rel_d)
             for p, rel in _dateien_unter(start):
                 ziel_pfad = os.path.join(nach_ordner, rel) if n else os.path.join(nach_ordner, os.path.relpath(p, von_ordner))
                 st = _kopiere_datei(prot, mandant, lauf, p, ziel_pfad)
