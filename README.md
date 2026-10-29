@@ -37,8 +37,9 @@ Hermes agents help with the same files. Anything an agent is asked to do starts 
 It runs on your machine. Your files stay where they are.
 
 > **Trove never asks for or stores your passwords.**
-> It has no mail login, no cloud-drive login and no API-token screens. Mail attachments and drive files reach Trove the same way
-> everything else does: your Hermes agents fetch them with Hermes's own connections and drop the files into a folder that Trove looks at.
+> Its optional integrations (mail, DocuSeal, ERPNext, Reraise) are off until you configure them in Hermes; Hermes keeps their credentials.
+> Without them, mail attachments and drive files reach Trove the way everything else does: your Hermes agents fetch them with Hermes's own
+> connections and drop the files into a folder that Trove looks at.
 
 ## Why Trove
 
@@ -107,10 +108,12 @@ flowchart LR
 
 Trove is a file tool, so it is explicit about what it touches. Everything below is the complete list.
 
-**Passwords and connections.** Trove never asks for or stores your passwords, tokens or keys, and it reads no credential files.
-The plugin contains no mail, cloud-drive, signing or accounting integrations. To get mail attachments or drive files into Trove, let a Hermes
-agent fetch them with Hermes's own connections and save them into a source folder. (Old standalone integrations that did read credential files
-live in [`extras/`](extras/integrations/README.md), outside the plugin, and are not part of the catalog build.)
+**Passwords and connections.** Trove never asks for or stores your passwords, tokens or keys, and it reads no credential files
+(no `.env`, no `auth.json`, no token files; key, secret, password or token names in `trove.json` are ignored). It has four **optional integrations** (mail, DocuSeal signing, ERPNext mirror, Reraise).
+All four are **off** after installation and stay off until you configure them in Hermes; Hermes stores their credentials and hands them to
+Trove through its own secret route (`get_secret`), or, for Gmail, sends the requests with a sign-in that only Hermes holds. See
+[Optional integrations](#optional-integrations) for exactly what talks to which service. You can also skip them entirely and let a Hermes
+agent drop mail attachments or drive files into a source folder.
 
 **Write permission is per folder.** A folder you add is **read-only**. You switch it to writable per folder, with a confirmation, and can switch
 it back. Trove only writes into writable folders (copy, move, sync, rename, new folder, and the twin files of "Into knowledge" if they land in one):
@@ -148,8 +151,28 @@ shell or file access on your machine can bypass any tool, Trove included; give s
 Python environment, write `trove.json`, add `trove` to `plugins.enabled` in Hermes's `config.yaml` (after backing the file up), and, only with
 `--dauerlauf`, register a LaunchAgent (macOS) or a Scheduled Task (Windows) that re-reads your watched folders. None of this happens unless you run it.
 
-**Network and telemetry.** No telemetry, no analytics, no auto-update. Trove itself makes no outgoing connections except to the local services above if you run them.
+**Network and telemetry.** No telemetry, no analytics, no auto-update. Trove itself makes no outgoing connections except to the local services above
+if you run them, and to the services of the optional integrations below **only after you configure them** and click their buttons.
 It opens no listening port, except the optional MCP HTTP transport on `127.0.0.1` when you start it with `--http`.
+
+### Optional integrations
+
+Everything here is off by default. An integration becomes active only when its settings are filled in under **Hermes Settings → Plugins → Trove**
+(or with `hermes config`). Secret fields are stored by Hermes in the active profile, never in `config.yaml` and never by Trove. Every text Trove sends out (screen, log, receipt log, ERPNext mirror) is scrubbed of these secret values in all common spellings, even if a server echoes them back in an error. Creating ERPNext doctypes and sending a document for signature each ask for confirmation first. The defaults point
+at nothing: there is no built-in server address. The panel **Integrations** at the bottom of the Trove page shows which ones are on and what is missing.
+
+| Integration | Talks to | Only when you set | What it sends / stores |
+| --- | --- | --- | --- |
+| Mail (IMAP) | your mail server, TLS port 993 | `imap_host`, `imap_user`, secret `TROVE_IMAP_PASSWORD` | logs in, reads mails of the listed folders read-only; stores each mail as `.eml` and its attachments under `<TROVE_DATEN>/<client>/mail/` with a receipt-log entry |
+| Mail (Gmail) | `gmail.googleapis.com` | your own Google OAuth client (`TROVE_GMAIL_CLIENT_ID`, `TROVE_GMAIL_CLIENT_SECRET`) and a one-time `hermes auth add reraise-trove:gmail` | read-only scope `gmail.readonly`; Hermes holds and refreshes the token and attaches it, Trove never sees it; storage as above |
+| Signing | your own DocuSeal (`docuseal_url`) | `docuseal_url`, secret `TROVE_DOCUSEAL_API_KEY` | lists templates, creates a submission for the signer you enter, downloads completed documents to `<TROVE_DATEN>/<client>/unterschrieben/`; the key goes only to that address |
+| ERPNext mirror | your own ERPNext (`erpnext_url`) | `erpnext_url`, secrets `TROVE_ERPNEXT_API_KEY`, `TROVE_ERPNEXT_API_SECRET` | copies receipt-log lines (time, event, file paths, sha256, message) and one record per document (date, amounts, invoice number, issuer id) into two Trove doctypes of your ERPNext, your accounting system |
+| Reraise | `https://reraise.ai` | secret `TROVE_RERAISE_KEY` | without a key the button only opens reraise.ai (sign up there; Trove does not register you). With a key: you preview the cards of a folder, tick them, and only the ticked cards are sent. A card is built only from twins marked public and only from an allow-list of fields (no file names, no text of the document); an upload on Reraise cannot be deleted by members |
+
+How to configure: open Hermes **Settings → Plugins → Trove**, fill in the fields of the integration you want, save, then press **Refresh** in Trove's
+Integrations panel. For the ERPNext mirror, create an API user in your ERPNext with the role "Trove Spiegel" (or let **Create doctypes** set up the
+role and the two doctypes, which needs a key that may create doctypes). For Gmail, create a "Desktop app" OAuth client in your own Google Cloud
+project, enter its ID and secret, and sign in once in a terminal with `hermes auth add reraise-trove:gmail`.
 
 **Language.** The interface is English by default and German through Hermes's plugin i18n (it follows your Hermes language setting). Backend messages are in English.
 
@@ -170,6 +193,7 @@ Trove is early alpha. Here is what exists and what is next.
 | | Print, merge PDFs, compare file contents | 🔜 |
 | **Agents** | Tasks for Hermes agents (Kanban), blocked until you release them | ✅ |
 | | MCP access, so other agent systems use the same desk and approval step ([how](#use-trove-from-other-agents-mcp)) | ✅ |
+| **Integrations** | Optional mail (IMAP, Gmail), signing (DocuSeal), ERPNext mirror, Reraise cards: off until configured in Hermes, credentials only via Hermes, secrets scrubbed from every output ([what talks to what](#optional-integrations)) | ✅ |
 | **Log & receipts** | Tamper-evident, append-only log | ✅ |
 | | Read receipts: e-invoice XML (ZUGFeRD / Factur-X) → PDF text → local OCR | ✅ |
 | | Rule-based checks: totals, VAT rates, CUIT, IBAN, German VAT ID | ✅ |
@@ -302,16 +326,18 @@ It does not replace your procedural documentation (Verfahrensdokumentation) or a
 <summary><strong>Does my data leave my machine?</strong></summary>
 
 <br>
-No. Trove reads and writes locally and has no telemetry. The only network addresses it can talk to are the optional local services listed above
-(Stirling-PDF, Ollama) if you run them. Your agents' own connections are outside Trove.
+Not unless you turn on an integration. Trove reads and writes locally and has no telemetry. Without configuration the only network addresses it can
+talk to are the optional local services listed above (Stirling-PDF, Ollama) if you run them. The optional integrations (mail, DocuSeal, ERPNext,
+Reraise) connect only to the services you configure in Hermes, and only when you click them. Your agents' own connections are outside Trove.
 </details>
 
 <details>
 <summary><strong>How do mails and cloud files get into Trove?</strong></summary>
 
 <br>
-Through your Hermes agents. Let an agent fetch the attachments or files with Hermes's own connections and save them into a source folder. Trove
-never needs your mail or drive passwords. Once the files are in the folder, Trove previews, reads, checks, logs and files them.
+Either through your Hermes agents (an agent fetches the attachments or files with Hermes's own connections and saves them into a source folder),
+or with Trove's optional mail integration (IMAP or Gmail), configured in Hermes. In both cases Hermes, not Trove, keeps your credentials.
+Once the files are in the folder, Trove previews, reads, checks, logs and files them.
 </details>
 
 <details>
