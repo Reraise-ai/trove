@@ -12,7 +12,7 @@ Zugang (je Aufruf frisch, Reihenfolge Umgebung > trove.json "umgebung" > Standar
   TROVE_ERPNEXT_KEYS  Ordner mit api_key.txt / api_secret.txt (Pflichtangabe)
 Schluessel nie im Code, nie im Repo. Auf Mac/Linux ohne Konfiguration -> NichtEingerichtet (kein stiller Windows-Pfad).
 Einrichten (einmalig, mit Administrator-Zugang): Doctypes wie auf dem Server, Rolle "Trove Spiegel" nur fuer diese zwei Doctypes,
-Agentenbenutzer trove-spiegel@pe.local nur mit dieser Rolle, API-Schluessel in den Schluesselordner (0600), trove.json "umgebung".
+Agentenbenutzer trove-mirror@erp.example nur mit dieser Rolle, API-Schluessel in den Schluesselordner (0600), trove.json "umgebung".
 """
 import argparse, http.cookiejar, json, os, sys, time, urllib.parse, urllib.request
 
@@ -22,7 +22,7 @@ import belegprotokoll as bp
 import konfig
 
 DT_EREIGNIS, DT_BELEG = "Trove Belegereignis", "Trove Beleg"
-ROLLE, AGENT = "Trove Spiegel", "trove-spiegel@pe.local"
+ROLLE, AGENT = "Trove Spiegel", "trove-mirror@erp.example"
 WINDOWS_STANDARD = {}
 
 
@@ -150,7 +150,7 @@ def _admin_sitzung(url, benutzer, passwort, host=None):
 
 
 def zugang_aus_datei(pfad):
-    """PE-Zugangsdatei (Zeilen "Schluessel: Wert"); liefert nur Administrator-Benutzer/-Passwort, gibt nichts aus."""
+    """ERPNext-Zugangsdatei (Zeilen "Schluessel: Wert"); liefert nur Administrator-Benutzer/-Passwort, gibt nichts aus."""
     z = {}
     with open(pfad, encoding="utf-8") as f:
         for l in f:
@@ -385,7 +385,7 @@ def main():
     sub.add_parser("doctypes")
     s = sub.add_parser("einrichten", help="einmalig mit Administrator-Zugang (Datei oder TROVE_ERPNEXT_ADMIN_PASSWORT)")
     s.add_argument("--url", required=True); s.add_argument("--schluessel", required=True); s.add_argument("--host")
-    s.add_argument("--zugang", help="PE-Zugangsdatei mit Administrator-Benutzer/-Passwort"); s.add_argument("--ohne-konfig", action="store_true")
+    s.add_argument("--zugang", help="ERPNext-Zugangsdatei mit Administrator-Benutzer/-Passwort"); s.add_argument("--ohne-konfig", action="store_true")
     s = sub.add_parser("spiegeln"); s.add_argument("--mandant", default=bp.konfig.mandant()); s.add_argument("--max", type=int)
     s = sub.add_parser("belege"); s.add_argument("--mandant", default=bp.konfig.mandant()); s.add_argument("--max", type=int)
     s = sub.add_parser("historie"); s.add_argument("sha256")
