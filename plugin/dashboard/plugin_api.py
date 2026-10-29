@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import errno
+import functools
 import hashlib
 import json
 import logging
@@ -127,12 +128,36 @@ def _ohne_pfade(text):
     return t
 
 
+def _geschwaerzt(text):
+    """Secret values read by the optional integrations (zugang.py) masked; unchanged when no integration is loaded."""
+    z = sys.modules.get("zugang")
+    return z.schwaerzen(text) if z is not None else text
+
+
+def _aussen(text):
+    """Every error text that leaves the process (HTTP response, MCP client, MCP queue): secrets masked, known paths stripped."""
+    return _ohne_pfade(_geschwaerzt(str(text)))
+
+
 def _fehler(code, text):
-    """HTTP-Fehler ohne bekannte Pfade nach aussen; der volle Text bleibt im Server-Log."""
-    if "zugang" in sys.modules:  # optional integrations loaded: no secret value in the log or the response
-        text = sys.modules["zugang"].schwaerzen(text)
+    """HTTP-Fehler ohne bekannte Pfade und ohne Geheimwerte nach aussen; im Server-Log steht der Text ohne Geheimwerte."""
+    text = _geschwaerzt(str(text))
     _LOG.warning("trove HTTP %s: %s", code, text)
     return HTTPException(code, _ohne_pfade(text))
+
+
+def _fehlertexte_nach_aussen(fn):
+    """Endpoint wrapper: every HTTPException detail it raises passes _aussen (secret masking + path stripping),
+    also when the function is called directly (MCP queue release)."""
+    @functools.wraps(fn)
+    def huelle(*a, **k):
+        try:
+            return fn(*a, **k)
+        except HTTPException as ex:
+            if isinstance(ex.detail, str):
+                raise HTTPException(ex.status_code, _aussen(ex.detail), headers=getattr(ex, "headers", None)) from None
+            raise
+    return huelle
 
 
 
@@ -466,6 +491,7 @@ def _dateien_unter(voll):
 
 
 @router.post("/aktion")
+@_fehlertexte_nach_aussen
 def aktion(body: dict):
     """art: kopieren | verschieben | sync. von/nach: {quelle, pfad}. namen: Eintraege im von-Ordner (leer bei sync = ganzer Ordner)."""
     mandant = body.get("mandant") or MANDANT
@@ -585,7 +611,8 @@ def _wird_benutzt(mandant, ordner, name):
         return False
     for x in _quellen(mandant):
         if innerhalb(x.get("pfad")):
-            return "a source (%s)" % x.get("name", "?")
+            nm = str(x.get("name") or x.get("pfad") or "?")
+            return "a source (%s)" % (os.path.basename(nm.rstrip("/\\")) or nm)  # display name only, never the full path
     try:
         watched = konfig.lesen().get("ueberwacht", [])
     except (OSError, ValueError):
@@ -651,6 +678,7 @@ def _umbenennen_ohne_ueberschreiben(alt, ziel, gleiche_datei=False):
 
 
 @router.post("/umbenennen")
+@_fehlertexte_nach_aussen
 def umbenennen(body: dict):
     """Rename one file or folder inside a writable source. body: {quelle, pfad (the folder it is in), name, neu}. Never overwrites."""
     mandant = body.get("mandant") or MANDANT
@@ -677,7 +705,7 @@ def umbenennen(body: dict):
         raise HTTPException(409, "An entry named %r already exists here. Nothing was renamed." % neu)
     benutzt = _wird_benutzt(mandant, ordner, name)
     if benutzt:
-        raise HTTPException(409, "%r is used as %s. Renaming it would break that. Remove it there first, then rename." % (name, benutzt))
+        raise _fehler(409, "%r is used as %s. Renaming it would break that. Remove it there first, then rename." % (name, benutzt))
     sha, groesse = "", None
     if os.path.isfile(alt) and not os.path.islink(alt):
         groesse = os.path.getsize(alt)
@@ -704,6 +732,7 @@ def umbenennen(body: dict):
 
 
 @router.post("/ordner-neu")
+@_fehlertexte_nach_aussen
 def ordner_neu(body: dict):
     """Create one new folder inside a writable source. body: {quelle, pfad (parent folder), name}. Never touches an existing entry."""
     mandant = body.get("mandant") or MANDANT

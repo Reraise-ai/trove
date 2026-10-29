@@ -59,7 +59,7 @@ ANLEITUNG = ("Trove is a file desk shared by a human and agents. Sources are loc
 def _sauber(detail, code, api):
     """Error text for the client: 4xx messages as they are; for 5xx and anything with a traceback only the last line,
     without file system paths."""
-    text = str(detail)
+    text = api._aussen(detail) if hasattr(api, "_aussen") else str(detail)  # secrets masked, known paths stripped
     if code < 500 and "Traceback" not in text:
         return text
     zeilen = [z.strip() for z in text.splitlines() if z.strip()]
@@ -69,8 +69,16 @@ def _sauber(detail, code, api):
     return "Trove could not do this: " + letzte[:300]
 
 
+def _geschwaerzt(text):
+    z = sys.modules.get("zugang")  # optional integrations loaded in this process: mask every secret value they read
+    return z.schwaerzen(text) if z is not None else text
+
+
 def _text(obj):
-    return json.dumps(obj, ensure_ascii=False, indent=1, default=str)
+    z = sys.modules.get("zugang")
+    if z is not None:
+        obj = z.schwaerzen_tief(json.loads(json.dumps(obj, ensure_ascii=False, default=str)))
+    return _geschwaerzt(json.dumps(obj, ensure_ascii=False, indent=1, default=str))
 
 
 def bauen(mandant=None, client=None):
@@ -200,6 +208,7 @@ def bauen(mandant=None, client=None):
 
     # ------------------------------------------------------------------ write requests (never executed here)
     def ablehnen(ctx, was, grund):
+        grund = api._aussen(grund) if hasattr(api, "_aussen") else grund
         log(ctx, "request refused before queueing (%s): %s" % (was, grund))
         raise ToolError(grund)
 

@@ -208,7 +208,8 @@ def freigeben(mandant, kid, api, warten=False):
             status = "failed" if fehler else "done"
             ergebnis = ("done: " if status == "done" else "finished with conflicts/errors: ") + kurz
         except Exception as ex:  # HTTPException from the backend (e.g. folder switched to read-only meanwhile) and anything else
-            status, ergebnis = "failed", "failed: " + str(getattr(ex, "detail", "") or ex or type(ex).__name__)[:600]
+            text = str(getattr(ex, "detail", "") or ex or type(ex).__name__)
+            status, ergebnis = "failed", "failed: " + getattr(api, "_aussen", str)(text)[:600]  # secrets masked, paths stripped, then cut
         try:
             _log(mandant, kid, "MCP request %s from %s %s" % (kid, e["client"], ergebnis), ereignis="notiz" if status == "done" else "fehler",
                  mcp_client=e["client"], warten_s=600)
