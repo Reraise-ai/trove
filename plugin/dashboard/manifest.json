@@ -3,6 +3,6 @@
   "label": "Trove",
   "description": "Cleanup desk for you and your AI agents: files, tamper-evident log, receipts, knowledge.",
   "icon": "Database",
-  "version": "0.2.0rc1",
+  "version": "0.3.0",
   "api": "plugin_api.py"
 }
