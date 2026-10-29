@@ -242,7 +242,7 @@ Claude, Cursor or any other MCP client can work on the same desk as you and your
 | --- | --- |
 | `status`, `list_sources`, `list_folder`, `preview`, `search`, `file_trail`, `task_status`, `list_tasks` | read only |
 | `read_receipt`, `check_changes` | read; write only into Trove's own data folder (markdown twin, change snapshot) and the log |
-| `request_copy`, `request_move`, `request_sync`, `request_into_knowledge`, `request_agent_task` | **create a blocked request**, nothing else |
+| `request_copy`, `request_move`, `request_sync`, `request_into_knowledge`, `request_agent_task`; `request_rename`, `request_new_folder` where the desk has rename / new folder | **create a blocked request**, nothing else |
 
 A request shows up in the Trove tab's task list as `MCP <client name>: <what>` with status `blocked`. **Release** runs it with the folder
 permissions as they are at that moment; **Archive** rejects it. The agent polls `task_status` with the task id it got. Read-only folders stay read-only:

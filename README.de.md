@@ -101,7 +101,7 @@ Claude, Cursor oder jeder andere MCP-Client arbeitet am selben Schreibtisch wie 
 
 - **Lesen, sofort:** `status`, `list_sources`, `list_folder`, `preview`, `search`, `file_trail`, `task_status`, `list_tasks`; dazu `read_receipt` und
   `check_changes` (schreiben nur in Troves eigenen Datenordner und ins Protokoll).
-- **Ändern, nur als Antrag:** `request_copy`, `request_move`, `request_sync`, `request_into_knowledge`, `request_agent_task` legen einen **gesperrten Antrag** an.
+- **Ändern, nur als Antrag:** `request_copy`, `request_move`, `request_sync`, `request_into_knowledge`, `request_agent_task` (und `request_rename`, `request_new_folder`, sobald der Schreibtisch Umbenennen/neuer Ordner hat) legen einen **gesperrten Antrag** an.
   Er erscheint im Trove-Tab als `MCP <Client-Name>: <was>`. **Release** führt ihn mit den Ordnerrechten aus, die in dem Moment gelten; **Archive** lehnt ihn ab.
   Der Agent fragt mit `task_status` und der erhaltenen Nummer nach. Anträge in einen nur lesbaren Ordner werden sofort abgelehnt.
 
