@@ -228,10 +228,11 @@ def dauerlauf_einrichten(minuten, dash, k, home):
 def selbsttest_config():
     import plistlib
     p = plistlib.loads(plist_text("ai.trove.dauerlauf-x", "/opt/homebrew/bin/python3", "/h/dauerlauf.py", 30, "/d/dauerlauf.log", "/Users/k/.hermes"))
-    pfad = p["EnvironmentVariables"]["PATH"].split(":")
+    pfad = p["EnvironmentVariables"]["PATH"].split(os.pathsep)  # Windows: ";" (Laufwerksbuchstaben enthalten ":")
     assert p["StartInterval"] == 1800 and p["ProgramArguments"][1] == "/h/dauerlauf.py", p
-    assert {"/opt/homebrew/bin", "/usr/local/bin", os.path.expanduser("~/.local/bin"), os.path.expanduser("~/.bun/bin"), "/usr/bin"} <= set(pfad), pfad
-    assert gesundheit.such_pfad("/x/qmd").split(":")[0] == "/x" and len(pfad) == len(set(pfad)), pfad
+    soll = {"/opt/homebrew/bin", "/usr/local/bin", os.path.expanduser("~/.local/bin"), os.path.expanduser("~/.bun/bin"), "/usr/bin"}
+    assert {os.path.normpath(x) for x in soll} <= {os.path.normpath(x) for x in pfad}, pfad
+    assert gesundheit.such_pfad("/x/qmd").split(os.pathsep)[0] == "/x" and len(pfad) == len(set(pfad)), pfad
     f = plugins_enabled_setzen
     assert f("plugins:\n  clone_timeout_seconds: 5\nx: 1\n") == ("plugins:\n  enabled:\n    - reraise-trove\n  clone_timeout_seconds: 5\nx: 1\n", True)
     assert f("a: 1\n") == ("a: 1\nplugins:\n  enabled:\n    - reraise-trove\n", True)

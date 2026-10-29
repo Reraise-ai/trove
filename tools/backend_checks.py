@@ -135,8 +135,8 @@ def desk_basics(c, u, tmp, mod):
     def kein_link(*a, **k):
         raise OSError(18, "cross-device")
     os.link = kein_link
-    try:
-        assert mod._umbenennen_ohne_ueberschreiben(h + "x", h + "y") == "check+rename" and os.path.exists(h + "y")
+    try:  # Windows: os.rename itself refuses an existing target, there is no check+rename fallback
+        assert mod._umbenennen_ohne_ueberschreiben(h + "x", h + "y") == ("rename" if os.name == "nt" else "check+rename") and os.path.exists(h + "y")
         with open(h + "z", "w", encoding="utf-8") as f:
             f.write("Z")
         try:

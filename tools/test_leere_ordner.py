@@ -16,9 +16,9 @@ def baum(wurzel):
     out = set()
     for d, dirs, fs in os.walk(wurzel):
         for x in dirs:
-            out.add(os.path.relpath(os.path.join(d, x), wurzel) + "/")
+            out.add(os.path.relpath(os.path.join(d, x), wurzel).replace(os.sep, "/") + "/")
         for x in fs:
-            out.add(os.path.relpath(os.path.join(d, x), wurzel))
+            out.add(os.path.relpath(os.path.join(d, x), wurzel).replace(os.sep, "/"))
     return out
 
 

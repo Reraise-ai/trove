@@ -31,7 +31,7 @@ def _stand(wurzel):
         dirs[:] = [x for x in dirs if x not in ("data", "plugins", "home")]
         for f in fs:
             p = os.path.join(d, f)
-            if not os.path.islink(p) and f not in ("hermes", "hermes-calls.log"):
+            if not os.path.islink(p) and f not in ("hermes", "hermes.exe", "hermes-calls.log"):
                 with open(p, "rb") as h:
                     out[os.path.relpath(p, wurzel)] = h.read()
     return out
@@ -49,6 +49,31 @@ elif a[:2] == ["kanban", "ls"]:
 else:
     print("{}")
 """
+
+
+def _fake_hermes(ordner):
+    """Fake hermes CLI. POSIX: executable script with shebang. Windows cannot start a shebang script (WinError 193); the real
+    hermes there is an .exe, so the fake is one too: pip's console-script launcher (distlib t64.exe) + shebang + zip with __main__.py,
+    the same way pip builds console scripts -- arguments reach the fake exactly as CreateProcess passes them."""
+    quelltext = FAKE_HERMES % (sys.executable, HERMES_LOG)
+    if os.name != "nt":
+        fake = os.path.join(ordner, "hermes")
+        with open(fake, "w", encoding="utf-8") as f:
+            f.write(quelltext)
+        os.chmod(fake, 0o755)
+        return fake
+    import io
+    import pkgutil
+    import platform
+    import zipfile
+    launcher = pkgutil.get_data("pip._vendor.distlib", "t64-arm.exe" if platform.machine().lower() == "arm64" else "t64.exe")
+    puffer = io.BytesIO()
+    with zipfile.ZipFile(puffer, "w") as z:
+        z.writestr("__main__.py", quelltext)
+    fake = os.path.join(ordner, "hermes.exe")
+    with open(fake, "wb") as f:
+        f.write(launcher + b'#!"' + sys.executable.encode("utf-8") + b'"\r\n' + puffer.getvalue())
+    return fake
 
 
 def _ergebnis(r):
@@ -403,11 +428,7 @@ def main():
         os.symlink(os.path.join(tmp, "outside2"), os.path.join(tmp, "tgt2", "wdir", "deep"))  # nested target link to outside
         global HERMES_LOG
         HERMES_LOG = os.path.join(tmp, "hermes-calls.log")
-        fake = os.path.join(tmp, "hermes")
-        with open(fake, "w", encoding="utf-8") as f:
-            f.write(FAKE_HERMES % (sys.executable, HERMES_LOG))
-        os.chmod(fake, 0o755)
-        os.environ["TROVE_HERMES"] = fake
+        os.environ["TROVE_HERMES"] = _fake_hermes(tmp)
         dash = os.path.join(plugin, "dashboard")
         spec = importlib.util.spec_from_file_location("hermes_dashboard_plugin_trove", os.path.join(dash, "plugin_api.py"))
         mod = importlib.util.module_from_spec(spec)

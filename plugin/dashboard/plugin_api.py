@@ -924,7 +924,10 @@ def _hermes(*args, timeout=120):
     exe = _hermes_exe()
     if exe is None:
         raise HTTPException(502, "hermes CLI not found (not in PATH). Set its path with TROVE_HERMES.")
-    r = subprocess.run([exe, *args], capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace")
+    try:
+        r = subprocess.run([exe, *args], capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace")
+    except OSError as ex:  # not a program (WinError 193), not executable, gone: a clear message, not a crash of the request
+        raise HTTPException(502, "hermes CLI could not be started (%s): %s" % (exe, getattr(ex, "strerror", None) or ex))
     if r.returncode != 0:
         raise HTTPException(502, "hermes: " + (r.stderr.strip()[-400:] or r.stdout.strip()[-400:] or "error %d" % r.returncode))
     return r.stdout

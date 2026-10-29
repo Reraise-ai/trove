@@ -43,7 +43,7 @@ def such_pfad(*programme):
     if node:
         ordner.append(os.path.dirname(node))  # qmd startet per "#!/usr/bin/env node"
     ordner += qmd_ordner() + ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
-    return ":".join(dict.fromkeys(ordner))
+    return os.pathsep.join(dict.fromkeys(ordner))
 
 
 def hermes_profile():

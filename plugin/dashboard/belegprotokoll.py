@@ -448,20 +448,20 @@ def _selbsttest():
     with tempfile.TemporaryDirectory() as w:
         pfad = os.path.join(w, "m", "belegprotokoll.jsonl")
         halter = ("import sys; sys.path.insert(0, %r); import belegprotokoll as bp; p = bp.Protokoll(%r); "
-                  "p.schreiben('notiz', meldung='halter'); print('da', flush=True); sys.stdin.read()"
+                  "import os; p.schreiben('notiz', meldung='halter'); print('da', os.getpid(), flush=True); sys.stdin.read()"
                   % (os.path.dirname(os.path.abspath(__file__)), pfad))
         k = subprocess.Popen([sys.executable, "-c", halter], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
         try:
-            assert k.stdout.readline().strip() == "da"
+            # Halter-PID aus dem Halter selbst: unter Windows startet ein venv-python.exe den echten Interpreter als Kindprozess
+            # (k.pid ist dann der Starter, nicht der Halter der Sperre)
+            da, halter_pid = k.stdout.readline().split()
+            assert da == "da", da
             try:
                 Protokoll(pfad)
                 raise AssertionError("zweiter Schreiber nicht gesperrt")
             except ProtokollGesperrt as ex:
-                assert str(k.pid) in str(ex), ex
-            if os.name == "nt":
-                k.kill()
-            else:
-                os.kill(k.pid, signal.SIGKILL)
+                assert "(process %s)" % halter_pid in str(ex), ex
+            os.kill(int(halter_pid), signal.SIGTERM if os.name == "nt" else signal.SIGKILL)  # nt: TerminateProcess
             k.wait(10)
         finally:
             if k.poll() is None:
