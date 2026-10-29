@@ -40,10 +40,10 @@ def run(c, u, tmp, mod):
     assert r.status_code == 200 and r.json()["nachgefuehrt"] is False and not konfig.lesen().get("ueberwacht"), r.text
     r = c.post(u + "/wissen", json={**wiss, "nachfuehren": True})
     assert r.status_code == 200 and r.json()["nachgefuehrt"] is True and len(konfig.lesen()["ueberwacht"]) == 1, r.text
-    desk_basics(c, u, tmp)
+    desk_basics(c, u, tmp, mod)
 
 
-def desk_basics(c, u, tmp):
+def desk_basics(c, u, tmp, mod):
     """Rename and new folder: writable sources only, never overwrite, no traversal, every change in the receipt log."""
     import belegprotokoll
     wurzel = os.path.join(tmp, "desk")
@@ -97,3 +97,51 @@ def desk_basics(c, u, tmp):
     assert prot.count('"umbenannt"') >= 3 and "a.txt" in prot and "a2.txt" in prot and "folder created: fresh" in prot, prot[-600:]
     mand = c.get(u + "/status").json()["mandant"]
     assert belegprotokoll.pruefen(belegprotokoll.pfad_fuer(mand))["kette"] == "ok"  # chain still intact
+    # race: the target appears after the existence check (simulated by hiding it from lexists) -> still no overwrite
+    for was, ziel_name in (("file", "race.txt"), ("dir", "racedir")):
+        quelle_name = "src_" + was
+        pfad_q = os.path.join(wurzel, quelle_name)
+        if was == "file":
+            with open(pfad_q, "w", encoding="utf-8") as f:
+                f.write("SOURCE")
+            with open(os.path.join(wurzel, ziel_name), "w", encoding="utf-8") as f:
+                f.write("TARGET")
+        else:
+            os.makedirs(pfad_q)
+            os.makedirs(os.path.join(wurzel, ziel_name))
+            with open(os.path.join(wurzel, ziel_name, "keep.txt"), "w", encoding="utf-8") as f:
+                f.write("TARGET")
+        echt = os.path.lexists
+        ziel_voll = os.path.join(wurzel, ziel_name)
+        os.path.lexists = lambda p, _e=echt: False if os.path.normpath(p) == os.path.normpath(ziel_voll) else _e(p)
+        try:
+            r = ren(name=quelle_name, neu=ziel_name)
+        finally:
+            os.path.lexists = echt
+        assert r.status_code == 409, (was, r.status_code, r.text)
+        assert os.path.exists(pfad_q), was
+        if was == "file":
+            with open(ziel_voll, encoding="utf-8") as f:
+                assert f.read() == "TARGET"
+        else:
+            assert os.listdir(ziel_voll) == ["keep.txt"]
+    # the helper itself: link / renameat2 path really renames, and the fallback path is exercised too
+    h = os.path.join(wurzel, "h1")
+    with open(h, "w", encoding="utf-8") as f:
+        f.write("H")
+    assert mod._umbenennen_ohne_ueberschreiben(h, h + "x") in ("link", "renameat2", "check+rename", "rename") and os.path.exists(h + "x") and not os.path.exists(h)
+    echt_link = os.link
+    def kein_link(*a, **k):
+        raise OSError(18, "cross-device")
+    os.link = kein_link
+    try:
+        assert mod._umbenennen_ohne_ueberschreiben(h + "x", h + "y") == "check+rename" and os.path.exists(h + "y")
+        with open(h + "z", "w", encoding="utf-8") as f:
+            f.write("Z")
+        try:
+            mod._umbenennen_ohne_ueberschreiben(h + "y", h + "z")
+            assert False, "fallback must refuse an existing target"
+        except FileExistsError:
+            pass
+    finally:
+        os.link = echt_link

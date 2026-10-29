@@ -9,6 +9,7 @@ Trove never asks for or stores credentials; mail and cloud files reach it as fil
 from __future__ import annotations
 
 import base64
+import errno
 import hashlib
 import json
 import logging
@@ -517,6 +518,53 @@ def _schreibbare_quelle(mandant, qid):
     return q
 
 
+def _umbenennen_ohne_ueberschreiben(alt, ziel, gleiche_datei=False):
+    """Rename alt -> ziel and NEVER replace an existing ziel, even if it appears after the caller's check. Raises FileExistsError.
+    Windows: os.rename already refuses an existing target. POSIX files: hard link (atomic, fails if ziel exists) then unlink the old name.
+    Linux folders: renameat2(RENAME_NOREPLACE). Only if the filesystem or libc lacks these does it fall back to check + os.rename
+    (a tiny window remains there). Case-only renames of the same entry use a plain rename. Returns the method used."""
+    if os.name == "nt" or gleiche_datei:
+        os.rename(alt, ziel)
+        return "rename"
+    if not os.path.isdir(alt) or os.path.islink(alt):
+        try:
+            os.link(alt, ziel, follow_symlinks=False)
+        except FileExistsError:
+            raise
+        except (OSError, NotImplementedError):
+            pass  # no hard links here (EXDEV, EPERM, ENOTSUP ...): fall back below
+        else:
+            try:
+                os.unlink(alt)
+            except OSError:
+                try:
+                    os.unlink(ziel)  # undo, so the entry is never present under two names
+                except OSError:
+                    pass
+                raise
+            return "link"
+    elif sys.platform.startswith("linux"):
+        err = None
+        try:
+            import ctypes
+            fn = ctypes.CDLL(None, use_errno=True).renameat2
+            fn.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+            fn.restype = ctypes.c_int
+            if fn(-100, os.fsencode(alt), -100, os.fsencode(ziel), 1) == 0:  # AT_FDCWD, RENAME_NOREPLACE
+                return "renameat2"
+            err = ctypes.get_errno()
+        except (AttributeError, OSError):
+            err = errno.ENOSYS  # libc without renameat2: fall back below
+        if err in (errno.EEXIST, errno.ENOTEMPTY):
+            raise FileExistsError(err, os.strerror(err), ziel)
+        if err not in (errno.ENOSYS, errno.EINVAL, errno.ENOTSUP, errno.EOPNOTSUPP, errno.EPERM):
+            raise OSError(err, os.strerror(err), alt)
+    if os.path.lexists(ziel):
+        raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), ziel)
+    os.rename(alt, ziel)
+    return "check+rename"
+
+
 @router.post("/umbenennen")
 def umbenennen(body: dict):
     """Rename one file or folder inside a writable source. body: {quelle, pfad (the folder it is in), name, neu}. Never overwrites."""
@@ -546,7 +594,10 @@ def umbenennen(body: dict):
     lauf = "umbenennen-%s" % time.strftime("%Y%m%d-%H%M%S")
     with bp.Protokoll(bp.pfad_fuer(mandant)) as prot:
         try:
-            os.rename(alt, ziel)
+            _umbenennen_ohne_ueberschreiben(alt, ziel, nur_gross_klein)
+        except FileExistsError:
+            prot.schreiben("fehler", quelle=alt, ziel=ziel, werkzeug="trove-plugin", mandant=mandant, lauf=lauf, meldung="rename refused: target exists, nothing overwritten")
+            raise HTTPException(409, "An entry named %r already exists here. Nothing was renamed." % neu)
         except OSError as ex:
             prot.schreiben("fehler", quelle=alt, ziel=ziel, werkzeug="trove-plugin", mandant=mandant, lauf=lauf, meldung="rename failed: %s" % (ex.strerror or type(ex).__name__))
             raise _fehler(500, "Rename failed: %s" % (ex.strerror or type(ex).__name__))
