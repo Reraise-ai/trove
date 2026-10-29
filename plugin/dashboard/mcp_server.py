@@ -23,6 +23,12 @@ HIER = os.path.dirname(os.path.abspath(__file__))
 if HIER not in sys.path:
     sys.path.insert(0, HIER)
 
+try:
+    import mcp  # noqa: F401
+    import fastapi  # noqa: F401
+except ImportError as _ex:
+    sys.exit("Trove MCP server: the Python package '%s' is missing. Install it with: python3 -m pip install mcp fastapi" % (_ex.name or "mcp"))
+
 try:  # mcp 2.x
     from mcp.server.mcpserver import MCPServer as _Server, Context
     from mcp.server.mcpserver.exceptions import ToolError
@@ -34,6 +40,11 @@ except ImportError:  # mcp 1.x
 from mcp.types import ToolAnnotations
 
 NAME = "trove"
+MAX_NAMEN = 200  # entry names / files per request
+MAX_PFAD = 1024
+MAX_GRUND = 500
+MAX_TITEL = 200
+MAX_TEXT = 4000
 LESEN = ToolAnnotations(readOnlyHint=True, openWorldHint=False)
 LESEN_MIT_SPUR = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False)  # writes only into Trove's own data
 ANTRAG = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False)  # only queues a blocked request
@@ -43,6 +54,19 @@ ANLEITUNG = ("Trove is a file desk shared by a human and agents. Sources are loc
              "Reading tools work immediately. Every change (copy, move, sync, into knowledge, agent task) is only a REQUEST: it is "
              "created blocked and runs after a human releases it in the Trove tab. Folders are read-only unless the human marked them "
              "writable. Nothing is ever overwritten.")
+
+
+def _sauber(detail, code, api):
+    """Error text for the client: 4xx messages as they are; for 5xx and anything with a traceback only the last line,
+    without file system paths."""
+    text = str(detail)
+    if code < 500 and "Traceback" not in text:
+        return text
+    zeilen = [z.strip() for z in text.splitlines() if z.strip()]
+    letzte = zeilen[-1] if zeilen else "internal error"
+    letzte = api._ohne_pfade(letzte)
+    letzte = re.sub(r"(?:[A-Za-z]:)?(?:[\\/][^\s'\"\\/:<>|]+){2,}", "<path>", letzte)
+    return "Trove could not do this: " + letzte[:300]
 
 
 def _text(obj):
@@ -78,7 +102,12 @@ def bauen(mandant=None, client=None):
         try:
             return fn(*a, **k)
         except HTTPException as ex:
-            raise ToolError(str(ex.detail)) from None
+            raise ToolError(_sauber(ex.detail, ex.status_code, api)) from None
+        except ToolError:
+            raise
+        except Exception as ex:  # no traceback, no system paths to the client; the full error goes to the server log (stderr)
+            print("trove-mcp: %s: %r" % (getattr(fn, "__name__", "?"), ex), file=sys.stderr)
+            raise ToolError("internal error in Trove (%s); details are in the MCP server log" % type(ex).__name__) from None
 
     def log(ctx, meldung, **extra):
         c = wer(ctx)
@@ -174,85 +203,143 @@ def bauen(mandant=None, client=None):
         log(ctx, "request refused before queueing (%s): %s" % (was, grund))
         raise ToolError(grund)
 
-    def antrag(ctx, art, body, titel, detail):
+    def antrag(ctx, art, body, titel, details):
         try:
-            e = mq.anlegen(mandant, wer(ctx), art, body, titel, detail)
+            e = mq.anlegen(mandant, wer(ctx), art, body, titel, details)
         except bp.ProtokollGesperrt:
             raise ToolError("Trove is busy with a long run that holds the receipt log; nothing was queued, try again in a minute") from None
+        except ValueError as ex:
+            return ablehnen(ctx, art, str(ex))
         return _text({"task_id": e["id"], "status": e["status"], "what": titel, "note": HINWEIS})
 
+    def text_pruefen(text, feld, maximum):
+        if text is not None and not isinstance(text, str):
+            raise ValueError("%s: text" % feld)
+        if len(text or "") > maximum:
+            raise ValueError("%s: at most %d characters" % (feld, maximum))
+        return (text or "").strip()
+
+    def pfad_pruefen(pfad, feld):
+        """Relative path inside a source, shown to the human exactly as it will be used: '..', absolute paths, NUL are refused."""
+        pfad = text_pruefen(pfad, feld, MAX_PFAD)
+        teile = pfad.replace("\\", "/").split("/")
+        if ".." in teile or "\0" in pfad or os.path.isabs(pfad) or os.path.splitdrive(pfad)[0]:
+            raise ValueError("%s: a path inside the source folder, without '..' and not absolute" % feld)
+        return "/".join(t for t in teile if t not in ("", "."))
+
+    def grund_zeile(reason):
+        return "Reason given by the agent: " + reason if reason else "Reason given by the agent: (none)"
+
     def datei_aktion(ctx, art, from_source, from_path, to_source, to_path, names, reason):
-        namen = [n for n in (names or []) if n]
+        label = mq.AUSFUEHRUNG[art][1]
         try:
+            if names is not None and (not isinstance(names, list) or len(names) > MAX_NAMEN):
+                raise ValueError("names: a list of at most %d entry names per request" % MAX_NAMEN)
+            namen = [n for n in (names or []) if n]
             rufen(api._namen_pruefen, namen)
+            from_path, to_path = pfad_pruefen(from_path, "from_path"), pfad_pruefen(to_path, "to_path")
+            reason = text_pruefen(reason, "reason", MAX_GRUND)
             qv, qn = quelle(from_source), quelle(to_source)
-            von = rufen(api._sicher, qv["pfad"], from_path)
-            rufen(api._sicher, qn["pfad"], to_path)
+            von, nach = rufen(api._sicher, qv["pfad"], from_path), rufen(api._sicher, qn["pfad"], to_path)
+            if not os.path.isdir(von):
+                raise ValueError("folder not found: " + ort(qv, from_path))
+            if qn.get("nur_lesen", True):
+                raise ValueError("The target folder '%s' is read-only. Only the human can mark it writable in the Trove tab." % qn["name"])
+            if art == "verschieben" and qv.get("nur_lesen", True):
+                raise ValueError("Move deletes the originals, so the source folder '%s' must be writable too. Copy works from a read-only source." % qv["name"])
+            if art != "sync" and not namen:
+                raise ValueError("names: give the entry names to %s" % label)
+            fehlt = [n for n in namen if not os.path.lexists(os.path.join(von, n))]
+            if fehlt:
+                raise ValueError("not found in %s: %s" % (ort(qv, from_path), ", ".join(fehlt[:10])))
+            raus = [n for n in namen if not api._unter_real(os.path.join(von, n), von)]
+            if raus:
+                raise ValueError("these entries are links that leave the source folder: %s" % ", ".join(raus[:10]))
+            if art in ("verschieben", "sync") and not namen and api._unter_real(nach, von):
+                raise ValueError("the target folder is inside the source folder")
+            for n in (namen or [None]):
+                grund = api._selbst_ziel(os.path.join(von, n) if n else von, os.path.join(nach, n) if n else nach, nach)
+                if grund:
+                    raise ValueError(grund)
         except (ValueError, ToolError) as ex:
-            return ablehnen(ctx, art, str(getattr(ex, "detail", ex)))
-        if qn.get("nur_lesen", True):
-            return ablehnen(ctx, art, "The target folder '%s' is read-only. Only the human can mark it writable in the Trove tab." % qn["name"])
-        if art == "verschieben" and qv.get("nur_lesen", True):
-            return ablehnen(ctx, art, "Move deletes the originals, so the source folder '%s' must be writable too. Copy works from a read-only source." % qv["name"])
-        if art != "sync" and not namen:
-            return ablehnen(ctx, art, "names: give the entry names to %s" % mq.AUSFUEHRUNG[art][1])
-        fehlt = [n for n in namen if not os.path.lexists(os.path.join(von, n))]
-        if fehlt:
-            return ablehnen(ctx, art, "not found in %s: %s" % (ort(qv, from_path), ", ".join(fehlt[:10])))
+            return ablehnen(ctx, art, str(ex))
         body = {"von": {"quelle": qv["id"], "pfad": from_path}, "nach": {"quelle": qn["id"], "pfad": to_path}, "namen": namen}
         was = "%d item(s)" % len(namen) if namen else "missing files"
-        titel = "%s %s from %s to %s" % (mq.AUSFUEHRUNG[art][1], was, ort(qv, from_path), ort(qn, to_path))
-        detail = ("items: " + ", ".join(namen[:20]) + (" ..." if len(namen) > 20 else "") if namen else "whole folder, missing files only") + \
-                 ("; reason given by the agent: " + reason.strip() if (reason or "").strip() else "")
-        return antrag(ctx, art, body, titel, detail)
+        titel = "%s %s from %s to %s" % (label, was, ort(qv, from_path), ort(qn, to_path))
+        details = "\n".join([
+            "Action: %s%s" % (label, " (copies, verifies, then DELETES the originals)" if art == "verschieben" else " (never overwrites)"),
+            "From folder: %s" % von,
+            "Into folder (exact): %s" % nach,
+            ("Items (%d): %s" % (len(namen), ", ".join(namen))) if namen else "Items: every file of the source folder that is missing in the target",
+            grund_zeile(reason)])
+        return antrag(ctx, art, body, titel, details)
 
-    @server.tool(annotations=ANTRAG, description='Request a verified copy of entries (files or folders) from one source folder into another. Never overwrites. The target folder must be writable. ' + HINWEIS)
+    @server.tool(annotations=ANTRAG, description="Request a verified copy of entries (files or folders) from one source folder into another. "
+                 "Never overwrites. The target folder must be writable. " + HINWEIS)
     def request_copy(from_source: str, to_source: str, names: list[str], from_path: str = "", to_path: str = "", reason: str = "",
                      ctx: Context = None) -> str:
         return datei_aktion(ctx, "kopieren", from_source, from_path, to_source, to_path, names, reason)
 
-    @server.tool(annotations=ANTRAG, description='Request a move: copy, verify by reading back, then delete the original. Source and target must be writable. ' + HINWEIS)
+    @server.tool(annotations=ANTRAG, description="Request a move: copy, verify by reading back, then delete the original. "
+                 "Source and target must be writable. " + HINWEIS)
     def request_move(from_source: str, to_source: str, names: list[str], from_path: str = "", to_path: str = "", reason: str = "",
                      ctx: Context = None) -> str:
         return datei_aktion(ctx, "verschieben", from_source, from_path, to_source, to_path, names, reason)
 
-    @server.tool(annotations=ANTRAG, description='Request a one-way sync: copy files missing in the target folder from the source folder. Never overwrites. ' + HINWEIS)
+    @server.tool(annotations=ANTRAG, description="Request a one-way sync: copy files missing in the target folder from the source folder. "
+                 "Never overwrites. " + HINWEIS)
     def request_sync(from_source: str, to_source: str, from_path: str = "", to_path: str = "", reason: str = "", ctx: Context = None) -> str:
         return datei_aktion(ctx, "sync", from_source, from_path, to_source, to_path, [], reason)
 
-    @server.tool(annotations=ANTRAG, description='Request "Into knowledge" for a folder: one markdown twin per file, optional knowledge cards (cards=true), search index. visibility: privat (own use) or oeffentlich (card limited to the public allow-list). files: optional relative paths. ' + HINWEIS)
+    @server.tool(annotations=ANTRAG, description='Request "Into knowledge" for a folder: one markdown twin per file, optional knowledge '
+                 "cards (cards=true), search index. visibility: privat (own use) or oeffentlich (card limited to the public allow-list). "
+                 "files: optional relative paths. " + HINWEIS)
     def request_into_knowledge(source: str, path: str = "", collection: str = "", visibility: str = "privat", cards: bool = False,
                                files: list[str] | None = None, reason: str = "", ctx: Context = None) -> str:
-        body = {"quelle": source, "pfad": path, "sammlung": collection, "sichtbarkeit": visibility, "karten": bool(cards), "dateien": list(files or [])}
         try:
+            if files is not None and (not isinstance(files, list) or len(files) > MAX_NAMEN):
+                raise ValueError("files: a list of at most %d relative paths per request" % MAX_NAMEN)
+            path = pfad_pruefen(path, "path")
+            dateien = [pfad_pruefen(f, "files") for f in (files or [])]
+            reason = text_pruefen(reason, "reason", MAX_GRUND)
             q = quelle(source)
             wurzel = rufen(api._sicher, q["pfad"], path)
             if not os.path.isdir(wurzel):
                 raise ValueError("folder not found: " + ort(q, path))
             if visibility not in ("privat", "oeffentlich"):
                 raise ValueError("visibility: privat | oeffentlich")
+            body = {"quelle": q["id"], "pfad": path, "sammlung": text_pruefen(collection, "collection", 60), "sichtbarkeit": visibility,
+                    "karten": bool(cards), "dateien": dateien}
             body["sammlung"] = rufen(api._sammlung, mandant, body)
-            for rel in body["dateien"]:
-                if not os.path.isfile(rufen(api._sicher, q["pfad"], rel)):
-                    raise ValueError("no such file: " + rel)
+            for rel in dateien:
+                voll = rufen(api._sicher, q["pfad"], rel)
+                if not os.path.isfile(voll) or not api._unter_real(voll, wurzel):
+                    raise ValueError("no such file in the chosen folder: " + rel)
         except (ValueError, ToolError) as ex:
-            return ablehnen(ctx, "wissen", str(getattr(ex, "detail", ex)))
+            return ablehnen(ctx, "wissen", str(ex))
         titel = "into knowledge: %s (collection %s, %s%s)" % (ort(q, path), body["sammlung"], visibility, ", cards" if cards else "")
-        detail = ("files: " + ", ".join(body["dateien"][:20]) if body["dateien"] else "whole folder") + \
-                 ("; reason given by the agent: " + reason.strip() if (reason or "").strip() else "")
-        return antrag(ctx, "wissen", body, titel, detail)
+        details = "\n".join([
+            "Action: into knowledge (markdown twins in Trove's knowledge folder%s; originals are not changed)" % (", knowledge cards in the wiki" if cards else ""),
+            "Folder: %s" % wurzel, "Collection: %s, visibility: %s" % (body["sammlung"], visibility),
+            ("Files (%d): %s" % (len(dateien), ", ".join(dateien))) if dateien else "Files: every file in the folder",
+            grund_zeile(reason)])
+        return antrag(ctx, "wissen", body, titel, details)
 
     if hasattr(api, "umbenennen"):
         @server.tool(annotations=ANTRAG, description="Request renaming one file or folder in place (same folder). The source must be writable; "
                      "an existing entry is never replaced. " + HINWEIS)
         def request_rename(source: str, name: str, new_name: str, path: str = "", reason: str = "", ctx: Context = None) -> str:
             try:
+                path = pfad_pruefen(path, "path")
+                reason = text_pruefen(reason, "reason", MAX_GRUND)
                 q = quelle(source)
                 if q.get("nur_lesen", True):
                     raise ValueError("The folder '%s' is read-only. Only the human can mark it writable in the Trove tab." % q["name"])
                 rufen(api._namen_pruefen, [name])
                 if hasattr(api, "_eintragsname_pruefen"):
                     rufen(api._eintragsname_pruefen, new_name, "new_name")
+                else:
+                    rufen(api._namen_pruefen, [new_name])
                 ordner = rufen(api._sicher, q["pfad"], path)
                 if not name or not os.path.lexists(os.path.join(ordner, name)):
                     raise ValueError("not found in %s: %s" % (ort(q, path), name))
@@ -261,13 +348,15 @@ def bauen(mandant=None, client=None):
             except (ValueError, ToolError) as ex:
                 return ablehnen(ctx, "umbenennen", str(ex))
             body = {"quelle": q["id"], "pfad": path, "name": name, "neu": new_name}
-            detail = "reason given by the agent: " + reason.strip() if (reason or "").strip() else ""
-            return antrag(ctx, "umbenennen", body, "rename %s -> %s in %s" % (name, new_name, ort(q, path)), detail)
+            details = "\n".join(["Action: rename in place", "Folder: %s" % ordner, "Old name: %s" % name, "New name: %s" % new_name, grund_zeile(reason)])
+            return antrag(ctx, "umbenennen", body, "rename %s -> %s in %s" % (name, new_name, ort(q, path)), details)
 
     if hasattr(api, "ordner_neu"):
         @server.tool(annotations=ANTRAG, description="Request a new, empty folder inside a writable source. " + HINWEIS)
         def request_new_folder(source: str, name: str, path: str = "", reason: str = "", ctx: Context = None) -> str:
             try:
+                path = pfad_pruefen(path, "path")
+                reason = text_pruefen(reason, "reason", MAX_GRUND)
                 q = quelle(source)
                 if q.get("nur_lesen", True):
                     raise ValueError("The folder '%s' is read-only. Only the human can mark it writable in the Trove tab." % q["name"])
@@ -283,16 +372,26 @@ def bauen(mandant=None, client=None):
             except (ValueError, ToolError) as ex:
                 return ablehnen(ctx, "ordner_neu", str(ex))
             body = {"quelle": q["id"], "pfad": path, "name": name}
-            detail = "reason given by the agent: " + reason.strip() if (reason or "").strip() else ""
-            return antrag(ctx, "ordner_neu", body, "new folder %s in %s" % (name, ort(q, path)), detail)
+            details = "\n".join(["Action: new empty folder", "Inside: %s" % ordner, "Name: %s" % name, grund_zeile(reason)])
+            return antrag(ctx, "ordner_neu", body, "new folder %s in %s" % (name, ort(q, path)), details)
 
-    @server.tool(annotations=ANTRAG)
+    @server.tool(annotations=ANTRAG, description="Ask for work by a Hermes agent (needs the hermes command line). The full text waits as a "
+                 "BLOCKED request in the Trove tab; when the human releases it, a Hermes kanban card is created and started. " + HINWEIS)
     def request_agent_task(title: str, text: str = "", ctx: Context = None) -> str:
-        """Ask for work by a Hermes agent: creates a BLOCKED card on the Hermes kanban board (needs the hermes command line).
-        A human releases it in the Trove tab; then a Hermes agent works on it. Poll task_status with the task_id."""
-        e = rufen(api.auftrag_anlegen, {"mandant": mandant, "titel": title, "text": text + "\n\n(requested over MCP by %s)" % wer(ctx), "kontext": {"mcp_client": wer(ctx)}})
-        log(ctx, "agent task created (blocked): %s" % title, lauf=e.get("id") or "")
-        return _text({"task_id": e.get("id"), "status": e.get("status"), "note": HINWEIS})
+        try:
+            title = text_pruefen(title, "title", MAX_TITEL)
+            text = text_pruefen(text, "text", MAX_TEXT)
+            if not title:
+                raise ValueError("title is missing")
+            if api._hermes_exe() is None:
+                raise ValueError("the hermes command line is not available on this machine")
+        except (ValueError, ToolError) as ex:
+            return ablehnen(ctx, "agent_auftrag", str(ex))
+        c = wer(ctx)
+        body = {"titel": title, "text": text + "\n\n(requested over MCP by %s, released by a human in the Trove tab)" % c, "kontext": {"mcp_client": c}}
+        details = "\n".join(["Action: task for a Hermes agent. After release a Hermes agent works on it with its own permissions.",
+                             "Title: %s" % title, "Full text:", text or "(empty)"])
+        return antrag(ctx, "agent_auftrag", body, "agent task: " + title, details)
 
     return server
 
@@ -303,15 +402,40 @@ def main(argv=None):
     ap.add_argument("--client-name", help="name of the MCP client for the receipt log (default: what the client reports)")
     ap.add_argument("--http", type=int, metavar="PORT", help="serve streamable HTTP on 127.0.0.1:PORT instead of stdio")
     a = ap.parse_args(argv)
+    if a.http:
+        schutz = _http_schutz(a.http)  # before anything else: refuse if this mcp version cannot enforce it
     server = bauen(a.mandant, a.client_name)
     if a.http:
         if MCP2:
-            server.run("streamable-http", host="127.0.0.1", port=a.http)
+            server.run("streamable-http", host="127.0.0.1", port=a.http, transport_security=schutz)
         else:
             server.settings.host, server.settings.port = "127.0.0.1", a.http
+            server.settings.transport_security = schutz
             server.run("streamable-http")
     else:
         server.run("stdio")
+
+
+def _http_schutz(port):
+    """DNS-rebinding protection for the HTTP transport, set explicitly whatever the SDK default is: only Host 127.0.0.1:<port> /
+    localhost:<port>, and no browser origin at all (MCP clients send none). Exits when the installed mcp cannot enforce it."""
+    try:
+        from mcp.server.transport_security import TransportSecuritySettings
+    except ImportError:
+        TransportSecuritySettings = None
+    if TransportSecuritySettings is None or (not MCP2 and not _v1_hat_schutz()):
+        sys.exit("Trove MCP server: this version of the 'mcp' package cannot enforce Host/Origin checks; --http is refused. "
+                 "Use stdio (no --http) or upgrade: python3 -m pip install -U mcp")
+    return TransportSecuritySettings(enable_dns_rebinding_protection=True, allowed_hosts=["127.0.0.1:%d" % port, "localhost:%d" % port],
+                                     allowed_origins=[])
+
+
+def _v1_hat_schutz():
+    try:
+        from mcp.server.fastmcp.server import Settings
+        return "transport_security" in Settings.model_fields
+    except Exception:
+        return False
 
 
 if __name__ == "__main__":

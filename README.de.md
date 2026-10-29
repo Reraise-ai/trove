@@ -59,7 +59,8 @@ Ohne dass du ihn startest, passiert nichts davon.
 MCP-Client (Claude Desktop, Claude Code, Cursor …) selbst so einrichtest; der Client startet ihn als Unterprozess und spricht über stdin/stdout mit ihm.
 Er nutzt dieselben Backend-Funktionen und Prüfungen wie der Tab. MCP-Clients dürfen **lesen**. Sie dürfen **keine Dateien ändern**: Kopieren, Verschieben,
 Abgleichen und „Ins Wissen“ werden nur zu einem **gesperrten Antrag** in der Aufgabenliste des Trove-Tabs (mit dem Namen des Clients) und laufen erst,
-wenn du dort **Release** klickst. Es gibt kein MCP-Werkzeug, das freigibt. Jeder Antrag, jede Ablehnung, jede Freigabe und jedes Ergebnis steht mit dem
+wenn du dort **Release** klickst. Es gibt kein MCP-Werkzeug, das freigibt; die Freigabe-Route nimmt nur die JSON-Anfrage des Tabs
+(`{"confirm": true}`) an, keine Formulare und keine fremde Web-Herkunft. Jeder Antrag, jede Ablehnung, jede Freigabe und jedes Ergebnis steht mit dem
 Client-Namen im Belegprotokoll; Anträge liegen in `mcp_auftraege.json` im Datenordner. Grenze: Die Freigabe schützt vor dem, was ein Agent *über Trove* tut.
 Ein Agent, der zusätzlich freien Shell- oder Dateizugriff auf deinen Rechner hat, kann jedes Werkzeug umgehen, auch Trove.
 
@@ -103,7 +104,12 @@ Claude, Cursor oder jeder andere MCP-Client arbeitet am selben Schreibtisch wie 
   `check_changes` (schreiben nur in Troves eigenen Datenordner und ins Protokoll).
 - **Ändern, nur als Antrag:** `request_copy`, `request_move`, `request_sync`, `request_into_knowledge`, `request_agent_task` (und `request_rename`, `request_new_folder`, sobald der Schreibtisch Umbenennen/neuer Ordner hat) legen einen **gesperrten Antrag** an.
   Er erscheint im Trove-Tab als `MCP <Client-Name>: <was>`. **Release** führt ihn mit den Ordnerrechten aus, die in dem Moment gelten; **Archive** lehnt ihn ab.
-  Der Agent fragt mit `task_status` und der erhaltenen Nummer nach. Anträge in einen nur lesbaren Ordner werden sofort abgelehnt.
+  Der Agent fragt mit `task_status` und der erhaltenen Nummer nach. Unter dem Antrag steht alles, was du freigibst: genaue Quell- und Zielordner,
+  jeder Name, die Begründung des Agenten, bei Agentenaufträgen der vollständige Text.
+- **Vorher geprüft:** Anträge in nur lesbare Ordner, Kopieren/Verschieben/Abgleichen auf sich selbst (auch über Pfad-Varianten oder Verknüpfungen;
+  das Backend lehnt es bei der Freigabe noch einmal ab), Pfade mit `..`, absolute Pfade und Verknüpfungen aus dem Quellordner heraus werden abgelehnt.
+  Grenzen: 200 Namen, 4000 Zeichen Auftragstext, 20 offene Anträge je Client. Ein Antrag, der länger als 3 Stunden „running“ hängt, lässt sich archivieren.
+- **Gut zu wissen:** Der Client-Name ist eine Selbstauskunft des Clients, nicht geprüft. Jeder MCP-Client am selben Trove-Datenordner sieht alle Anträge (`list_tasks`).
 
 **Einrichten.** Python 3.10+ mit den Paketen `mcp` (getestet mit 2.3.0, der Version, die Hermes festlegt) und `fastapi`: `python3 -m pip install mcp fastapi`.
 Pfad: `<HERMES_HOME>/plugins/reraise-trove/dashboard/mcp_server.py` (Katalog-Installation) oder `<repo>/plugin/dashboard/mcp_server.py`.
@@ -129,7 +135,8 @@ claude mcp add trove -- python3 /pfad/zu/trove/plugin/dashboard/mcp_server.py
 
 Unter Windows `python` und einen Pfad wie `C:/pfad/zu/trove/plugin/dashboard/mcp_server.py`. Hast du Datenordner oder Mandant (`TROVE_DATEN`, `TROVE_MANDANT`)
 nur in der Hermes-Umgebung geändert, gib dieselben Werte im `env`-Block des Clients mit (oder `--mandant <name>`). Optional: `python3 mcp_server.py --http 8765`
-bedient MCP über HTTP unter `http://127.0.0.1:8765/mcp` (nur lokal).
+bedient MCP über HTTP unter `http://127.0.0.1:8765/mcp` (nur lokal; nur Host `127.0.0.1:8765`/`localhost:8765`, kein Browser-Origin,
+sonst startet `--http` nicht). Der HTTP-Zugang hat keine Anmeldung: jedes Programm auf dem Rechner kann darüber lesen; stdio ist vorzuziehen.
 
 ## FAQ
 

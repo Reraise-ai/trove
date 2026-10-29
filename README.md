@@ -137,7 +137,8 @@ it back. Trove only writes into writable folders (copy, move, sync, and the twin
 except an MCP client you configure yourself (Claude Desktop, Claude Code, Cursor, …), which runs it as a child process and talks to it over stdin/stdout.
 It uses the same backend functions and checks as the tab. MCP clients can **read** (sources, folder listings, previews, search, the log trail,
 receipt reading, change check). They **cannot change files**: copy, move, sync and "Into knowledge" only create a **blocked request** that appears in the
-Trove tab's task list with the client's name and runs only after you click **Release** there. There is no MCP tool to release or approve anything.
+Trove tab's task list with the client's name and full details and runs only after you click **Release** there. There is no MCP tool to release or
+approve anything, and the release route accepts only the JSON request the tab sends (`{"confirm": true}`), no forms and no foreign web origin.
 Every request, refusal, release and result is written to the receipt log with the client's name. With `--http PORT` it serves MCP over HTTP instead,
 bound to `127.0.0.1` only. Limit: the release button protects against what an agent can do *through Trove*. An agent that also has unrestricted
 shell or file access on your machine can bypass any tool, Trove included; give such agents only the access you would give a person.
@@ -244,9 +245,17 @@ Claude, Cursor or any other MCP client can work on the same desk as you and your
 | `read_receipt`, `check_changes` | read; write only into Trove's own data folder (markdown twin, change snapshot) and the log |
 | `request_copy`, `request_move`, `request_sync`, `request_into_knowledge`, `request_agent_task`; `request_rename`, `request_new_folder` where the desk has rename / new folder | **create a blocked request**, nothing else |
 
-A request shows up in the Trove tab's task list as `MCP <client name>: <what>` with status `blocked`. **Release** runs it with the folder
-permissions as they are at that moment; **Archive** rejects it. The agent polls `task_status` with the task id it got. Read-only folders stay read-only:
-a request into a read-only folder is refused at once, and only you can mark a folder writable in the tab.
+A request shows up in the Trove tab's task list as `MCP <client name>: <what>` with status `blocked`, and below it the full details:
+the exact source and target folders, every entry name, the agent's reason, and for an agent task the complete task text. **Release** runs it
+with the folder permissions as they are at that moment; **Archive** rejects it. The agent polls `task_status` with the task id it got.
+
+Checked before a request is queued: read-only folders stay read-only (only you can mark a folder writable in the tab); a copy, move or sync
+onto itself (same file or folder, also through path variants or links) is refused, and the backend refuses it again at release; paths with `..`,
+absolute paths and links that lead out of the source folder are refused. Limits: 200 entry names, 4000 characters of task text and 20 open
+requests per client. A request that has been "running" for more than 3 hours (for example because Hermes was closed) can be archived.
+
+Good to know: the client name is what the client reports about itself; it is not authenticated. Every MCP client connected to the same Trove
+data folder sees all requests (`list_tasks`), including those of other clients.
 
 **Setup.** The server needs Python 3.10+ with the packages `mcp` (tested with 2.3.0, the version Hermes pins) and `fastapi`:
 `python3 -m pip install mcp fastapi`. Use the `mcp_server.py` of your Trove install, e.g. `<HERMES_HOME>/plugins/reraise-trove/dashboard/mcp_server.py`
@@ -274,7 +283,9 @@ claude mcp add trove -- python3 /path/to/trove/plugin/dashboard/mcp_server.py
 On Windows use `python` and a path like `C:/path/to/trove/plugin/dashboard/mcp_server.py`. If you changed Trove's data folder or client
 (`TROVE_DATEN`, `TROVE_MANDANT`) only in Hermes's environment, pass the same values in the client's `env` block (or `--mandant <name>`), so both
 work on the same desk. Hermes agents can use it the same way (`mcp_servers:` in Hermes's `config.yaml`).
-Optional: `python3 mcp_server.py --http 8765` serves MCP over HTTP at `http://127.0.0.1:8765/mcp` (localhost only).
+Optional: `python3 mcp_server.py --http 8765` serves MCP over HTTP at `http://127.0.0.1:8765/mcp` (localhost only). It accepts only the
+Host `127.0.0.1:8765` / `localhost:8765` and no browser origin (protection against DNS rebinding); if the installed `mcp` package cannot enforce
+that, `--http` refuses to start. The HTTP endpoint has no login: any program on this computer can read through it, so prefer stdio.
 
 ## FAQ
 

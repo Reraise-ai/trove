@@ -22,7 +22,7 @@ import sys
 import tempfile
 import time
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 HIER = os.path.dirname(os.path.abspath(__file__))
 # All Trove modules ship inside this directory (plugin/dashboard), so installing only the plugin directory is enough.
@@ -147,6 +147,27 @@ def _unter_real(pfad, wurzel):
         return os.path.commonpath([w, r]) == w
     except ValueError:  # anderes Laufwerk
         return False
+
+
+def _gleich(a, b):
+    """Do a and b name the same file or folder (same inode/device, or same resolved path)?"""
+    try:
+        if os.path.exists(a) and os.path.exists(b) and os.path.samefile(a, b):
+            return True
+    except OSError:
+        pass
+    return os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b))
+
+
+def _selbst_ziel(start, ziel, nach_ordner):
+    """Reason text if copying/moving start to ziel would act on itself (same entry, or target folder inside the folder), else None."""
+    if not os.path.lexists(start):
+        return None
+    if _gleich(start, ziel):
+        return "Source and target are the same entry: %s." % os.path.basename(start.rstrip("/\\"))
+    if os.path.isdir(start) and not os.path.islink(start) and _unter_real(nach_ordner, start):
+        return "The target folder is inside the folder being copied or moved: %s." % os.path.basename(start.rstrip("/\\"))
+    return None
 
 
 def _sicher(wurzel, rel):
@@ -390,6 +411,9 @@ def register(body: dict):
 def _kopiere_datei(prot, mandant, lauf, von, nach, werkzeug="trove-plugin"):
     """Eine lokale Datei verifiziert kopieren. Nie ueberschreiben. Liefert Status-String."""
     tmp = nach + ".teil"
+    if os.path.lexists(nach) and _gleich(von, nach):  # never "already there" for the file itself: a move would delete the only copy
+        prot.schreiben("fehler", quelle=von, ziel=nach, werkzeug=werkzeug, mandant=mandant, lauf=lauf, meldung="refused: source and target are the same file, nothing copied or deleted")
+        return "fehler"
     if os.path.exists(nach):
         alt = _sha(nach); neu = _sha(von)
         if alt == neu:
@@ -458,11 +482,18 @@ def aktion(body: dict):
         prot.schreiben("notiz", werkzeug="trove-plugin", mandant=mandant, lauf=lauf, meldung="Action %s starts: %s -> %s" % (art, qv["name"], nach_ordner))
         von_ordner = _sicher(qv["pfad"], body["von"].get("pfad", ""))
         if os.path.commonpath([von_ordner, nach_ordner]) == von_ordner and art in ("verschieben", "sync") and not body.get("namen"):
-            raise HTTPException(400, "Target is inside the source folder")
+            prot.schreiben("fehler", quelle=von_ordner, ziel=nach_ordner, werkzeug="trove-plugin", mandant=mandant, lauf=lauf, meldung="Action %s refused: target is inside the source folder" % art)
+            raise HTTPException(400, "Target is inside the source folder. Nothing was copied, moved or deleted.")
         namen = body.get("namen") or ([os.path.basename(von_ordner)] if art != "sync" else [None])
         for n in namen:
             if n and os.path.lexists(os.path.join(von_ordner, n)) and not _unter_real(os.path.join(von_ordner, n), von_ordner):
                 raise HTTPException(400, "Path leaves the source folder (symlink): %s" % n)
+        for n in namen:  # copy/move/sync onto itself: refuse before anything is touched (a move would delete the only copy)
+            start = os.path.join(von_ordner, n) if n else von_ordner
+            grund = _selbst_ziel(start, os.path.join(nach_ordner, n) if n else nach_ordner, nach_ordner)
+            if grund:
+                prot.schreiben("fehler", quelle=start, ziel=nach_ordner, werkzeug="trove-plugin", mandant=mandant, lauf=lauf, meldung="Action %s refused: %s" % (art, grund))
+                raise HTTPException(409, grund + " Nothing was copied, moved or deleted.")
         for n in namen:
             start = os.path.join(von_ordner, n) if n else von_ordner
             if not os.path.exists(start):
@@ -587,10 +618,28 @@ def auftrag_anlegen(body: dict):
     return eintrag
 
 
+def _menschenklick(request, body):
+    """Release/archive of an MCP request: only a JSON request with {"confirm": true}, as the tab sends it through the Hermes
+    desktop/dashboard (which also adds its session token). Refuses forms and other plain browser posts (no CORS preflight) and any
+    request from a foreign web origin."""
+    art = (request.headers.get("content-type") or "").split(";")[0].strip().lower()
+    if art != "application/json":
+        raise HTTPException(415, "Send JSON (Content-Type: application/json)")
+    if not isinstance(body, dict) or body.get("confirm") is not True:
+        raise HTTPException(400, 'Confirmation missing: send {"confirm": true}')
+    origin = request.headers.get("origin")
+    if origin is not None:
+        eigen = "%s://%s" % (request.url.scheme, request.headers.get("host", ""))
+        erlaubt = {eigen.lower()} | {o.strip().lower() for o in os.environ.get("TROVE_DASHBOARD_ORIGIN", "").split(",") if o.strip()}
+        if origin.lower() not in erlaubt:
+            raise HTTPException(403, "Foreign origin")
+
+
 @router.post("/auftrag/{kid}/freigeben")
-def auftrag_freigeben(kid: str, body: dict = None):
+def auftrag_freigeben(kid: str, request: Request, body: dict = None):
     mandant = (body or {}).get("mandant") or MANDANT
     if mcp_queue.ist_mcp(kid):  # request from an MCP client: a human click here is its only way to run
+        _menschenklick(request, body)
         try:
             return mcp_queue.freigeben(_mandant_pruefen(mandant), kid, sys.modules[__name__])
         except KeyError:
@@ -607,11 +656,14 @@ def auftrag_freigeben(kid: str, body: dict = None):
 
 
 @router.post("/auftrag/{kid}/archivieren")
-def auftrag_archivieren(kid: str, body: dict = None):
+def auftrag_archivieren(kid: str, request: Request, body: dict = None):
     mandant = (body or {}).get("mandant") or MANDANT
     if mcp_queue.ist_mcp(kid):
+        _menschenklick(request, body)
         try:
             return mcp_queue.ablehnen(_mandant_pruefen(mandant), kid)
+        except KeyError:
+            raise HTTPException(404, "Unknown task %s" % kid)
         except ValueError as ex:
             raise HTTPException(409, str(ex))
     _hermes("kanban", "archive", kid)
