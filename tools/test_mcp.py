@@ -131,7 +131,11 @@ async def stdio_teil(server_py, env, http, mod, tmp):
                 ("too many names", "request_copy", dict(from_source=w["id"], to_source=z["id"], names=["w.txt"] * 201), "at most 200"),
                 ("reason too long", "request_copy", dict(from_source=w["id"], to_source=z["id"], names=["w.txt"], reason="x" * 501), "at most 500"),
                 ("huge path", "request_copy", dict(from_source=w["id"], to_source=z["id"], to_path="a" * 200000, names=["w.txt"]), "at most 1024"),
-                ("agent task text too long", "request_agent_task", dict(title="t", text="x" * 4001), "at most 4000")):
+                ("agent task text too long", "request_agent_task", dict(title="t", text="x" * 4001), "at most 4000"),
+                ("link self (-> .) into a subfolder", "request_copy", dict(from_source=w["id"], to_source=w["id"], to_path="wdir", names=["self"]), "links"),
+                ("move link dlink (-> wdir)", "request_move", dict(from_source=w["id"], to_source=z["id"], names=["dlink"]), "links"),
+                ("sync from a path through a link", "request_sync", dict(from_source=w["id"], from_path="dlink", to_source=z["id"]), "goes through a link"),
+                ("copy into a path through a link", "request_copy", dict(from_source=w["id"], to_source=w["id"], to_path="self/wsub", names=["w.txt"]), "goes through a link")):
             msg, err = await _ruf(c, werkzeug, **args)
             assert err and erwartet in msg, (name, msg)
         assert _stand(tmp) == disk and len(mq.liste(mandant)) == n_queue, "refused requests must leave disk and queue untouched"
@@ -141,6 +145,11 @@ async def stdio_teil(server_py, env, http, mod, tmp):
             assert http.post(U + "/auftrag/%s/freigeben" % e["id"], json=OK).status_code == 200
             e = _warte(mq, mandant, e["id"])
             assert e["status"] == "failed" and "Nothing was copied, moved or deleted" in e["ergebnis"] and _stand(tmp) == disk, e
+        # B2 at release time: a queued request that names a link pointing back up -> refused, no recursion, nothing written
+        e = mq.anlegen(mandant, "test-client", "kopieren", {"von": {"quelle": w["id"], "pfad": ""}, "nach": {"quelle": w["id"], "pfad": "wdir"}, "namen": ["self"]}, "t", "d")
+        assert http.post(U + "/auftrag/%s/freigeben" % e["id"], json=OK).status_code == 200
+        e = _warte(mq, mandant, e["id"])
+        assert e["status"] == "failed" and "is a link" in e["ergebnis"] and _stand(tmp) == disk, e
         # S2: release only as a JSON request with {"confirm": true} and no foreign origin
         e = mq.anlegen(mandant, "test-client", "kopieren", {"von": {"quelle": w["id"], "pfad": ""}, "nach": {"quelle": z["id"], "pfad": ""}, "namen": ["w.txt"]}, "t", "d")
         url = U + "/auftrag/%s/freigeben" % e["id"]
@@ -151,7 +160,11 @@ async def stdio_teil(server_py, env, http, mod, tmp):
             r = http.post(url, **kw)
             assert r.status_code in (400, 403, 415, 422) and mq.holen(mandant, e["id"])["status"] == "blocked", (name, r.status_code, r.text)
         assert http.post(U + "/auftrag/%s/archivieren" % e["id"], data={"confirm": "true"}).status_code in (400, 415, 422)
-        assert http.post(url, json=OK, headers={"Origin": "http://testserver"}).status_code == 200  # same origin (dashboard in a browser)
+        for name, kopf in (("DNS rebinding: foreign host and origin", {"Host": "evil.example:9119", "Origin": "http://evil.example:9119"}),
+                           ("foreign host without origin", {"Host": "evil.example"})):
+            r = http.post(url, json=OK, headers=kopf)
+            assert r.status_code == 403 and mq.holen(mandant, e["id"])["status"] == "blocked", (name, r.status_code, r.text)
+        assert http.post(url, json=OK, headers={"Origin": "http://127.0.0.1:9119"}).status_code == 200  # same origin (dashboard in a browser)
         assert _warte(mq, mandant, e["id"])["status"] == "done" and os.path.isfile(os.path.join(archiv, "w.txt"))
         os.remove(os.path.join(archiv, "w.txt"))
         disk = _stand(tmp)
@@ -261,6 +274,16 @@ async def stdio_teil(server_py, env, http, mod, tmp):
                 break
             offen += 1
         assert err and "still waiting" in msg and offen == mq.MAX_OFFEN_JE_CLIENT, (offen, msg)
+        # K7: a global cap, whatever names the clients report
+        for i in range(100):
+            try:
+                mq.anlegen(mandant, "other-%d" % i, "sync", {"von": {"quelle": w["id"], "pfad": ""}, "nach": {"quelle": z["id"], "pfad": ""}, "namen": []}, "t", "d")
+            except ValueError as ex:
+                assert "still waiting" in str(ex)
+                break
+        assert sum(1 for x in mq.liste(mandant) if x["status"] == "blocked") == mq.MAX_OFFEN_GESAMT
+        tab = http.get(U + "/auftraege").json()["auftraege"]
+        assert sum(1 for a in tab if a["status"] == "blocked" and a["id"].startswith("mcp-")) == mq.MAX_OFFEN_GESAMT
     # ---- receipt log: every MCP step with the client's name, chain intact
     pf = bp.pfad_fuer(mandant)
     alle = list(bp.eintraege(pf))
@@ -268,7 +291,7 @@ async def stdio_teil(server_py, env, http, mod, tmp):
     texte = " | ".join(x.get("meldung", "") for x in mcp)
     for teil in ("refused before queueing", "created (blocked", "released by a human", kid + " from test-client done", "rejected by a human", "failed", "check_changes"):
         assert teil in texte, (teil, texte)
-    assert all(x.get("mcp_client") == "test-client" for x in mcp if "mcp_client" in x), mcp
+    assert all(x["mcp_client"] == "test-client" or x["mcp_client"].startswith("other-") for x in mcp if "mcp_client" in x), "client names in the log"
     assert any(x["ereignis"] == "verifiziert" and x.get("ziel", "").endswith("note.txt") for x in alle)
     pr = bp.pruefen(pf)
     assert pr.get("ok", True) is not False, pr
@@ -345,6 +368,8 @@ def main():
                 f.write(inhalt)
         os.symlink(os.path.join(tmp, "outside", "secret.txt"), os.path.join(tmp, "work", "aussen"))
         os.symlink(os.path.join(tmp, "outside"), os.path.join(tmp, "work", "aussendir"))
+        os.symlink(".", os.path.join(tmp, "work", "self"))  # link to an ancestor inside the source (B2)
+        os.symlink("wdir", os.path.join(tmp, "work", "dlink"))
         global HERMES_LOG
         HERMES_LOG = os.path.join(tmp, "hermes-calls.log")
         fake = os.path.join(tmp, "hermes")
@@ -361,7 +386,7 @@ def main():
         from fastapi.testclient import TestClient
         app = FastAPI()
         app.include_router(mod.router, prefix=U)
-        http = TestClient(app)
+        http = TestClient(app, base_url="http://127.0.0.1:9119")  # the dashboard is reached on the loopback address
         env = dict(os.environ, PYTHONPATH="")
         server_py = os.path.join(dash, "mcp_server.py")
         asyncio.run(stdio_teil(server_py, env, http, mod, tmp))

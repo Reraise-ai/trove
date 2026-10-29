@@ -264,6 +264,12 @@ def bauen(mandant=None, client=None):
             raus = [n for n in namen if not api._unter_real(os.path.join(von, n), von)]
             if raus:
                 raise ValueError("these entries are links that leave the source folder: %s" % ", ".join(raus[:10]))
+            links = [n for n in namen if os.path.islink(os.path.join(von, n))]
+            if links:
+                raise ValueError("these entries are links; Trove does not copy, move or sync links: %s" % ", ".join(links[:10]))
+            for wurzel, ordner, feld in ((qv["pfad"], von, "from_path"), (qn["pfad"], nach, "to_path")):
+                if api._ueber_link(wurzel, ordner):
+                    raise ValueError("%s goes through a link; Trove does not follow links" % feld)
             if art in ("verschieben", "sync") and not namen and api._unter_real(nach, von):
                 raise ValueError("the target folder is inside the source folder")
             for n in (namen or [None]):

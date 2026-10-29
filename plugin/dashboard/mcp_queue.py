@@ -48,6 +48,7 @@ AUSFUEHRUNG = {
 }
 _LOCK_STALE_S = 60
 MAX_OFFEN_JE_CLIENT = 20  # blocked requests per MCP client name
+MAX_OFFEN_GESAMT = 50  # blocked requests of all clients together (client names are self-reported)
 LAUFZEIT_S = int(os.environ.get("TROVE_MCP_LAUFZEIT_S") or 3 * 3600)  # "running" longer than this: the run is presumed dead, archivable
 
 
@@ -136,6 +137,9 @@ def anlegen(mandant, client, art, body, titel, details):
         offen = sum(1 for x in alle if x.get("client") == client and x["status"] == "blocked")
         if offen >= MAX_OFFEN_JE_CLIENT:
             raise ValueError("%d requests from this client are still waiting for release; wait until the human has handled them" % offen)
+        gesamt = sum(1 for x in alle if x["status"] == "blocked")
+        if gesamt >= MAX_OFFEN_GESAMT:
+            raise ValueError("%d requests are still waiting for release in the Trove tab; wait until the human has handled them" % gesamt)
         _log(mandant, kid, "MCP request from %s created (blocked, waits for human release in the Trove tab): %s" % (client, titel),
              mcp_client=client, anfrage={"art": art, **body})  # log first: no queue entry without its log line
         _speichern(p, alle + [e])

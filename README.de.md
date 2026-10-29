@@ -42,6 +42,7 @@ Die optionalen Anbindungen bekommen ihre Zugangsdaten nur von Hermes (siehe unte
 - *Verschieben*: kopiert, prüft und **löscht dann das Original**. Quelle und Ziel müssen beschreibbar sein; es braucht einen zweiten Klick.
 - *Abgleichen*: kopiert fehlende Dateien von links nach rechts, überschreibt nie.
 - *Umbenennen* und *Neuer Ordner*: nur in beschreibbaren Ordnern, überschreiben nie einen vorhandenen Eintrag, nehmen nur einen schlichten Namen (kein Pfad, kein `..`, keine unter Windows reservierten Namen) und landen im Belegprotokoll.
+- Verknüpfungen (Links) werden nie verfolgt; eine Aktion auf sich selbst wird abgelehnt, bevor etwas angefasst wird.
 
 **Was Trove außerhalb deiner Ordner schreibt:** den eigenen Datenordner (`TROVE_DATEN`, Standard `~/Trove`: Belegprotokoll, Dateiregister, Quellenliste, Aufgabenliste);
 bei „Ins Wissen“ Markdown-Zwillinge unter `<wiki>/../raw/trove/` und Karten unter `<wiki>/quellen/` (Standard-Wiki: `<TROVE_DATEN>/knowledge/wiki`, oder `TROVE_WIKI`)
@@ -62,7 +63,8 @@ MCP-Client (Claude Desktop, Claude Code, Cursor …) selbst so einrichtest; der 
 Er nutzt dieselben Backend-Funktionen und Prüfungen wie der Tab. MCP-Clients dürfen **lesen**. Sie dürfen **keine Dateien ändern**: Kopieren, Verschieben,
 Abgleichen und „Ins Wissen“ werden nur zu einem **gesperrten Antrag** in der Aufgabenliste des Trove-Tabs (mit dem Namen des Clients) und laufen erst,
 wenn du dort **Release** klickst. Es gibt kein MCP-Werkzeug, das freigibt; die Freigabe-Route nimmt nur die JSON-Anfrage des Tabs
-(`{"confirm": true}`) an, keine Formulare und keine fremde Web-Herkunft. Jeder Antrag, jede Ablehnung, jede Freigabe und jedes Ergebnis steht mit dem
+(`{"confirm": true}`) über die lokale Adresse (Host `127.0.0.1`, `localhost`, `[::1]`; weitere über `TROVE_DASHBOARD_HOSTS`) an,
+keine Formulare und keine fremde Web-Herkunft. Jeder Antrag, jede Ablehnung, jede Freigabe und jedes Ergebnis steht mit dem
 Client-Namen im Belegprotokoll; Anträge liegen in `mcp_auftraege.json` im Datenordner. Grenze: Die Freigabe schützt vor dem, was ein Agent *über Trove* tut.
 Ein Agent, der zusätzlich freien Shell- oder Dateizugriff auf deinen Rechner hat, kann jedes Werkzeug umgehen, auch Trove.
 
@@ -127,9 +129,10 @@ Claude, Cursor oder jeder andere MCP-Client arbeitet am selben Schreibtisch wie 
   Er erscheint im Trove-Tab als `MCP <Client-Name>: <was>`. **Release** führt ihn mit den Ordnerrechten aus, die in dem Moment gelten; **Archive** lehnt ihn ab.
   Der Agent fragt mit `task_status` und der erhaltenen Nummer nach. Unter dem Antrag steht alles, was du freigibst: genaue Quell- und Zielordner,
   jeder Name, die Begründung des Agenten, bei Agentenaufträgen der vollständige Text.
-- **Vorher geprüft:** Anträge in nur lesbare Ordner, Kopieren/Verschieben/Abgleichen auf sich selbst (auch über Pfad-Varianten oder Verknüpfungen;
-  das Backend lehnt es bei der Freigabe noch einmal ab), Pfade mit `..`, absolute Pfade und Verknüpfungen aus dem Quellordner heraus werden abgelehnt.
-  Grenzen: 200 Namen, 4000 Zeichen Auftragstext, 20 offene Anträge je Client. Ein Antrag, der länger als 3 Stunden „running“ hängt, lässt sich archivieren.
+- **Vorher geprüft:** Anträge in nur lesbare Ordner, Kopieren/Verschieben/Abgleichen auf sich selbst (auch über Pfad-Varianten;
+  das Backend lehnt es bei der Freigabe noch einmal ab), Pfade mit `..` und absolute Pfade werden abgelehnt. Verknüpfungen (Links) werden nie verfolgt:
+  ein Antrag auf einen Link oder über einen Pfad durch einen Link wird abgelehnt, Links in einem kopierten Ordner werden übersprungen und protokolliert
+  (gilt auch im Tab). Grenzen: 200 Namen, 4000 Zeichen Auftragstext, 20 offene Anträge je Client, 50 insgesamt; der Tab zeigt alle wartenden Anträge. Ein Antrag, der länger als 3 Stunden „running“ hängt, lässt sich archivieren.
 - **Gut zu wissen:** Der Client-Name ist eine Selbstauskunft des Clients, nicht geprüft. Jeder MCP-Client am selben Trove-Datenordner sieht alle Anträge (`list_tasks`).
 
 **Einrichten.** Python 3.10+ mit den Paketen `mcp` (getestet mit 2.3.0, der Version, die Hermes festlegt) und `fastapi`: `python3 -m pip install mcp fastapi`.

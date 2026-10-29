@@ -478,16 +478,41 @@ def _kopiere_datei(prot, mandant, lauf, von, nach, werkzeug="trove-plugin"):
     return "verifiziert"
 
 
-def _dateien_unter(voll):
+def _dateien_unter(voll, links=None):
+    """Regular files under voll. Links are never followed and never copied: a link (to a file or a folder, also one pointing
+    back up into the same tree) is only reported in `links`, so a copy can neither recurse nor act on the folder a link points to."""
+    if os.path.islink(voll):
+        if links is not None:
+            links.append(voll)
+        return
     if os.path.isfile(voll):
         yield voll, os.path.basename(voll)
         return
-    for wurzel, dirs, files in os.walk(voll):  # Verknuepfungen werden nie verfolgt (Ordner nicht, Dateien uebersprungen)
+    for wurzel, dirs, files in os.walk(voll, followlinks=False):
+        for d in [d for d in dirs if os.path.islink(os.path.join(wurzel, d))]:
+            dirs.remove(d)
+            if links is not None:
+                links.append(os.path.join(wurzel, d))
         for fn in files:
             p = os.path.join(wurzel, fn)
             if os.path.islink(p):
+                if links is not None:
+                    links.append(p)
                 continue
             yield p, os.path.relpath(p, os.path.dirname(voll))
+
+
+def _ueber_link(wurzel, voll):
+    """First folder/entry between the source root and voll (inclusive) that is a link, else None."""
+    rel = os.path.relpath(voll, wurzel)
+    if rel in (".", ""):
+        return None
+    p = wurzel
+    for teil in rel.split(os.sep):
+        p = os.path.join(p, teil)
+        if os.path.islink(p):
+            return p
+    return None
 
 
 @router.post("/aktion")
@@ -516,7 +541,19 @@ def aktion(body: dict):
         namen = body.get("namen") or ([os.path.basename(von_ordner)] if art != "sync" else [None])
         for n in namen:
             if n and os.path.lexists(os.path.join(von_ordner, n)) and not _unter_real(os.path.join(von_ordner, n), von_ordner):
+                prot.schreiben("fehler", quelle=os.path.join(von_ordner, n), werkzeug="trove-plugin", mandant=mandant, lauf=lauf, meldung="Action %s refused: link leaves the source folder" % art)
                 raise HTTPException(400, "Path leaves the source folder (symlink): %s" % n)
+        for wurzel, ordner in ((qv["pfad"], von_ordner), (qn["pfad"], nach_ordner)):  # links are never followed (B2): no path through one
+            link = _ueber_link(wurzel, ordner)
+            if link:
+                prot.schreiben("fehler", quelle=link, werkzeug="trove-plugin", mandant=mandant, lauf=lauf, meldung="Action %s refused: path goes through a link" % art)
+                raise HTTPException(409, "The path goes through a link (%s). Trove does not follow links. Nothing was copied, moved or deleted." % os.path.basename(link))
+        for n in namen:
+            start = os.path.join(von_ordner, n) if n else von_ordner
+            if n and os.path.islink(start):
+                prot.schreiben("fehler", quelle=start, werkzeug="trove-plugin", mandant=mandant, lauf=lauf, meldung="Action %s refused: entry is a link" % art)
+                raise HTTPException(409, "%s is a link. Trove does not copy, move or sync links (that would act on what the link points to). "
+                                         "Nothing was copied, moved or deleted." % n)
         for n in namen:  # copy/move/sync onto itself: refuse before anything is touched (a move would delete the only copy)
             start = os.path.join(von_ordner, n) if n else von_ordner
             grund = _selbst_ziel(start, os.path.join(nach_ordner, n) if n else nach_ordner, nach_ordner)
@@ -551,7 +588,8 @@ def aktion(body: dict):
                         continue
                     prot.schreiben("notiz", quelle=wurzel, ziel=ziel_d, werkzeug="trove-plugin", mandant=mandant, lauf=lauf,
                                    meldung="folder created at the target: %s" % rel_d)
-            for p, rel in _dateien_unter(start):
+            links = []
+            for p, rel in _dateien_unter(start, links):
                 ziel_pfad = os.path.join(nach_ordner, rel) if n else os.path.join(nach_ordner, os.path.relpath(p, von_ordner))
                 st = _kopiere_datei(prot, mandant, lauf, p, ziel_pfad)
                 zusammen[st] = zusammen.get(st, 0) + 1
@@ -559,6 +597,10 @@ def aktion(body: dict):
                     os.remove(p)
                     prot.schreiben("verschoben", quelle=p, ziel=ziel_pfad, sha256=_sha(ziel_pfad), bytes_=os.path.getsize(ziel_pfad), werkzeug="trove-plugin",
                                    mandant=mandant, lauf=lauf, meldung="source removed after the read-back check passed")
+            for link in links:
+                prot.schreiben("notiz", quelle=link, werkzeug="trove-plugin", mandant=mandant, lauf=lauf, meldung="link skipped: Trove does not copy or move links")
+            if links:
+                zusammen["links_skipped"] = len(links)
             if art == "verschieben" and os.path.isdir(start) and zusammen["konflikt"] == 0 and zusammen["fehler"] == 0:
                 for wurzel, dirs, files in os.walk(start, topdown=False):
                     if not os.listdir(wurzel):
@@ -890,6 +932,11 @@ def _menschenklick(request, body):
         raise HTTPException(415, "Send JSON (Content-Type: application/json)")
     if not isinstance(body, dict) or body.get("confirm") is not True:
         raise HTTPException(400, 'Confirmation missing: send {"confirm": true}')
+    host = (request.headers.get("host") or "").strip().lower()
+    name = host[1:host.index("]")] if host.startswith("[") and "]" in host else host.rsplit(":", 1)[0] if host.count(":") == 1 else host
+    erlaubte_hosts = {"127.0.0.1", "localhost", "::1"} | {h.strip().lower() for h in os.environ.get("TROVE_DASHBOARD_HOSTS", "").split(",") if h.strip()}
+    if name not in erlaubte_hosts:  # DNS rebinding: a foreign page reaches the dashboard under its own host name
+        raise HTTPException(403, "Release only through the local dashboard (host %s is not allowed)" % (name or "missing"))
     origin = request.headers.get("origin")
     if origin is not None:
         eigen = "%s://%s" % (request.url.scheme, request.headers.get("host", ""))

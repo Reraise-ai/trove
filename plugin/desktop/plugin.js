@@ -411,7 +411,7 @@ function Tasks() {
       ] })
     ] }) : null,
     error ? jsx('div', { className: 'text-destructive', children: error }) : null,
-    ...list.filter((a) => a.status !== 'archived').slice(0, 12).map((a) => jsxs('div', { className: 'flex flex-col', children: [jsxs('div', { className: 'flex items-center gap-2', children: [
+    ...[...list.filter((a) => a.status === 'blocked'), ...list.filter((a) => a.status !== 'archived' && a.status !== 'blocked').slice(0, 12)].map((a) => jsxs('div', { className: 'flex flex-col', children: [jsxs('div', { className: 'flex items-center gap-2', children: [
       jsx('span', { className: 'font-mono ' + color(a.status), children: a.status }),
       jsx('span', { className: 'font-mono', children: a.id }),
       jsx('span', { className: 'flex-1 truncate', title: a.ergebnis_kommentar || a.zusammenfassung || '', children: a.titel + (a.zusammenfassung ? ' — ' + a.zusammenfassung : a.ergebnis_kommentar ? ' — ' + a.ergebnis_kommentar : '') }),
