@@ -106,6 +106,16 @@ locale = 'en'
 const it2 = await render(React.createElement(mod.Integrations, { left: { quelle: 'a1', pfad: '' } }))
 await TR.act(async () => { it2.root.findAllByType('button').find((b) => /show/.test(JSON.stringify(b.props.children))).props.onClick(); await settle() })
 ok(text(it2).includes('Preview cards (left folder)'), 'with a Reraise key: card preview offered')
+// K1: consequential actions ask first
+fake['/integrationen'] = { ...fake['/integrationen'], erpnext: { active: true, missing: [] } }
+const it3 = await render(React.createElement(mod.Integrations, { left: { quelle: 'a1', pfad: '' } }))
+await TR.act(async () => { it3.root.findAllByType('button').find((b) => /show/.test(JSON.stringify(b.props.children))).props.onClick(); await settle() })
+const dt = it3.root.findAllByType('button').find((b) => /Create doctypes/.test(JSON.stringify(b.props.children)))
+await TR.act(async () => { dt.props.onClick(); await settle() })
+ok(!calls.some((c) => c[0] === '/integrationen/erpnext/doctypes') && text(it3).includes('Continue?'), 'Create doctypes asks before doing anything')
+const yes = it3.root.findAllByType('button').find((b) => /Yes, do it/.test(JSON.stringify(b.props.children)))
+await TR.act(async () => { yes.props.onClick(); await settle() })
+ok(calls.filter((c) => c[0] === '/integrationen/erpnext/doctypes').length === 1, 'Create doctypes runs once after confirmation')
 ok(calls.some((c) => c[0] === '/liste') && calls.some((c) => c[0] === '/status'), 'backend calls issued')
 ok(!calls.some((c) => c[1] === 'POST' && ['/aktion', '/wissen', '/register'].includes(c[0])), 'rendering alone never triggers a write action')
 console.log(failures ? failures + ' FAILED' : 'UI SMOKE PASSED')

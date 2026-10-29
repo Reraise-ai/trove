@@ -8,7 +8,7 @@ Inactive by default. Mailboxes come only from Hermes:
            attaches it to each request (zugang.anfrage_mit_anmeldung). Trove never holds or refreshes a token.
 Storage: <TROVE_DATEN>/<client>/mail/<mailbox>/<YYYY>/<id>/mail.eml + anhaenge/<name>; id = sha256(Message-ID)[:16].
 Log (F8): "gesehen" per mail, "kopiert" per attachment (sha256 after read-back). State per mailbox: .../mail/<mailbox>/stand.json
-(gmail: last internalDate; imap: last UID per folder). Idempotent, never overwrites.
+(gmail: last internalDate + the last FERTIG_MAX message ids; imap: last UID per folder). Idempotent, never overwrites.
 """
 import base64, email, email.policy, email.utils, hashlib, imaplib, json, os, re, sys, time, urllib.parse
 
@@ -19,6 +19,8 @@ from zugang import NichtEingerichtet
 
 WERKZEUG = "trove:mail"
 GMAIL_API = "https://gmail.googleapis.com/gmail/v1/users/me/"
+FERTIG_MAX = 5000  # Gmail: remember only the last N fetched message ids (stand.json stays small; older mails lie before
+                   # the time mark and a re-fetch is harmless anyway: same content -> "schon_da", nothing overwritten)
 
 
 BAD = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
@@ -72,12 +74,12 @@ class Gmail:
                 raise RuntimeError("Gmail %s: network: %s" % (path.split("?")[0], type(e).__name__))
             if st == 200:
                 return json.loads(body or b"{}")
-            text = (body or b"")[:300].decode("utf-8", "replace")
+            text = zugang.kurz(body or b"", 300)
             if (st in (429, 500, 503) or (st == 403 and ("Quota" in text or "ate limit" in text))) and versuch < 5:
                 time.sleep(30 if st == 403 else 2 ** versuch); continue
             if st == 401:
                 raise NichtEingerichtet("Gmail rejected the sign-in (401): run `hermes auth add %s:%s` again" % (zugang.PLUGIN_ID, zugang.GMAIL_OAUTH_ID))
-            raise RuntimeError("Gmail %s: %s %s" % (path.split("?")[0], st, zugang.schwaerzen(text)))
+            raise RuntimeError("Gmail %s: %s %s" % (path.split("?")[0], st, text))
 
     def profil(self):
         return self.api("profile")
@@ -225,7 +227,8 @@ def abholen(mandant, pf, max_n=None, nur_anhaenge=False, abfrage=None, prot=None
             if nur_anhaenge:
                 q = (q + " has:attachment").strip()
             hoechst = int(s.get("letzte_internal_ms", 0))
-            fertig = set(s.get("fertig", []))
+            fertig_liste = list(s.get("fertig", []))[-FERTIG_MAX:]
+            fertig = set(fertig_liste)
             voll = not (max_n or abfrage or nur_anhaenge)  # nur ein vollstaendiger Lauf darf den Zeitstand vorruecken
             for mid in g.ids(q, max_n):
                 if mid in fertig:
@@ -236,21 +239,21 @@ def abholen(mandant, pf, max_n=None, nur_anhaenge=False, abfrage=None, prot=None
                     e = ablegen(prot, mandant, pf["id"], roh, ims, nur_anhaenge)
                 except Exception as ex:
                     z["fehler"] += 1
-                    prot.schreiben("fehler", quelle="mail:%s/gmail-id-%s" % (pf["id"], mid), werkzeug=WERKZEUG, mandant=mandant, lauf="mail-" + pf["id"], meldung="Ablage: " + zugang.schwaerzen(ex)[:300])
+                    prot.schreiben("fehler", quelle="mail:%s/gmail-id-%s" % (pf["id"], mid), werkzeug=WERKZEUG, mandant=mandant, lauf="mail-" + pf["id"], meldung="Ablage: " + zugang.kurz(ex, 300))
                     continue
                 z["mails"] += 1
                 if e.get("eml_status") in ("konflikt", "lesefehler"):
                     z["fehler"] += 1; continue
                 if not e.get("uebersprungen"):
-                    fertig.add(mid)
+                    fertig.add(mid); fertig_liste.append(mid)
                     z["neu" if e["eml_status"] == "neu" else "schon_da"] += 1
                     z["anhaenge_neu"] += sum(1 for a in e["anhaenge"] if a["status"] == "neu")
                 hoechst = max(hoechst, ims)
                 if z["mails"] % 50 == 0:
-                    s["konto"] = konto; s["fertig"] = sorted(fertig); _stand_speichern(mandant, pf["id"], s)
+                    s["konto"] = konto; s["fertig"] = fertig_liste[-FERTIG_MAX:]; _stand_speichern(mandant, pf["id"], s)
             if voll and z["fehler"] == 0:
                 s["letzte_internal_ms"] = hoechst
-            s["konto"] = konto; s["fertig"] = sorted(fertig)
+            s["konto"] = konto; s["fertig"] = fertig_liste[-FERTIG_MAX:]
         elif pf["art"] == "imap":
             passwort = zugang.geheimnis(zugang.IMAP_PASSWORT)
             if not passwort:
@@ -271,7 +274,7 @@ def abholen(mandant, pf, max_n=None, nur_anhaenge=False, abfrage=None, prot=None
                         e = ablegen(prot, mandant, pf["id"], roh, 0, nur_anhaenge)
                     except Exception as ex:
                         z["fehler"] += 1
-                        prot.schreiben("fehler", quelle="mail:%s/%s/uid-%d" % (pf["id"], ordner, uid), werkzeug=WERKZEUG, mandant=mandant, lauf="mail-" + pf["id"], meldung="Ablage: " + zugang.schwaerzen(ex)[:300])
+                        prot.schreiben("fehler", quelle="mail:%s/%s/uid-%d" % (pf["id"], ordner, uid), werkzeug=WERKZEUG, mandant=mandant, lauf="mail-" + pf["id"], meldung="Ablage: " + zugang.kurz(ex, 300))
                         continue
                     z["mails"] += 1
                     if e.get("eml_status") in ("konflikt", "lesefehler"):
@@ -305,6 +308,7 @@ def postfaecher():
     imap = {"id": "imap", "art": "imap", "host": str(e["imap_host"] or "").strip(), "user": str(e["imap_user"] or "").strip(), "port": port,
             "ordner": ordner or ["INBOX"], "aktiv": not fehlt, "fehlt": fehlt}
     gfehlt = [] if zugang.ist_gesetzt(zugang.GMAIL_CLIENT_ID) else [zugang.GMAIL_CLIENT_ID]
+    zugang.geheimnis(zugang.GMAIL_CLIENT_SECRET)  # never used by Trove (Hermes sends it), read only so it is masked in every text
     gmail = {"id": "gmail", "art": "gmail", "abfrage": str(e["gmail_query"] or "").strip(), "aktiv": not gfehlt, "fehlt": gfehlt,
              "anmeldung": "hermes auth add %s:%s" % (zugang.PLUGIN_ID, zugang.GMAIL_OAUTH_ID)}
     return [imap, gmail]

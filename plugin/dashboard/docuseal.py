@@ -52,7 +52,7 @@ OPENER = urllib.request.build_opener(_KeinUmleiten)
 
 def api(pfad, body=None, method=None, roh=False):
     basis, key = _ziel()
-    req = urllib.request.Request(basis + "/api" + pfad, data=json.dumps(body).encode() if body is not None else None,
+    req = urllib.request.Request(basis + "/api" + pfad, data=json.dumps(zugang.schwaerzen_tief(body)).encode() if body is not None else None,
                                  method=method or ("POST" if body is not None else "GET"),
                                  headers={"X-Auth-Token": key, "Content-Type": "application/json", "Accept": "application/json"})
     try:
@@ -60,11 +60,26 @@ def api(pfad, body=None, method=None, roh=False):
             d = h.read()
             return h.status, (d if roh else json.loads(d or b"null"))
     except urllib.error.HTTPError as e:
-        return e.code, zugang.schwaerzen(e.read()[:400].decode("utf-8", "replace"))
+        return e.code, zugang.kurz(e.read(), 400)
+
+
+RE_VORGANG = re.compile(r"[0-9]{1,15}")
+
+
+def url_erlaubt(url, basis):
+    """Download only over https, or http to the configured DocuSeal itself; no file://, ftp:, data: or user info."""
+    x = urllib.parse.urlsplit(str(url or ""))
+    if x.username or x.password or not x.hostname:
+        return False
+    if x.scheme.lower() == "https":
+        return True
+    return x.scheme.lower() == "http" and _origin(url) == _origin(basis)
 
 
 def _laden(url):
     basis, key = _ziel()
+    if not url_erlaubt(url, basis):
+        raise RuntimeError("DocuSeal download refused: only https or the configured DocuSeal address")
     kopf = {"X-Auth-Token": key} if _origin(url) == _origin(basis) else {}  # key never to other hosts
     with OPENER.open(urllib.request.Request(url, headers=kopf), timeout=300) as h:
         return h.read()
@@ -98,7 +113,7 @@ def stand_speichern(mandant, s):
 def vorlagen():
     st, r = api("/templates?limit=100")
     if st != 200:
-        raise RuntimeError("DocuSeal templates: %s %s" % (st, str(r)[:200]))
+        raise RuntimeError("DocuSeal templates: %s %s" % (st, zugang.kurz(r, 200)))
     return [{"id": t["id"], "name": t["name"], "felder": [f["name"] for f in t.get("fields", [])], "rollen": [s["name"] for s in t.get("submitters", [])]} for t in r.get("data", [])]
 
 
@@ -106,7 +121,7 @@ def senden(mandant, vorlage_id, an, name="", rolle=None, beleg=None, mail=False,
     """Richtung 1: Vorgang aus Vorlage anlegen. beleg = Pfad des Originals (sha wird gemerkt, Rueckverfolgung)."""
     st, t = api("/templates/%d" % vorlage_id)
     if st != 200:
-        raise RuntimeError("DocuSeal template %d: %s %s" % (vorlage_id, st, str(t)[:200]))
+        raise RuntimeError("DocuSeal template %d: %s %s" % (vorlage_id, st, zugang.kurz(t, 200)))
     rolle = rolle or (t.get("submitters") or [{"name": "First Party"}])[0]["name"]
     sub = {"role": rolle, "email": an}
     if name:
@@ -126,7 +141,7 @@ def senden(mandant, vorlage_id, an, name="", rolle=None, beleg=None, mail=False,
 def _senden_mit_protokoll(prot, mandant, vorlage_id, t, body, an, name, rolle, beleg, mail):
     st, r = api("/submissions", body)
     if st not in (200, 201):
-        raise RuntimeError("DocuSeal create submission: %s %s" % (st, str(r)[:200]))
+        raise RuntimeError("DocuSeal create submission: %s %s" % (st, zugang.kurz(r, 200)))
     submitters = r if isinstance(r, list) else r.get("submitters", [r])
     s0 = submitters[0]
     vorgang = s0.get("submission_id") or (s0.get("submission") or {}).get("id")
@@ -153,7 +168,7 @@ def abholen(mandant, nur_vorgang=None):
     bekannt = {str(x["id"]): x for x in (alle.get("data", []) if st == 200 else [])}
     # auch Vorgaenge, die nicht ueber Trove angelegt wurden (z. B. in der Web-UI), aufnehmen
     for vid, x in bekannt.items():
-        if vid not in s["vorgaenge"]:
+        if RE_VORGANG.fullmatch(vid) and vid not in s["vorgaenge"]:
             s["vorgaenge"][vid] = {"vorlage": (x.get("template") or {}).get("id"), "vorlage_name": (x.get("template") or {}).get("name"), "an": ", ".join(u.get("email", "") for u in x.get("submitters", [])),
                                   "link": "", "beleg": "", "beleg_sha256": "", "angelegt": x.get("created_at"), "status": x.get("status"), "abgeholt": False, "quelle": "docuseal-ui"}
     prot = bp.Protokoll(bp.pfad_fuer(mandant))
@@ -164,7 +179,7 @@ def abholen(mandant, nur_vorgang=None):
         try:
             _vorgang_abholen(prot, mandant, s, vid, v, erg)
         except Exception as ex:
-            erg.append({"vorgang": vid, "fehler": str(ex)[:200]})
+            erg.append({"vorgang": vid, "fehler": zugang.kurz(ex, 200)})
         stand_speichern(mandant, s)
     finally:
         prot.close()
@@ -172,15 +187,20 @@ def abholen(mandant, nur_vorgang=None):
 
 
 def _vorgang_abholen(prot, mandant, s, vid, v, erg):
+        if not RE_VORGANG.fullmatch(str(vid)):
+            erg.append({"vorgang": "?", "fehler": "invalid submission id, skipped"}); return
         st, d = api("/submissions/%s" % vid)
         if st != 200:
-            erg.append({"vorgang": vid, "fehler": "%s %s" % (st, str(d)[:120])}); return
+            erg.append({"vorgang": vid, "fehler": "%s %s" % (st, zugang.kurz(d, 120))}); return
         status = d.get("status") or ("completed" if all(u.get("status") == "completed" for u in d.get("submitters", [])) else "pending")
         v["status"] = status
         v["unterzeichner"] = [{"email": u.get("email"), "status": u.get("status"), "completed_at": u.get("completed_at")} for u in d.get("submitters", [])]
         z = {"vorgang": vid, "status": status, "an": v.get("an"), "abgeholt": v.get("abgeholt")}
         if status == "completed" and not v.get("abgeholt"):
-            ordner = os.path.join(bp.WURZEL, mandant, "unterschrieben", "vorgang_%s" % vid)
+            wurzel = os.path.realpath(os.path.join(bp.WURZEL, mandant, "unterschrieben"))
+            ordner = os.path.join(wurzel, "vorgang_%s" % vid)
+            if os.path.dirname(os.path.realpath(ordner)) != wurzel:
+                raise RuntimeError("target folder outside the signed-documents folder")
             os.makedirs(ordner, exist_ok=True)
             dateien = []
             quellen = [(doc.get("name") or "dokument", doc.get("url")) for doc in d.get("documents", []) if doc.get("url")]
@@ -191,6 +211,8 @@ def _vorgang_abholen(prot, mandant, s, vid, v, erg):
                 if not nm.lower().endswith(".pdf"):
                     nm += ".pdf"
                 p = os.path.join(ordner, "%02d_%s" % (i, nm))  # laufende Nummer: gleiche Namen im Vorgang kollidieren nicht
+                if os.path.dirname(os.path.realpath(p)) != os.path.realpath(ordner):
+                    raise RuntimeError("file name leaves the target folder")
                 if os.path.exists(p):
                     sha = _sha_datei(p); zustand = "schon_da"
                 else:
@@ -244,10 +266,12 @@ def _selbsttest():
             assert vorlagen()[0]["name"] == "NDA" and gesehen[-1] == ("/api/templates?limit=100", "ds-key-4711"), gesehen
             _laden("http://127.0.0.1:%d/file" % srv.server_address[1])
             assert gesehen[-1][1] == "ds-key-4711"
+            n = len(gesehen)
             try:
-                _laden("http://127.0.0.1:9/elsewhere")  # other origin: no key (and nothing listens there)
-            except OSError:
-                pass
+                _laden("http://127.0.0.1:9/elsewhere")  # plain http to another origin: refused before any request
+                raise AssertionError("http download to another host accepted")
+            except RuntimeError:
+                assert len(gesehen) == n
             with tempfile.TemporaryDirectory() as w:
                 bp.WURZEL = w
                 assert stand_lesen("t") == {"vorgaenge": {}}
@@ -257,6 +281,50 @@ def _selbsttest():
         zugang.geheimnis_quelle, zugang.einstellungen_quelle, bp.WURZEL = alt
 
 
+def _selbsttest_download():
+    """K2: only https / configured http; ids from the server are digits only; nothing lands outside unterschrieben/."""
+    import http.server, tempfile, threading
+    b = "http://127.0.0.1:8"
+    for url, ok in (("https://files.example.invalid/x.pdf", True), (b + "/file/1", True), ("http://127.0.0.1:9/x", False),
+                    ("file:///tmp/trove-test-not-there", False), ("ftp://127.0.0.1:8/x", False), ("https://u:p@example.invalid/x", False),
+                    ("data:text/plain,abc", False), ("", False)):
+        assert url_erlaubt(url, b) == ok, url
+    alt = zugang.geheimnis_quelle, zugang.einstellungen_quelle, bp.WURZEL
+    geholt = []
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            geholt.append(self.path)
+            if self.path.startswith("/api/submissions?"):
+                d = {"data": [{"id": "../../boese", "submitters": []}, {"id": 5, "submitters": []}]}
+            elif self.path.startswith("/api/submissions/5"):
+                d = {"id": 5, "status": "completed", "submitters": [], "documents": [{"name": "../../../x", "url": "file:///tmp/trove-test-not-there"}]}
+            else:
+                d = {}
+            body = json.dumps(d).encode()
+            self.send_response(200); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+    srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        with tempfile.TemporaryDirectory() as w:
+            bp.WURZEL = os.path.join(w, "daten")
+            zugang.geheimnis_quelle = lambda n: {zugang.DOCUSEAL_KEY: "ds-key-4711"}.get(n)
+            zugang.einstellungen_quelle = lambda: {"docuseal_url": "http://127.0.0.1:%d" % srv.server_address[1]}
+            erg = abholen("t")
+            assert "../../boese" not in stand_lesen("t")["vorgaenge"] and not any("boese" in p for p in geholt), (geholt, erg)
+            assert any("refused" in str(e.get("fehler", "")) for e in erg), erg
+            dateien = [os.path.join(r, f) for r, _, fs in os.walk(w) for f in fs]
+            assert not any("not-there" in f or "/x" in f for f in dateien), dateien
+            assert all(os.path.realpath(f).startswith(os.path.realpath(bp.WURZEL)) for f in dateien), dateien
+    finally:
+        srv.shutdown()
+        zugang.geheimnis_quelle, zugang.einstellungen_quelle, bp.WURZEL = alt
+
+
 if __name__ == "__main__":
     _selbsttest()
+    _selbsttest_download()
     print("docuseal selftest ok")

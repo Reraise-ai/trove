@@ -379,6 +379,7 @@ function Integrations({ left }) {
   const [open, setOpen] = useState(false); const [s, setS] = useState(null); const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false)
   const [tpls, setTpls] = useState(null); const [tplId, setTplId] = useState(''); const [signer, setSigner] = useState(''); const [dsMail, setDsMail] = useState(false)
   const [collection, setCollection] = useState(''); const [cards, setCards] = useState(null); const [picked, setPicked] = useState([])
+  const [ask, setAsk] = useState(null)  // 'send' | 'doctypes': consequential clicks are explained and confirmed first
   const load = useCallback(() => rest('/integrationen').then(setS).catch((e) => setMsg({ err: errText(e) })), [])
   useEffect(() => { if (open) load() }, [open, load])
   const brief = (r) => Object.entries(r || {}).filter(([, v]) => typeof v === 'number').map(([k, v]) => k + ' ' + v).join(', ')
@@ -397,7 +398,13 @@ function Integrations({ left }) {
     if (!ok) setMsg({ text: link })
   }
   const loadTpls = async () => { const r = await call(t('intTemplates'), '/integrationen/docuseal/vorlagen'); if (r) setTpls(r.vorlagen || []) }
-  const send = () => call(t('intSend'), '/integrationen/docuseal/senden', post({ vorlage: Number(tplId), an: signer.trim(), mail: dsMail }))
+  const send = () => { setAsk(null); return call(t('intSend'), '/integrationen/docuseal/senden', post({ vorlage: Number(tplId), an: signer.trim(), mail: dsMail })) }
+  const doctypes = () => { setAsk(null); return call(t('intDoctypes'), '/integrationen/erpnext/doctypes', post({})) }
+  const tplName = () => ((tpls || []).find((x) => String(x.id) === tplId) || {}).name || tplId
+  const confirmBox = (text, go) => jsxs('div', { className: 'flex items-center gap-2 flex-wrap', children: [
+    jsx('span', { className: 'font-medium text-destructive', children: text }),
+    jsx(Button, { size: 'sm', disabled: busy, onClick: go, children: t('intConfirm') }),
+    jsx(Button, { size: 'sm', variant: 'ghost', onClick: () => setAsk(null), children: t('cancel') })] })
   const where = { quelle: left.quelle, pfad: left.pfad || '', sammlung: collection.trim().toLowerCase() || DEFAULT_COLLECTION }
   const preview = async () => {
     setCards(null); setPicked([])
@@ -428,12 +435,14 @@ function Integrations({ left }) {
           ...tpls.map((x) => jsx('option', { value: String(x.id), children: x.name }, x.id))] }) : null,
         tpls ? jsx(Input, { placeholder: t('intSignerPlaceholder'), value: signer, onChange: (e) => setSigner(e.target.value), className: 'text-xs w-56' }) : null,
         tpls ? jsxs('label', { className: 'flex items-center gap-1', children: [jsx('input', { type: 'checkbox', checked: dsMail, onChange: (e) => setDsMail(e.target.checked) }), t('intDsMail')] }) : null,
-        tpls ? btn(t('intSend'), send, { disabled: busy || !tplId || !signer.trim() }) : null,
-        btn(t('intFetchSigned'), () => call(t('intFetchSigned'), '/integrationen/docuseal/abholen', post({})), { disabled: busy })] }) : null] }),
+        tpls ? btn(t('intSend'), () => setAsk('send'), { disabled: busy || !tplId || !signer.trim() }) : null,
+        btn(t('intFetchSigned'), () => call(t('intFetchSigned'), '/integrationen/docuseal/abholen', post({})), { disabled: busy })] }) : null,
+      s.docuseal.active && ask === 'send' ? confirmBox(t('intSendConfirm', tplName(), signer.trim(), dsMail), send) : null] }),
     jsxs('div', { className: box + ' p-2 flex flex-col gap-1', children: [state(t('intErpnext'), s.erpnext),
       s.erpnext.active ? jsxs('div', { className: 'flex items-center gap-2 flex-wrap', children: [
         btn(t('intMirror'), () => call(t('intMirror'), '/integrationen/erpnext/spiegeln', post({})), { disabled: busy, title: t('intMirrorTip') }),
-        btn(t('intDoctypes'), () => call(t('intDoctypes'), '/integrationen/erpnext/doctypes', post({})), { disabled: busy, title: t('intDoctypesTip') })] }) : null] }),
+        btn(t('intDoctypes'), () => setAsk('doctypes'), { disabled: busy, title: t('intDoctypesTip') })] }) : null,
+      s.erpnext.active && ask === 'doctypes' ? confirmBox(t('intDoctypesConfirm'), doctypes) : null] }),
     jsxs('div', { className: box + ' p-2 flex flex-col gap-1', children: [state(t('intReraise'), { active: s.reraise.active, missing: [] }),
       !s.reraise.active ? jsxs('div', { className: 'flex items-center gap-2 flex-wrap', children: [btn(t('intReraiseVisit'), openReraise), jsx('span', { className: quiet, children: t('intReraiseHint') })] })
         : jsxs('div', { className: 'flex flex-col gap-1', children: [
@@ -618,7 +627,9 @@ const EN = {
   intReraise: 'Reraise (public knowledge cards)', intReraiseVisit: 'Open reraise.ai', intReraiseHint: 'Publishing needs your own Reraise key in the Hermes settings; until then this is only a link.',
   intPreviewCards: 'Preview cards (left folder)', intPreviewTip: 'Builds the public cards of the left folder from twins marked public; nothing is sent', intPickLeft: 'choose a source on the left first',
   intPublish: (n) => 'Publish ' + n + ' ticked card(s)', intPublishDone: 'Publish', intNoCards: 'No public cards in this folder (run Into knowledge with public visibility first).',
-  intDone: (what, s) => what + ': done' + (s ? ' (' + s + ')' : '')
+  intDone: (what, s) => what + ': done' + (s ? ' (' + s + ')' : ''), intConfirm: 'Yes, do it',
+  intSendConfirm: (tpl, who, mail) => 'Creates a signing request in your DocuSeal from template "' + tpl + '" for ' + who + (mail ? '; DocuSeal e-mails the invitation now.' : '; no e-mail is sent, the link stays in DocuSeal.') + ' Continue?',
+  intDoctypesConfirm: 'Creates the role "Trove Spiegel" and the doctypes "Trove Belegereignis" and "Trove Beleg" in your ERPNext, and updates fields and permissions of these two doctypes if they exist. Nothing else is changed. Continue?'
 }
 // </i18n:en>
 // <i18n:de>
@@ -688,6 +699,8 @@ const DE = {
   intReraise: 'Reraise (öffentliche Wissenskarten)', intReraiseVisit: 'reraise.ai öffnen', intReraiseHint: 'Veröffentlichen braucht deinen eigenen Reraise-Schlüssel in den Hermes-Einstellungen; bis dahin ist das nur ein Link.',
   intPreviewCards: 'Karten-Vorschau (linker Ordner)', intPreviewTip: 'Baut die öffentlichen Karten des linken Ordners aus Zwillingen mit Sichtbarkeit öffentlich; nichts wird gesendet', intPickLeft: 'erst links eine Quelle wählen',
   intPublish: (n) => n + ' angehakte Karte(n) veröffentlichen', intPublishDone: 'Veröffentlichen', intNoCards: 'Keine öffentlichen Karten in diesem Ordner (erst „Ins Wissen“ mit Sichtbarkeit öffentlich).',
-  intDone: (what, s) => what + ': fertig' + (s ? ' (' + s + ')' : '')
+  intDone: (what, s) => what + ': fertig' + (s ? ' (' + s + ')' : ''), intConfirm: 'Ja, ausführen',
+  intSendConfirm: (tpl, who, mail) => 'Legt in deinem DocuSeal einen Unterschrifts-Vorgang aus Vorlage „' + tpl + '“ für ' + who + ' an' + (mail ? '; DocuSeal verschickt die Einladung sofort per E-Mail.' : '; es geht keine E-Mail raus, der Link bleibt in DocuSeal.') + ' Fortfahren?',
+  intDoctypesConfirm: 'Legt in deinem ERPNext die Rolle „Trove Spiegel“ und die Doctypes „Trove Belegereignis“ und „Trove Beleg“ an und passt Felder und Rechte dieser zwei Doctypes an, falls es sie schon gibt. Sonst wird nichts geändert. Fortfahren?'
 }
 // </i18n:de>

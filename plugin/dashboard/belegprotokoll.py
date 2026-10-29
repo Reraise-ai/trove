@@ -244,6 +244,9 @@ class Protokoll:
              "sha256": sha256 or "", "bytes": bytes_, "werkzeug": werkzeug, "mandant": mandant, "lauf": lauf,
              "meldung": meldung}
         e.update(extra)
+        z = sys.modules.get("zugang")  # optional integrations loaded in this process: mask every secret they read
+        if z is not None:
+            e = z.schwaerzen_tief(e)
         kette = _kette(self.kette, e)
         e["kette"] = kette
         zeile = json.dumps(e, ensure_ascii=False) + "\n"

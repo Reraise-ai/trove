@@ -193,6 +193,8 @@ def senden(karte, schluessel):
     """POST /api/x/cards. Wiederholt nur 429 ohne Tageslimit (Server hat geantwortet, nichts angelegt). Abgewiesen (ABGEWIESEN)
     -> Abgewiesen (bzw. AbgewiesenAbbruch); jeder Netzfehler nach Start des Requests (auch URLError: urllib verpackt ihn gleich, ob vor oder
     nach vollstaendigem Body), 3xx, 5xx, andere Codes und ein unlesbarer Fehler-Body -> Unklar."""
+    if not eingerichtet() or not schluessel or schluessel != _schluessel():
+        raise NichtEingerichtet("Reraise upload refused: no configured Reraise key in Hermes")  # defense in depth, before any network
     daten = json.dumps(karte, ensure_ascii=False).encode("utf-8")
     kopf = {"Content-Type": "application/json", "Accept": "application/json", "Origin": RERAISE, "User-Agent": "Trove/" + WERKZEUG,
             "x-reraise-key": schluessel}
@@ -201,7 +203,7 @@ def senden(karte, schluessel):
             with OPENER.open(urllib.request.Request(RERAISE + "/api/x/cards", data=daten, method="POST", headers=kopf), timeout=30) as h:
                 d = _antwort(h.read())
             if not (d.get("ok") and isinstance(d.get("card"), dict) and d["card"].get("id")):
-                raise Unklar("Reraise: unerwartete Antwort " + json.dumps(d, ensure_ascii=False)[:200])
+                raise Unklar("Reraise: unerwartete Antwort " + zugang.kurz(json.dumps(d, ensure_ascii=False), 200))
             return d["card"]
         except urllib.error.HTTPError as e:
             if e.code not in ABGEWIESEN:
@@ -292,11 +294,11 @@ def _senden_buchen(l, p, sha, md, karte, stand, schluessel):
                 stand_speichern(l.mandant, stand_setzen(stand, sha, None))  # vom Server klar abgewiesen: nichts angelegt
                 raise
             stand_speichern(l.mandant, stand_setzen(stand, sha, "unklar"))
-            erg = {"zustand": "unklar", "grund": str(ex)[:300]}
+            erg = {"zustand": "unklar", "grund": zugang.kurz(ex, 300)}
             try:
-                _notiz(l, "fehler", quelle=p, sha256=sha, meldung="Reraise unklar: %s" % str(ex)[:250], sammlung=l.sammlung)
+                _notiz(l, "fehler", quelle=p, sha256=sha, meldung="Reraise unklar: %s" % zugang.kurz(ex, 250), sammlung=l.sammlung)
             except Exception as fx:
-                erg["protokoll_fehler"] = str(fx)[:200]
+                erg["protokoll_fehler"] = zugang.kurz(fx, 200)
             return erg
     try:
         _notiz(l, "versendet", quelle=p, ziel="reraise:card/%s" % k["id"], sha256=sha, bytes_=os.path.getsize(p),
@@ -310,7 +312,7 @@ def _senden_buchen(l, p, sha, md, karte, stand, schluessel):
             stand_speichern(l.mandant, stand_setzen(stand, sha, "unklar"))
         except Exception:
             pass  # "unterwegs" steht seit vor dem POST im Stand: der naechste Lauf gleicht ab
-        raise Abbruch("Karte %s ist auf Reraise, aber Protokoll/Stand scheiterten: %s" % (k["id"], str(ex)[:200])) from ex
+        raise Abbruch("Karte %s ist auf Reraise, aber Protokoll/Stand scheiterten: %s" % (k["id"], zugang.kurz(ex, 200))) from ex
     return {"zustand": "gesendet" if wie == "gesendet" else "schon_da", "karte": k["id"], "nr": k.get("no"), "url": k.get("url"),
             "titel": karte["title"], "wie": wie}
 
@@ -358,21 +360,21 @@ def hochladen(mandant, pfad, sammlung, max_dateien=None, probe=False, nur=None, 
                         erste[sha] = p
                         e = _datei(l, p, sha, stand, probe, schluessel)
                 except Exception as ex:
-                    e = {"datei": p, "zustand": "fehler", "grund": str(ex)[:300]}
+                    e = {"datei": p, "zustand": "fehler", "grund": zugang.kurz(ex, 300)}
                     if isinstance(ex, Abbruch):
                         z["abbruch"] = str(ex)
                     if not probe:
                         try:
-                            _notiz(l, "fehler", quelle=p, meldung="Reraise: " + str(ex)[:300])
+                            _notiz(l, "fehler", quelle=p, meldung="Reraise: " + zugang.kurz(ex, 300))
                         except Exception as fx:
-                            e["protokoll_fehler"] = str(fx)[:200]
+                            e["protokoll_fehler"] = zugang.kurz(fx, 200)
                 z["dubletten" if e["zustand"] == "dublette" else e["zustand"]] += 1
                 z["protokoll_fehler"] += "protokoll_fehler" in e
                 z["eintraege"].append(e)
                 if "abbruch" in z:
                     break
         except Exception as ex:
-            z.setdefault("abbruch", str(ex)[:300])
+            z.setdefault("abbruch", zugang.kurz(ex, 300))
         if not probe:
             try:
                 _notiz(l, "notiz", anker=True, meldung="Reraise-Hochladen Ende: "
@@ -437,6 +439,13 @@ def _selbsttest():
     """Karte nur aus Kopf-Feldern, Stand-Uebergaenge, sha-Liste; dann hochladen() ganz mit Netz-Attrappe (Temp-Ordner)."""
     global WISSEN_TEST
     WISSEN_TEST = lambda m: os.path.join(bp.WURZEL, m, "wissen")
+    zugang.geheimnis_quelle = None
+    try:
+        senden({"source": "x"}, "k-123")
+        raise AssertionError("senden() without configured key")
+    except NichtEingerichtet:
+        pass
+    zugang.geheimnis_quelle = lambda n: {zugang.RERAISE_KEY: "k-123"}.get(n)  # Hermes mock for the rest of the self-test
     md = ('---\ntitel: "Juan Perez.pdf"\nquelle: "C:\\\\geheim\\\\r.pdf"\npruefsumme: "%s"\nbrutto: 1210.5\nwaehrung: "ARS"\n'
           'belegdatum: "2026-02-30"\niban: "DE89 3704 0044 0532 0130 00"\nverprobung: "bestanden"\ntraeger: "Person"\n'
           'aussteller_kennung: "20-12345678-9"\nrechnungsnummer: "12.345.678"\nsichtbarkeit: "oeffentlich"\nnotiz: "a\\u2028b"\n'
@@ -497,13 +506,13 @@ def _weiterleitung():
     alt = g["RERAISE"]
     g["RERAISE"] = "http://127.0.0.1:%d" % s.server_address[1]
     try:
-        for name, f in (("senden", lambda: senden({"source": "x"}, "k-geheim")), ("abgleich", lambda: abgleich("a" * 64))):
+        for name, f in (("senden", lambda: senden({"source": "x"}, "k-123")), ("abgleich", lambda: abgleich("a" * 64))):
             try:
                 f()
                 raise AssertionError("%s ist der Weiterleitung gefolgt" % name)
             except RuntimeError as ex:
                 assert isinstance(ex, Unklar) == (name == "senden"), ex  # 3xx nach POST: unklar (U1), nie gefolgt
-        assert anfragen == [("POST", "/api/x/cards", "k-geheim"), ("GET", "/api/x/cards", None)], anfragen
+        assert anfragen == [("POST", "/api/x/cards", "k-123"), ("GET", "/api/x/cards", None)], anfragen
     finally:
         g["RERAISE"] = alt
         s.shutdown()
@@ -701,7 +710,7 @@ def _trockenlauf_u1(ein, shas):
     for code, klasse in ((422, Abgewiesen), (401, AbgewiesenAbbruch)):
         g["OPENER"] = _Netz(_http(code))
         try:
-            senden({"source": "Trove-Beleg sha256 " + "9" * 64}, "k")
+            senden({"source": "Trove-Beleg sha256 " + "9" * 64}, "k-123")
             raise AssertionError("%d angenommen" % code)
         except Abgewiesen as ex:
             assert type(ex) is klasse and ex.code == code and isinstance(ex, Abbruch) == (code == 401), ex
@@ -752,7 +761,7 @@ def main():
             nur = sha_liste(" ".join("%s:%s" % (k, v) if v else k for k, v in (nur or {}).items()) + " " + a.bestaetigt)
         z = hochladen(a.mandant, a.pfad, a.sammlung, a.max, a.probe, nur, None if a.probe else _schluessel())
     except bp.LaufLaeuft as ex:  # wie Abbruch: JSON, rc 2; plugin_api macht daraus 409
-        z = {"abbruch": str(ex)[:300], "lauf_laeuft": True}
+        z = {"abbruch": zugang.kurz(ex, 300), "lauf_laeuft": True}
         print(json.dumps(z, ensure_ascii=False) if a.json else "%s: %s" % (WERKZEUG, ex))
         return 2
     except (OSError, ValueError, RuntimeError, bp.ProtokollGesperrt, bp.ProtokollDefekt) as ex:

@@ -127,6 +127,8 @@ def _ohne_pfade(text):
 
 def _fehler(code, text):
     """HTTP-Fehler ohne bekannte Pfade nach aussen; der volle Text bleibt im Server-Log."""
+    if "zugang" in sys.modules:  # optional integrations loaded: no secret value in the log or the response
+        text = sys.modules["zugang"].schwaerzen(text)
     _LOG.warning("trove HTTP %s: %s", code, text)
     return HTTPException(code, _ohne_pfade(text))
 
@@ -849,8 +851,13 @@ EINSTELLUNGEN_LINK = "/settings?tab=plugins&plugin=reraise-trove"
 
 
 def _int_ergebnis(r):
+    """Redact every value BEFORE serialising (JSON escaping would hide a secret with \\ or \"), then the text once more."""
     import zugang
-    return json.loads(zugang.schwaerzen(json.dumps(r, ensure_ascii=False, default=str)))
+    r = zugang.schwaerzen_tief(json.loads(json.dumps(r, ensure_ascii=False, default=str)))
+    try:
+        return json.loads(zugang.schwaerzen(json.dumps(r, ensure_ascii=False)))
+    except ValueError:
+        return r
 
 
 def _int_lauf(f):
@@ -867,7 +874,7 @@ def _int_lauf(f):
     except (ValueError, KeyError) as ex:
         raise _fehler(400, zugang.schwaerzen(ex))
     except Exception as ex:
-        raise _fehler(502, "%s: %s" % (type(ex).__name__, zugang.schwaerzen(ex)[:400]))
+        raise _fehler(502, "%s: %s" % (type(ex).__name__, zugang.kurz(ex, 400)))
 
 
 @router.get("/integrationen")

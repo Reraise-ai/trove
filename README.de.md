@@ -34,7 +34,7 @@ Trove läuft auf deinem Rechner. Deine Dateien bleiben, wo sie sind.
 
 ## Sicherheit: was Trove auf deinem Rechner tut
 
-**Passwörter und Verbindungen.** Trove liest keine Zugangsdaten-Dateien (keine `.env`, keine `auth.json`, keine Token-Dateien) und speichert keine Zugangsdaten.
+**Passwörter und Verbindungen.** Trove liest keine Zugangsdaten-Dateien (keine `.env`, keine `auth.json`, keine Token-Dateien; Schlüssel-, Passwort- oder Token-Namen in `trove.json` werden ignoriert) und speichert keine Zugangsdaten.
 Die optionalen Anbindungen bekommen ihre Zugangsdaten nur von Hermes (siehe unten).
 
 **Schreibrechte pro Ordner.** Ein hinzugefügter Ordner ist **nur lesbar**. Du schaltest ihn je Ordner (mit Rückfrage) auf „beschreibbar“ und kannst ihn zurückstellen.
@@ -62,7 +62,7 @@ und mit den Diensten der optionalen Anbindungen, **erst wenn du sie eingerichtet
 ### Optionale Anbindungen
 
 Alle sind nach der Installation aus. Eine Anbindung wird erst aktiv, wenn ihre Felder unter **Hermes-Einstellungen → Plugins → Trove** (oder mit `hermes config`)
-ausgefüllt sind. Geheime Felder speichert Hermes im aktiven Profil, nie in `config.yaml` und nie Trove selbst. Es gibt keine eingebaute Server-Adresse.
+ausgefüllt sind. Geheime Felder speichert Hermes im aktiven Profil, nie in `config.yaml` und nie Trove selbst. Jeder Text, den Trove ausgibt (Oberfläche, Log, Belegprotokoll, ERPNext-Spiegel), wird von diesen Geheimwerten in allen üblichen Schreibweisen bereinigt, auch wenn ein Server sie in einer Fehlermeldung zurückschickt. ERPNext-Doctypes anlegen und ein Dokument zur Unterschrift senden fragen vorher nach. Es gibt keine eingebaute Server-Adresse.
 Das Feld **Integrations / Anbindungen** unten auf der Trove-Seite zeigt, was an ist und was fehlt.
 
 - **Mail (IMAP):** spricht mit deinem Mailserver (TLS, Port 993), nur mit `imap_host`, `imap_user` und dem Geheimnis `TROVE_IMAP_PASSWORD`. Liest die eingestellten Ordner nur lesend,

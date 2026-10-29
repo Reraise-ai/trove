@@ -37,17 +37,13 @@ einstellungen_quelle = None  # callable() -> dict
 anfrage_quelle = None        # callable(provider, method, url, headers, timeout) -> (status, bytes)
 
 _bekannt = set()
+_formen = set()
+_formen_sortiert = []
 _sperre = threading.Lock()
 
 
 class NichtEingerichtet(RuntimeError):
     """The integration is not configured in Hermes (inactive)."""
-
-
-def _merken(wert):
-    if wert and len(wert) >= 4:
-        with _sperre:
-            _bekannt.add(wert)
 
 
 def geheimnis(name):
@@ -128,14 +124,79 @@ def anfrage_mit_anmeldung(provider, methode, url, headers=None, timeout=60.0):
     return r.status, r.body
 
 
+MIN_TEIL = 6  # shortest fragment of a multi-line secret that is still masked
+
+
+def _varianten(wert):
+    """Every spelling of a secret that can end up in a text: raw, JSON-escaped, repr, URL-encoded, and each line of it."""
+    import json as _json
+    from urllib.parse import quote, quote_plus
+    v = {wert, _json.dumps(wert)[1:-1], _json.dumps(wert, ensure_ascii=False)[1:-1], repr(wert)[1:-1], ascii(wert)[1:-1],
+         quote(wert, safe=""), quote(wert), quote_plus(wert), quote_plus(wert, safe="")}
+    v |= {_json.dumps(x)[1:-1] for x in list(v)}  # double-encoded (JSON text inside JSON)
+    for teil in re.split(r"[\r\n]+", wert):
+        teil = teil.strip()
+        if len(teil) >= MIN_TEIL:
+            v |= {teil, _json.dumps(teil)[1:-1], repr(teil)[1:-1]}
+    return {x for x in v if x and len(x) >= min(MIN_TEIL, len(wert))}
+
+
+def _merken(wert):
+    if wert and len(wert) >= 4:
+        with _sperre:
+            if wert not in _bekannt:
+                _bekannt.add(wert)
+                _formen.update(_varianten(wert))
+                _formen_sortiert[:] = sorted(_formen, key=len, reverse=True)
+
+
 def schwaerzen(text):
-    """Text for logs and responses: every secret value read in this process is replaced by ***."""
-    t = str(text)
+    """THE redaction for every outgoing text (HTTP responses, logging, receipt log, ERPNext mirror): every secret value read in
+    this process, in every spelling (_varianten), becomes ***. Redact first, truncate afterwards (kurz)."""
+    t = text if isinstance(text, str) else str(text)
     with _sperre:
-        werte = sorted(_bekannt, key=len, reverse=True)
-    for w in werte:
-        t = t.replace(w, "***")
+        formen = list(_formen_sortiert)
+    for w in formen:
+        if w in t:
+            t = t.replace(w, "***")
     return t
+
+
+def kurz(text, n):
+    """Redact, then truncate to n characters (never the other way round: a cut can leave half a secret)."""
+    if isinstance(text, (bytes, bytearray)):
+        text = bytes(text).decode("utf-8", "replace")
+    return schwaerzen(text)[:n]
+
+
+def schwaerzen_tief(obj):
+    """Redact every string inside dicts/lists/tuples (keys too) before anything is serialised."""
+    if isinstance(obj, str):
+        return schwaerzen(obj)
+    if isinstance(obj, dict):
+        return {schwaerzen_tief(k) if isinstance(k, str) else k: schwaerzen_tief(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple, set)):
+        return [schwaerzen_tief(v) for v in obj]
+    return obj
+
+
+class _LogFilter(logging.Filter):
+    """Python logging: the formatted message of every 'trove' record is redacted before any handler sees it."""
+
+    def filter(self, record):
+        try:
+            msg = record.getMessage()
+        except Exception:
+            msg = str(record.msg)
+        record.msg, record.args = schwaerzen(msg), ()
+        if record.exc_info:
+            import traceback
+            record.exc_text = schwaerzen("".join(traceback.format_exception(*record.exc_info)))
+            record.exc_info = None
+        return True
+
+
+_LOG.addFilter(_LogFilter())
 
 
 def selbsttest():
@@ -146,6 +207,15 @@ def selbsttest():
         einstellungen_quelle = lambda: {"docuseal_url": "http://127.0.0.1:9/", "imap_port": None}
         assert geheimnis(RERAISE_KEY) == "k-geheim-123" and geheimnis(DOCUSEAL_KEY) is None
         assert schwaerzen("x k-geheim-123 y") == "x *** y"
+        import json as _json
+        from urllib.parse import quote, quote_plus
+        geheimnis_quelle = lambda n: {RERAISE_KEY: 'S3-a\\b"c/d+e f', DOCUSEAL_KEY: "zeile-eins-123\nzeile-zwei-456"}.get(n)
+        k, m = geheimnis(RERAISE_KEY), geheimnis(DOCUSEAL_KEY)
+        for form in (k, _json.dumps(k), repr(k), quote(k, safe=""), quote_plus(k), _json.dumps({"x": "invalid " + k})):
+            assert "S3-a" not in schwaerzen("pre " + form + " post"), form
+        assert "zeile-eins" not in schwaerzen("bad header %r" % m) and "zeile-zwei-456" not in schwaerzen("..." + m.split("\n")[1])
+        assert kurz("y" * 395 + k + "z", 400) == ("y" * 395 + "***z")[:400]
+        assert schwaerzen_tief({"a": ["x " + k], k: 1}) == {"a": ["x ***"], "***": 1}
         assert url_einstellung("docuseal_url") == "http://127.0.0.1:9" and url_einstellung("erpnext_url") is None
         assert einstellung("imap_port") == 993
         try:

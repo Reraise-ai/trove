@@ -1,6 +1,6 @@
-"""Trove F11 — mirror of the receipt log into the user's OWN ERPNext, plus history per document (optional, inactive by default).
+"""Trove — mirror of the receipt log into the user's OWN ERPNext, plus history per document (optional, inactive by default).
 
-The file stays the truth (F8); ERPNext, the user's accounting system, gets a mirror for search and linking:
+The file stays the truth; ERPNext, the user's accounting system, gets a mirror for search and linking:
   Doctype "Trove Belegereignis": one row per log line (nr, time, event, source, target, sha256, ...), append-only.
   Doctype "Trove Beleg": one record per content (sha256) with last location, first sighting, number of events and the fields of the
   twin (date, gross, currency, invoice number, issuer id).
@@ -58,12 +58,12 @@ OPENER = urllib.request.build_opener(_KeinUmleiten)
 
 def api(path, body=None, method=None, timeout=120):
     url, kopf = _kopf()
-    req = urllib.request.Request(url + path, data=json.dumps(body).encode() if body is not None else None, method=method or ("POST" if body is not None else "GET"), headers=kopf)
+    req = urllib.request.Request(url + path, data=json.dumps(zugang.schwaerzen_tief(body)).encode() if body is not None else None, method=method or ("POST" if body is not None else "GET"), headers=kopf)
     try:
         with OPENER.open(req, timeout=timeout) as h:
             return h.status, json.loads(h.read() or b"{}")
     except urllib.error.HTTPError as e:
-        return e.code, zugang.schwaerzen(e.read().decode("utf-8", "replace")[:600])
+        return e.code, zugang.kurz(e.read(), 600)
 
 
 def feld(fieldname, label, fieldtype="Data", **kw):
@@ -78,7 +78,7 @@ RECHTE_AGENT = {"role": ROLLE, "read": 1, "write": 1, "create": 1, "delete": 0, 
 
 
 def definitionen():
-    """Feld fuer Feld wie auf dem Server-ERPNext (per API ausgelesen 2026-10-19), plus Agentenrolle."""
+    """Field definitions of the two Trove doctypes, plus the mirror role."""
     return {
         DT_EREIGNIS: {
             "name": DT_EREIGNIS, "module": "Custom", "custom": 1, "autoname": "format:TRV-{mandant}-{zeile}", "track_changes": 0, "sort_field": "zeile", "sort_order": "DESC",
@@ -107,16 +107,16 @@ def doctypes_anlegen():
     if not q("/api/resource/Role/" + urllib.parse.quote(ROLLE))[0] == 200:
         st, r = q("/api/resource/Role", {"role_name": ROLLE, "desk_access": 1})
         if st != 200:
-            raise RuntimeError("ERPNext role %s: %s %s" % (ROLLE, st, str(r)[:200]))
+            raise RuntimeError("ERPNext role %s: %s %s" % (ROLLE, st, zugang.kurz(r, 200)))
     st, r = q("/api/resource/DocType?filters=" + urllib.parse.quote(json.dumps([["name", "like", "Trove%"]])) + "&fields=" + urllib.parse.quote(json.dumps(["name"])))
     if st != 200:
-        raise RuntimeError("ERPNext doctype list: %s %s" % (st, str(r)[:200]))
+        raise RuntimeError("ERPNext doctype list: %s %s" % (st, zugang.kurz(r, 200)))
     vorhanden = {x["name"] for x in r.get("data", [])}
     ergebnis = {}
     for name, d in definitionen().items():
         if name not in vorhanden:
             st, r = q("/api/resource/DocType", d)
-            ergebnis[name] = st if st == 200 else (st, str(r)[:300])
+            ergebnis[name] = st if st == 200 else (st, zugang.kurz(r, 300))
     # Nachruesten: Feld "zeile" + Namensregel nach Zeilenposition (nr kann nach vermerktem Kettenbruch doppelt vorkommen)
     st, dt = q("/api/resource/DocType/" + urllib.parse.quote(DT_EREIGNIS))
     if st == 200:
@@ -124,12 +124,12 @@ def doctypes_anlegen():
         if not any(f["fieldname"] == "zeile" for f in d["fields"]):
             d["fields"].insert(1, feld("zeile", "Zeile", "Int", in_list_view=1))
             st, r = q("/api/resource/DocType/" + urllib.parse.quote(DT_EREIGNIS), {"fields": d["fields"], "autoname": "format:TRV-{mandant}-{zeile}", "sort_field": "zeile"}, "PUT")
-            ergebnis["nachgeruestet_zeile"] = st if st == 200 else (st, str(r)[:200])
+            ergebnis["nachgeruestet_zeile"] = st if st == 200 else (st, zugang.kurz(r, 200))
     for name in definitionen():
         st, dt = q("/api/resource/DocType/" + urllib.parse.quote(name))
         if st == 200 and not any(p.get("role") == ROLLE for p in dt["data"]["permissions"]):
             st, r = q("/api/resource/DocType/" + urllib.parse.quote(name), {"permissions": dt["data"]["permissions"] + [RECHTE_AGENT]}, "PUT")
-            ergebnis["rolle_" + name] = st if st == 200 else (st, str(r)[:200])
+            ergebnis["rolle_" + name] = st if st == 200 else (st, zugang.kurz(r, 200))
     return {"vorhanden": sorted(vorhanden), "angelegt": ergebnis}
 
 
@@ -159,6 +159,7 @@ KERN = ("nr", "zeit", "ereignis", "quelle", "ziel", "sha256", "bytes", "werkzeug
 
 
 def spiegeln(mandant, max_zeilen=None, batch=200):
+    _kopf()  # not configured -> NichtEingerichtet before any lock file is created
     with _sperre(mandant, "spiegel_erpnext"):
         s = stand(mandant)
         if "letzte_zeile" not in s:  # Altstand (nach nr): bis dahin war nr == Zeile (vor dem ersten vermerkten Bruch)
@@ -188,7 +189,7 @@ def spiegeln(mandant, max_zeilen=None, batch=200):
                 docs.append(d)
             st, r = api("/api/method/frappe.client.insert_many", {"docs": docs}, timeout=600)
             if st != 200:
-                raise RuntimeError("ERPNext insert_many failed at line %d: %s %s" % (teil[0]["_zeile"], st, str(r)[:300]))
+                raise RuntimeError("ERPNext insert_many failed at line %d: %s %s" % (teil[0]["_zeile"], st, zugang.kurz(r, 300)))
             gesendet += len(teil)
             s["letzte_zeile"] = teil[-1]["_zeile"]; s["letzte_nr"] = teil[-1]["nr"]
             stand_speichern(mandant, s)
@@ -197,6 +198,7 @@ def spiegeln(mandant, max_zeilen=None, batch=200):
 
 def belege_aktualisieren(mandant, max_belege=None):
     """Ein Satz je Inhalt (sha256): aus den Ereignissen letzter Ort, Orte, Zeiten; aus dem Zwilling die Geschaeftsfelder."""
+    _kopf()
     pfad = bp.pfad_fuer(mandant)
     sicht = {}
     for e in bp.eintraege(pfad):
@@ -244,18 +246,18 @@ def belege_aktualisieren(mandant, max_belege=None):
             teil = docs[i:i + 100]
             st, r = api("/api/method/frappe.client.get_list", {"doctype": DT_BELEG, "filters": [["sha256", "in", [t[0] for t in teil]]], "fields": ["name"], "limit_page_length": 1000})
             if st != 200:
-                raise RuntimeError("ERPNext get_list documents: %s %s" % (st, str(r)[:300]))
+                raise RuntimeError("ERPNext get_list documents: %s %s" % (st, zugang.kurz(r, 300)))
             da = {x["name"] for x in r.get("message", [])}
             neu = [d for sha, m, d in teil if sha not in da]
             if neu:
                 st, r = api("/api/method/frappe.client.insert_many", {"docs": neu}, timeout=600)
                 if st != 200:
-                    raise RuntimeError("ERPNext insert_many documents: %s %s" % (st, str(r)[:300]))
+                    raise RuntimeError("ERPNext insert_many documents: %s %s" % (st, zugang.kurz(r, 300)))
             for sha, m, d in teil:
                 if sha in da:
                     st, r = api("/api/resource/%s/%s" % (urllib.parse.quote(DT_BELEG), sha), {k: v for k, v in d.items() if k not in ("doctype", "sha256")}, method="PUT")
                     if st != 200:
-                        raise RuntimeError("ERPNext update document %s: %s %s" % (sha[:12], st, str(r)[:200]))
+                        raise RuntimeError("ERPNext update document %s: %s %s" % (sha[:12], st, zugang.kurz(r, 200)))
                 s["belege"][sha] = m
             gesendet += len(teil)
             stand_speichern(mandant, s, "spiegel_belege.json")
@@ -272,8 +274,10 @@ def _selbsttest():
     """Laufsperre: ein zweiter Spiegel-Lauf scheitert mit LaufLaeuft, bevor ERPNext gefragt wird."""
     import tempfile
     g = globals()
-    alt = g["api"], bp.WURZEL
+    alt = g["api"], bp.WURZEL, zugang.geheimnis_quelle, zugang.einstellungen_quelle
     g["api"] = lambda *a, **k: (_ for _ in ()).throw(AssertionError("ERPNext trotz Sperre gefragt"))
+    zugang.geheimnis_quelle = lambda n: "x-" + n  # Hermes mock: configured, but api() is blocked
+    zugang.einstellungen_quelle = lambda: {"erpnext_url": "http://127.0.0.1:9"}
     try:
         with tempfile.TemporaryDirectory() as w:
             bp.WURZEL = w
@@ -286,7 +290,7 @@ def _selbsttest():
                     except bp.LaufLaeuft:
                         pass
     finally:
-        g["api"], bp.WURZEL = alt
+        g["api"], bp.WURZEL, zugang.geheimnis_quelle, zugang.einstellungen_quelle = alt
 
 
 def _selbsttest_zugang():

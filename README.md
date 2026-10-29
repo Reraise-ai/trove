@@ -108,7 +108,7 @@ flowchart LR
 Trove is a file tool, so it is explicit about what it touches. Everything below is the complete list.
 
 **Passwords and connections.** Trove never asks for or stores your passwords, tokens or keys, and it reads no credential files
-(no `.env`, no `auth.json`, no token files). It has four **optional integrations** (mail, DocuSeal signing, ERPNext mirror, Reraise).
+(no `.env`, no `auth.json`, no token files; key, secret, password or token names in `trove.json` are ignored). It has four **optional integrations** (mail, DocuSeal signing, ERPNext mirror, Reraise).
 All four are **off** after installation and stay off until you configure them in Hermes; Hermes stores their credentials and hands them to
 Trove through its own secret route (`get_secret`), or, for Gmail, sends the requests with a sign-in that only Hermes holds. See
 [Optional integrations](#optional-integrations) for exactly what talks to which service. You can also skip them entirely and let a Hermes
@@ -144,7 +144,7 @@ if you run them, and to the services of the optional integrations below **only a
 ### Optional integrations
 
 Everything here is off by default. An integration becomes active only when its settings are filled in under **Hermes Settings → Plugins → Trove**
-(or with `hermes config`). Secret fields are stored by Hermes in the active profile, never in `config.yaml` and never by Trove. The defaults point
+(or with `hermes config`). Secret fields are stored by Hermes in the active profile, never in `config.yaml` and never by Trove. Every text Trove sends out (screen, log, receipt log, ERPNext mirror) is scrubbed of these secret values in all common spellings, even if a server echoes them back in an error. Creating ERPNext doctypes and sending a document for signature each ask for confirmation first. The defaults point
 at nothing: there is no built-in server address. The panel **Integrations** at the bottom of the Trove page shows which ones are on and what is missing.
 
 | Integration | Talks to | Only when you set | What it sends / stores |
