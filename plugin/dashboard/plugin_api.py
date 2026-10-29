@@ -498,7 +498,11 @@ def _eintragsname_pruefen(name, was="name"):
         raise HTTPException(400, "%s: must not start or end with a space or end with a dot" % was)
     if name in (".", "..") or _NAME_VERBOTEN.search(name) or os.path.isabs(name) or os.path.splitdrive(name)[0]:
         raise HTTPException(400, "%s: no path separators, '..' or characters that are not allowed in file names: %r" % (was, name))
-    if len(name.encode("utf-8")) > 255:
+    try:
+        laenge = len(name.encode("utf-8"))
+    except UnicodeEncodeError:
+        raise HTTPException(400, "%s: not valid text (lone surrogate characters)" % was)
+    if laenge > 255:
         raise HTTPException(400, "%s: too long" % was)
     if name.split(".")[0].rstrip(" ").upper() in _WIN_RESERVIERT:
         raise HTTPException(400, "%s: reserved system name: %r" % (was, name))
@@ -509,6 +513,53 @@ def _ordnerpfad_pruefen(pfad):
     if ".." in str(pfad or "").replace("\\", "/").split("/"):
         raise HTTPException(400, "pfad: '..' is not allowed")
     return pfad
+
+
+def _prot_oeffnen(mandant):
+    """Receipt log for a click action: wait up to ~10 s if another run holds it, then answer 503 (nothing was changed yet)."""
+    try:
+        return gm.prot_mit_wiederholung(bp.pfad_fuer(mandant), versuche=20, pause=0.5)
+    except bp.ProtokollGesperrt:
+        raise HTTPException(503, "The receipt log is busy right now (another run is writing to it). Nothing was changed. Try again in a moment.")
+
+
+def _gleicher_eintrag(ordner, name, neu):
+    """True only if name and neu are ONE directory entry that the filesystem treats as equal (case-insensitive filesystem, case-only rename).
+    Two separate entries (symlink or hard-link twins on a case-sensitive filesystem) are never the same entry."""
+    try:
+        a, b = os.lstat(os.path.join(ordner, name)), os.lstat(os.path.join(ordner, neu))
+    except OSError:
+        return False
+    if (a.st_ino, a.st_dev) != (b.st_ino, b.st_dev):
+        return False
+    vorhanden = os.listdir(ordner)
+    return name in vorhanden and neu not in vorhanden
+
+
+def _wird_benutzt(mandant, ordner, name):
+    """Does renaming ordner/name break a registered source or a folder watched by 'Into knowledge'? Returns a short description or None."""
+    alt = os.path.join(ordner, name)
+    varianten = {os.path.normcase(os.path.join(os.path.realpath(ordner), name)), os.path.normcase(os.path.abspath(alt))}
+
+    def innerhalb(pfad):
+        if not pfad:
+            return False
+        for v in {os.path.normcase(os.path.realpath(pfad)), os.path.normcase(os.path.abspath(pfad))}:
+            for a in varianten:
+                if v == a or v.startswith(a + os.sep):
+                    return True
+        return False
+    for x in _quellen(mandant):
+        if innerhalb(x.get("pfad")):
+            return "a source (%s)" % x.get("name", "?")
+    try:
+        watched = konfig.lesen().get("ueberwacht", [])
+    except (OSError, ValueError):
+        watched = []
+    for w in watched:
+        if innerhalb(w.get("ordner")):
+            return "a folder watched by 'Into knowledge'"
+    return None
 
 
 def _schreibbare_quelle(mandant, qid):
@@ -575,6 +626,10 @@ def umbenennen(body: dict):
     if not name:
         raise HTTPException(400, "name: the entry to rename is required")
     _eintragsname_pruefen(neu, "neu")
+    try:
+        name.encode("utf-8")
+    except UnicodeEncodeError:
+        raise HTTPException(400, "name: not valid text (lone surrogate characters)")
     ordner = _sicher(q["pfad"], _ordnerpfad_pruefen(body.get("pfad", "")))
     alt, ziel = os.path.join(ordner, name), os.path.join(ordner, neu)
     if not os.path.lexists(alt):
@@ -583,16 +638,19 @@ def umbenennen(body: dict):
         raise HTTPException(400, "Path is outside the source folder")
     if name == neu:
         raise HTTPException(400, "The new name is the same as the old one")
-    nur_gross_klein = name.casefold() == neu.casefold()
-    if os.path.lexists(ziel) and not (nur_gross_klein and os.path.samefile(alt, ziel)):
+    nur_gross_klein = name.casefold() == neu.casefold() and _gleicher_eintrag(ordner, name, neu)
+    if os.path.lexists(ziel) and not nur_gross_klein:
         raise HTTPException(409, "An entry named %r already exists here. Nothing was renamed." % neu)
+    benutzt = _wird_benutzt(mandant, ordner, name)
+    if benutzt:
+        raise HTTPException(409, "%r is used as %s. Renaming it would break that. Remove it there first, then rename." % (name, benutzt))
     sha, groesse = "", None
     if os.path.isfile(alt) and not os.path.islink(alt):
         groesse = os.path.getsize(alt)
         if groesse <= 256 * 1024 * 1024:
             sha = _sha(alt)
     lauf = "umbenennen-%s" % time.strftime("%Y%m%d-%H%M%S")
-    with bp.Protokoll(bp.pfad_fuer(mandant)) as prot:
+    with _prot_oeffnen(mandant) as prot:
         try:
             _umbenennen_ohne_ueberschreiben(alt, ziel, nur_gross_klein)
         except FileExistsError:
@@ -601,6 +659,10 @@ def umbenennen(body: dict):
         except OSError as ex:
             prot.schreiben("fehler", quelle=alt, ziel=ziel, werkzeug="trove-plugin", mandant=mandant, lauf=lauf, meldung="rename failed: %s" % (ex.strerror or type(ex).__name__))
             raise _fehler(500, "Rename failed: %s" % (ex.strerror or type(ex).__name__))
+        vorhanden = os.listdir(ordner)
+        if neu not in vorhanden or name in vorhanden:
+            prot.schreiben("fehler", quelle=alt, ziel=ziel, werkzeug="trove-plugin", mandant=mandant, lauf=lauf, meldung="rename did not take effect, nothing logged as renamed")
+            raise _fehler(500, "Rename did not take effect.")
         prot.schreiben("umbenannt", quelle=alt, ziel=ziel, sha256=sha, bytes_=groesse, werkzeug="trove-plugin", mandant=mandant, lauf=lauf,
                        meldung="%s renamed in place: %s -> %s" % ("folder" if os.path.isdir(ziel) and not os.path.islink(ziel) else "file", name, neu))
         prot.anker_setzen(mandant, lauf)
@@ -618,10 +680,11 @@ def ordner_neu(body: dict):
         raise HTTPException(404, "Folder not found")
     ziel = os.path.join(ordner, name)
     lauf = "ordner-neu-%s" % time.strftime("%Y%m%d-%H%M%S")
-    with bp.Protokoll(bp.pfad_fuer(mandant)) as prot:
+    with _prot_oeffnen(mandant) as prot:
         try:
             os.mkdir(ziel)  # atomic: fails if anything with that name exists
         except FileExistsError:
+            prot.schreiben("fehler", quelle=ordner, ziel=ziel, werkzeug="trove-plugin", mandant=mandant, lauf=lauf, meldung="new folder refused: target exists, nothing touched")
             raise HTTPException(409, "An entry named %r already exists here. No folder was created." % name)
         except OSError as ex:
             prot.schreiben("fehler", quelle=ordner, ziel=ziel, werkzeug="trove-plugin", mandant=mandant, lauf=lauf, meldung="new folder failed: %s" % (ex.strerror or type(ex).__name__))

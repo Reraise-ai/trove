@@ -266,18 +266,22 @@ function Side({ side, sources, state, setState, selection, setSelection, reload,
   }
   const submitEdit = async () => {
     if (!edit || edit.busy || !edit.value.trim()) return
+    const value = edit.value.trim()
     setEdit({ ...edit, busy: true }); setError(null)
     try {
       if (edit.mode === 'rename') {
-        await rest('/umbenennen', { method: 'POST', body: { mandant: MANDANT, quelle: q.id, pfad: state.pfad || '', name: edit.from, neu: edit.value } })
-        host.notify({ kind: 'info', message: 'Trove: ' + t('renamed', edit.from, edit.value) })
-        setActive(edit.value); setSelection(selection.map((n) => n === edit.from ? edit.value : n))
+        await rest('/umbenennen', { method: 'POST', body: { mandant: MANDANT, quelle: q.id, pfad: state.pfad || '', name: edit.from, neu: value } })
+        host.notify({ kind: 'info', message: 'Trove: ' + t('renamed', edit.from, value) })
+        setActive(value); setSelection(selection.map((n) => n === edit.from ? value : n))
       } else {
-        await rest('/ordner-neu', { method: 'POST', body: { mandant: MANDANT, quelle: q.id, pfad: state.pfad || '', name: edit.value } })
-        host.notify({ kind: 'info', message: 'Trove: ' + t('folderCreated', edit.value) })
+        await rest('/ordner-neu', { method: 'POST', body: { mandant: MANDANT, quelle: q.id, pfad: state.pfad || '', name: value } })
+        host.notify({ kind: 'info', message: 'Trove: ' + t('folderCreated', value) })
       }
       setEdit(null); load()
-    } catch (e) { setError(errText(e)); setEdit({ ...edit, busy: false }) }
+    } catch (e) {
+      const m = errText(e)
+      setError(/receipt log is busy/.test(m) ? t('logBusy') : /is used as /.test(m) ? t('inUse') : m); setEdit({ ...edit, busy: false })
+    }
   }
   const fileBtn = (text, art, title) => btn(text, () => fileAction(art), active ? { title } : { title: t('clickFileFirst'), disabled: true })
   const preview = jsx(Preview, { source: q && q.id, entry: entries.find((e) => e.name === active) })
@@ -575,6 +579,8 @@ const EN = {
   renameBtn: 'Rename', renameTip: 'Rename the clicked file or folder (never overwrites)', newFolderBtn: 'New folder', newFolderTip: 'Create a new folder here',
   needWritableTip: 'This folder is read-only. Mark it as writable first.', clickEntryFirst: 'click a file or folder first',
   renameLabel: (n) => 'Rename "' + n + '" to:', newFolderLabel: 'Name of the new folder:', newNamePlaceholder: 'name', confirmBtn: 'OK',
+  logBusy: 'The receipt log is busy right now (another run is writing to it). Nothing was changed. Try again in a moment.',
+  inUse: 'This folder is used as a source or watched by "Into knowledge". Renaming it would break that. Remove it there first.',
   renamed: (a, b) => 'renamed "' + a + '" to "' + b + '"', folderCreated: (n) => 'folder "' + n + '" created'
 }
 // </i18n:en>
@@ -640,6 +646,8 @@ const DE = {
   renameBtn: 'Umbenennen', renameTip: 'Angeklickte Datei oder angeklickten Ordner umbenennen (überschreibt nie)', newFolderBtn: 'Neuer Ordner', newFolderTip: 'Hier einen neuen Ordner anlegen',
   needWritableTip: 'Dieser Ordner ist nur lesbar. Zuerst auf „beschreibbar“ stellen.', clickEntryFirst: 'erst eine Datei oder einen Ordner anklicken',
   renameLabel: (n) => '„' + n + '“ umbenennen in:', newFolderLabel: 'Name des neuen Ordners:', newNamePlaceholder: 'Name', confirmBtn: 'OK',
+  logBusy: 'Das Belegprotokoll ist gerade belegt (ein anderer Lauf schreibt hinein). Es wurde nichts geändert. Gleich noch einmal versuchen.',
+  inUse: 'Dieser Ordner ist als Quelle eingetragen oder wird von „Ins Wissen“ beobachtet. Umbenennen würde das zerstören. Zuerst dort entfernen.',
   renamed: (a, b) => '„' + a + '“ umbenannt in „' + b + '“', folderCreated: (n) => 'Ordner „' + n + '“ angelegt'
 }
 // </i18n:de>

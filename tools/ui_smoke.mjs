@@ -79,6 +79,7 @@ for (const loc of ['en', 'de']) {
   const mvBack = btns.filter((b) => /← Move|← Verschieben/.test(JSON.stringify(b.props.children)))
   ok(mvBack.length === 1 && mvBack[0].props.disabled, loc + ': ← move disabled (target read-only)')
 }
+const callsBeforeClicks = calls.slice()   // everything issued by rendering alone
 {
   // interaction: new folder on the writable pane issues exactly one POST /ordner-neu, rename is blocked on the read-only pane
   locale = 'en'
@@ -87,7 +88,7 @@ for (const loc of ['en', 'de']) {
   await TR.act(async () => { nfBtn.props.onClick(); await settle() })
   const inp = tree.root.findAllByType('input').find((i) => i.props.placeholder === 'name')
   ok(!!inp, 'new folder opens an inline name field (no window.prompt)')
-  await TR.act(async () => { inp.props.onChange({ target: { value: 'Taxes 2026' } }); await settle() })
+  await TR.act(async () => { inp.props.onChange({ target: { value: '  Taxes 2026 ' } }); await settle() })
   const okBtn = tree.root.findAllByType('button').find((b) => JSON.stringify(b.props.children) === '"OK"')
   await TR.act(async () => { okBtn.props.onClick(); await settle() })
   const posts = calls.filter((c) => c[0] === '/ordner-neu')
@@ -110,6 +111,6 @@ ok(text(rp).includes('passed (sure)'), 'ResultPanel (read) renders')
 const tk = await render(React.createElement(mod.Tasks, {}))
 ok(text(tk).includes('Release'), 'Tasks lists a blocked card with a Release button')
 ok(calls.some((c) => c[0] === '/liste') && calls.some((c) => c[0] === '/status'), 'backend calls issued')
-ok(!calls.some((c) => c[1] === 'POST' && ['/aktion', '/wissen', '/register', '/umbenennen'].includes(c[0])), 'rendering alone never triggers a write action')
+ok(!callsBeforeClicks.some((c) => c[1] === 'POST' && ['/aktion', '/wissen', '/register', '/umbenennen', '/ordner-neu'].includes(c[0])), 'rendering alone never triggers a write action')
 console.log(failures ? failures + ' FAILED' : 'UI SMOKE PASSED')
 process.exit(failures ? 1 : 0)

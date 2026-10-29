@@ -145,3 +145,61 @@ def desk_basics(c, u, tmp, mod):
             pass
     finally:
         os.link = echt_link
+    # --- review fixes: case-only rename must be the SAME entry; surrogates; busy log; sources/watched folders ---
+    cs = not os.path.exists(os.path.join(wurzel, "B.TXT"))  # B.txt exists: B.TXT visible only on case-insensitive filesystems
+    if cs:
+        with open(os.path.join(wurzel, "x.txt"), "w", encoding="utf-8") as f:
+            f.write("X")
+        os.symlink("x.txt", os.path.join(wurzel, "X.txt"))
+        r = ren(name="x.txt", neu="X.txt")
+        assert r.status_code == 409 and os.path.islink(os.path.join(wurzel, "X.txt")) and os.path.isfile(os.path.join(wurzel, "x.txt")), r.text  # symlink twin kept
+        with open(os.path.join(wurzel, "h.txt"), "w", encoding="utf-8") as f:
+            f.write("H")
+        os.link(os.path.join(wurzel, "h.txt"), os.path.join(wurzel, "H.txt"))
+        n_vorher = log_text().count('"umbenannt"')
+        r = ren(name="h.txt", neu="H.txt")
+        assert r.status_code == 409 and log_text().count('"umbenannt"') == n_vorher, r.text  # hard-link twin: nothing logged as renamed
+        os.symlink("nowhere", os.path.join(wurzel, "D.txt"))
+        with open(os.path.join(wurzel, "d.txt"), "w", encoding="utf-8") as f:
+            f.write("D")
+        r = ren(name="d.txt", neu="D.txt")
+        assert r.status_code in (400, 409), r.text  # dangling symlink twin: clean refusal, no 500
+        assert os.path.islink(os.path.join(wurzel, "D.txt")) and os.path.isfile(os.path.join(wurzel, "d.txt"))
+        # a genuine case-only rename still works
+        with open(os.path.join(wurzel, "solo.txt"), "w", encoding="utf-8") as f:
+            f.write("S")
+        assert ren(name="solo.txt", neu="Solo.txt").status_code == 200 and "Solo.txt" in os.listdir(wurzel) and "solo.txt" not in os.listdir(wurzel)
+    # lone surrogate -> 400, not 500 (raw JSON body, the client cannot encode it)
+    for body in ({"quelle": q["id"], "pfad": "", "name": "a2.txt", "neu": "\udc80x"}, {"quelle": q["id"], "pfad": "", "name": "\udc80x", "neu": "ok"}):
+        r = c.post(u + "/umbenennen", content=__import__("json").dumps(body), headers={"content-type": "application/json"})
+        assert r.status_code == 400, r.text
+    r = c.post(u + "/ordner-neu", content=__import__("json").dumps({"quelle": q["id"], "pfad": "", "name": "\udc80x"}), headers={"content-type": "application/json"})
+    assert r.status_code == 400, r.text
+    # busy receipt log -> 503 with a clear message, nothing changed
+    import belegprotokoll as bpm
+    echt_pw = mod.gm.prot_mit_wiederholung
+    def gesperrt(*a, **k):
+        raise bpm.ProtokollGesperrt("locked")
+    mod.gm.prot_mit_wiederholung = gesperrt
+    try:
+        r1 = ren(name="a2.txt", neu="busy.txt")
+        r2 = neu(name="busyfolder")
+    finally:
+        mod.gm.prot_mit_wiederholung = echt_pw
+    assert r1.status_code == 503 and r2.status_code == 503 and "busy" in r1.text, (r1.text, r2.text)
+    assert os.path.exists(os.path.join(wurzel, "a2.txt")) and not os.path.exists(os.path.join(wurzel, "busyfolder"))
+    # a folder that is itself a registered source, or watched by Into knowledge, cannot be renamed
+    os.makedirs(os.path.join(wurzel, "asrc", "deep"))
+    qs = c.post(u + "/quellen", json={"art": "ordner", "pfad": os.path.join(wurzel, "asrc", "deep")}).json()
+    r = ren(name="asrc", neu="asrc2")
+    assert r.status_code == 409 and "source" in r.text and os.path.isdir(os.path.join(wurzel, "asrc")), r.text  # contains a registered source
+    assert c.delete(u + "/quellen/" + qs["id"]).status_code == 200
+    os.makedirs(os.path.join(wurzel, "watched"))
+    import konfig
+    konfig.ueberwacht_eintragen({"ordner": os.path.join(wurzel, "watched"), "sammlung": "w1", "sichtbarkeit": "privat", "zugehoerigkeit": "offen"})
+    r = ren(name="watched", neu="watched2")
+    assert r.status_code == 409 and "watched" in r.text and os.path.isdir(os.path.join(wurzel, "watched")), r.text
+    assert ren(name="asrc", neu="asrc2").status_code == 200  # source removed -> allowed again
+    # mkdir conflict leaves a 'fehler' entry
+    n = log_text().count("new folder refused")
+    assert neu(name="fresh").status_code == 409 and log_text().count("new folder refused") == n + 1
