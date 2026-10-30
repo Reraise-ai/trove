@@ -1,0 +1,27 @@
+{
+  "name": "reraise",
+  "owner": {
+    "name": "Reraise maintainers",
+    "email": "maintainers@reraise.ai",
+    "url": "https://reraise.ai"
+  },
+  "metadata": {
+    "description": "Plugins by Reraise: Trove, the cleanup desk for you and your agents."
+  },
+  "plugins": [
+    {
+      "name": "trove",
+      "source": "./",
+      "description": "Trove — cleanup desk for you and your agents: two-pane file desk, tamper-evident log, receipt reading, knowledge cards. Agents read freely; every change becomes a blocked request a human releases in the Trove tab.",
+      "category": "productivity",
+      "tags": [
+        "files",
+        "receipts",
+        "documents",
+        "mcp",
+        "knowledge",
+        "local-first"
+      ]
+    }
+  ]
+}

@@ -214,6 +214,20 @@ nur in der Hermes-Umgebung geändert, gib dieselben Werte im `env`-Block des Cli
 bedient MCP über HTTP unter `http://127.0.0.1:8765/mcp` (nur lokal; nur Host `127.0.0.1:8765`/`localhost:8765`, kein Browser-Origin,
 sonst startet `--http` nicht). Der HTTP-Zugang hat keine Anmeldung: jedes Programm auf dem Rechner kann darüber lesen; stdio ist vorzuziehen.
 
+### Als Claude-Plugin installieren
+
+Trove ist auch ein Claude-Plugin: Das Repository enthält ein Plugin-Manifest und einen eigenen Marketplace, sodass Claude Desktop und
+Claude Code den MCP-Server (plus einen kurzen Skill, der die Werkzeuge erklärt) ohne Konfigurationsdatei installieren.
+
+- **Claude Desktop**: *Einstellungen → Plugins → Marketplace hinzufügen*, `Reraise-ai/trove` eintragen, dann **Trove** aus dem Marketplace `reraise` installieren.
+- **Claude Code**: `claude plugin marketplace add Reraise-ai/trove`, dann `claude plugin install trove@reraise`.
+
+Beim Einschalten fragt das Plugin nach einer Einstellung, dem **Python-Befehl**: ein Python 3.10+, in dem die Pakete installiert sind
+(`python3 -m pip install mcp fastapi pypdfium2`; unter Windows heißt der Befehl meist `python`). Das Plugin startet damit
+`plugin/dashboard/mcp_server.py` aus seiner eigenen Kopie dieses Repositories. Troves Datenordner ist `~/Trove`, sofern `TROVE_DATEN`
+oder `trove.json` nichts anderes sagt; es ist derselbe Schreibtisch wie im Hermes-Tab, mit derselben Freigabe.
+Datenschutz und Bedingungen: `docs/PRIVACY.md`, `docs/TERMS.md`.
+
 ## FAQ
 
 **Ist Trove GoBD-konform?** Trove unterstützt eine ordentliche Ablage: nichts wird überschrieben, jede Bewegung wird protokolliert, das Protokoll ist fälschungssicher.

@@ -1,5 +1,5 @@
 name: reraise-trove
-version: "0.3.0"
+version: "0.4.0"
 description: "Trove — cleanup desk for you and your agents: two-pane file desk, tamper-evident log, receipt reading, knowledge cards."
 author: Reraise maintainers
 kind: standalone

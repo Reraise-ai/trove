@@ -44,7 +44,7 @@ RE_MANDANT = r"[a-z0-9][a-z0-9_-]{0,40}"  # muss gleich gemeinsam.RE_MANDANT sei
 router = APIRouter()
 BLOCK = 1 << 20
 MANDANT = konfig.mandant()  # trove.json / TROVE_MANDANT
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 
 
 def _jetzt():

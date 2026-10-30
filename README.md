@@ -366,6 +366,20 @@ Optional: `python3 mcp_server.py --http 8765` serves MCP over HTTP at `http://12
 Host `127.0.0.1:8765` / `localhost:8765` and no browser origin (protection against DNS rebinding); if the installed `mcp` package cannot enforce
 that, `--http` refuses to start. The HTTP endpoint has no login: any program on this computer can read through it, so prefer stdio.
 
+### Install as a Claude plugin
+
+Trove is also a Claude plugin: the repository carries a plugin manifest and its own marketplace, so Claude Desktop and Claude Code
+can install the MCP server (plus a short skill that explains the tools) without editing a config file.
+
+- **Claude Desktop**: *Settings → Plugins → Add marketplace*, enter `Reraise-ai/trove`, then install **Trove** from the `reraise` marketplace.
+- **Claude Code**: `claude plugin marketplace add Reraise-ai/trove`, then `claude plugin install trove@reraise`.
+
+When you enable the plugin it asks for one setting, the **Python command**: a Python 3.10+ that has the packages installed
+(`python3 -m pip install mcp fastapi pypdfium2`; on Windows the command is usually `python`). The plugin starts
+`plugin/dashboard/mcp_server.py` from its own copy of this repository with that Python. Trove's data folder is `~/Trove` unless
+`TROVE_DATEN` or `trove.json` says otherwise (see *Configuration*); it is the same desk your Hermes tab uses, with the same
+release step. Privacy and terms: `docs/PRIVACY.md`, `docs/TERMS.md`.
+
 ## FAQ
 
 <details>

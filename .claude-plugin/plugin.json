@@ -1,0 +1,35 @@
+{
+  "name": "trove",
+  "displayName": "Trove",
+  "version": "0.4.0",
+  "description": "Trove — cleanup desk for you and your agents: two-pane file desk, tamper-evident log, receipt reading, knowledge cards. Agents read freely; every change becomes a blocked request a human releases in the Trove tab.",
+  "author": {
+    "name": "Reraise maintainers",
+    "email": "maintainers@reraise.ai",
+    "url": "https://reraise.ai"
+  },
+  "homepage": "https://github.com/Reraise-ai/trove",
+  "repository": "https://github.com/Reraise-ai/trove",
+  "license": "Apache-2.0",
+  "keywords": ["files", "receipts", "documents", "mcp", "knowledge", "audit-log", "hermes", "local-first"],
+  "icon": "./docs/assets/trove-logo-256.png",
+  "documentationUrl": "https://github.com/Reraise-ai/trove#readme",
+  "supportUrl": "https://github.com/Reraise-ai/trove/issues",
+  "privacyPolicyUrl": "https://github.com/Reraise-ai/trove/blob/main/docs/PRIVACY.md",
+  "termsOfServiceUrl": "https://github.com/Reraise-ai/trove/blob/main/docs/TERMS.md",
+  "userConfig": {
+    "python": {
+      "type": "string",
+      "title": "Python command",
+      "description": "Python 3.10+ with the packages mcp, fastapi and pypdfium2 installed (python3 -m pip install mcp fastapi pypdfium2). On Windows usually 'python' or the full path to python.exe.",
+      "default": "python3",
+      "required": true
+    }
+  },
+  "mcpServers": {
+    "trove": {
+      "command": "${user_config.python}",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/plugin/dashboard/mcp_server.py"]
+    }
+  }
+}
