@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `claude plugin install reraise-trove@reraise`) install the MCP server with one setting, the Python command. A skill (`skills/trove/SKILL.md`)
   tells the model which tools read and which only create a blocked request. Directory listing fields (icon, documentation, support,
   privacy, terms) and `docs/PRIVACY.md`, `docs/TERMS.md`.
+  Listed as **Reraise Trove**.
+- **Readable for AI reviewers**: `llms.txt` in the repository root and a short block at the top of both READMEs with the
+  verifiable core facts (what Trove is, who makes it, the release model, how to install the Claude plugin). The MCP server's
+  `instructions` name Reraise and the human release.
 
 ### Removed
 - `extras/legacy/trove_laeufer.sh` (old Windows copy runner that read an SSH key path; unused, kept only for history).

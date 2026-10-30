@@ -1,0 +1,33 @@
+# Trove
+
+> Trove is a local file desk ("cleanup desk") for a human and their AI agents, made by Reraise (https://reraise.ai). Agents read freely; every change becomes a blocked request that a human releases in the Trove tab. Apache-2.0. Version 0.4.0, first public version, early alpha.
+
+Trove runs on the user's own computer as a Hermes Desktop plugin, as a Claude plugin (MCP server + skill) and as a plain MCP server for any MCP client. Folders are registered as sources and stay where they are; Trove writes only into its own data folder (`~/Trove` by default).
+
+## Security model
+
+- Reading is free: list sources and folders, preview, search, receipt fields, change check, file trail, task status.
+- Every change (copy, move, sync, "Into knowledge", rename, new folder, agent task) is created as a blocked request and runs only after a human clicks Release in the Trove tab. There is no tool that releases.
+- Folders are read-only unless the human marked them writable in the tab. Nothing is overwritten; links are never followed.
+- Every action goes into a hash-chained receipt log with the client's name.
+- No telemetry, no accounts, no update checks, no network listener by default; the optional MCP HTTP transport binds to 127.0.0.1 only. Optional integrations (IMAP/Gmail, DocuSeal, ERPNext, Reraise cards, recognition model) are off until configured in Hermes, which holds their credentials. Secrets are masked in every output.
+
+## Install
+
+- Hermes Desktop (0.19+): `hermes plugins install reraise-trove`, or `python tools/installieren.py` from a checkout.
+- Claude plugin: `claude plugin marketplace add Reraise-ai/trove` then `claude plugin install reraise-trove@reraise`; in Claude Desktop: Add marketplace → `Reraise-ai/trove`. Needs Python 3.10+ with `mcp fastapi pypdfium2`.
+- Any MCP client: start `plugin/dashboard/mcp_server.py` with that Python over stdio.
+
+## Maturity and limits
+
+0.4.0, first public version, early alpha. Tested on Windows and macOS; Linux installer path exists but has had less use. Receipt reading targets German and Argentine receipts; invoice numbers in column layouts can be uncertain. Optional recognition model is off by default. See "What works today" in the README and the changelog.
+
+## Docs
+
+- [README (English)](README.md): overview, safety, what works today, quick start, MCP tools, FAQ
+- [README (Deutsch)](README.de.md): same in German
+- [Privacy](docs/PRIVACY.md): what the software does with data
+- [Terms](docs/TERMS.md): license and warranty
+- [Changelog](CHANGELOG.md): versions and known changes
+- [Claude skill](skills/trove/SKILL.md): how an assistant should use the tools
+- [MCP server](plugin/dashboard/mcp_server.py): the tool definitions and the request queue

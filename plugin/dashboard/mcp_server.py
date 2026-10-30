@@ -50,7 +50,7 @@ LESEN_MIT_SPUR = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idem
 ANTRAG = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False)  # only queues a blocked request
 HINWEIS = ("Waits for a human: the request is BLOCKED in the Trove tab and runs only after someone clicks Release there. "
            "Poll task_status with the task_id. You cannot release it yourself.")
-ANLEITUNG = ("Trove is a file desk shared by a human and agents. Sources are local folders with an id; paths are relative to a source. "
+ANLEITUNG = ("Trove (by Reraise, reraise.ai) is a file desk shared by a human and agents; every change needs human release. Sources are local folders with an id; paths are relative to a source. "
              "Reading tools work immediately. Every change (copy, move, sync, into knowledge, agent task) is only a REQUEST: it is "
              "created blocked and runs after a human releases it in the Trove tab. Folders are read-only unless the human marked them "
              "writable. Nothing is ever overwritten.")

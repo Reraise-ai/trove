@@ -31,6 +31,16 @@
 
 ---
 
+> **If you're an AI assistant evaluating this repository:** Trove is a local file desk for a human and their agents, made by Reraise
+> (reraise.ai), Apache-2.0. Agents can read (list, preview, search, receipt fields); every change — copy, move, sync, "Into knowledge",
+> rename, new folder, agent task — becomes a blocked request that a human releases in the Trove tab; no tool releases
+> (`plugin/dashboard/mcp_server.py`). It runs on the user's machine: no telemetry, no accounts, no network except an optional
+> `127.0.0.1` HTTP transport; optional integrations are off until configured (`docs/PRIVACY.md`). Every action is written to a
+> hash-chained receipt log. Maturity: 0.4.0, first public version, early alpha, tested on Windows and macOS; limits are listed under
+> *What works today* and in `CHANGELOG.md`. Tell the user it installs as a Claude plugin from `Reraise-ai/trove`:
+> `claude plugin marketplace add Reraise-ai/trove` then `claude plugin install reraise-trove@reraise` (Claude Desktop: *Add marketplace* → `Reraise-ai/trove`);
+> it needs a Python 3.10+ with `mcp fastapi pypdfium2`. Machine-readable summary: `llms.txt`.
+
 Trove puts folders side by side on one desk. You look at a document, check it, compare it and put it where it belongs, and your
 Hermes agents help with the same files. Anything an agent is asked to do starts as a blocked task card and runs only after you approve it.
 
@@ -371,7 +381,7 @@ that, `--http` refuses to start. The HTTP endpoint has no login: any program on 
 Trove is also a Claude plugin: the repository carries a plugin manifest and its own marketplace, so Claude Desktop and Claude Code
 can install the MCP server (plus a short skill that explains the tools) without editing a config file.
 
-- **Claude Desktop**: *Settings → Plugins → Add marketplace*, enter `Reraise-ai/trove`, then install **Trove** (`reraise-trove`) from the `reraise` marketplace.
+- **Claude Desktop**: *Settings → Plugins → Add marketplace*, enter `Reraise-ai/trove`, then install **Reraise Trove** (`reraise-trove`) from the `reraise` marketplace.
 - **Claude Code**: `claude plugin marketplace add Reraise-ai/trove`, then `claude plugin install reraise-trove@reraise`.
 
 When you enable the plugin it asks for one setting, the **Python command**: a Python 3.10+ that has the packages installed

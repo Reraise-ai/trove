@@ -21,7 +21,8 @@
         "mcp",
         "knowledge",
         "local-first"
-      ]
+      ],
+      "displayName": "Reraise Trove"
     }
   ]
 }
