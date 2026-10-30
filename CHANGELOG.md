@@ -10,10 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **Claude plugin** (`.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`): the repository is its own plugin marketplace
-  (`reraise`). Claude Desktop (*Add marketplace* → `Reraise-ai/trove`) and Claude Code (`claude plugin marketplace add Reraise-ai/trove`,
-  `claude plugin install trove@reraise`) install the MCP server with one setting, the Python command. A skill (`skills/trove/SKILL.md`)
+  (`reraise`), plugin name `reraise-trove` (as in the Hermes catalog). Claude Desktop (*Add marketplace* → `Reraise-ai/trove`) and Claude Code (`claude plugin marketplace add Reraise-ai/trove`,
+  `claude plugin install reraise-trove@reraise`) install the MCP server with one setting, the Python command. A skill (`skills/trove/SKILL.md`)
   tells the model which tools read and which only create a blocked request. Directory listing fields (icon, documentation, support,
   privacy, terms) and `docs/PRIVACY.md`, `docs/TERMS.md`.
+
+### Removed
+- `extras/legacy/trove_laeufer.sh` (old Windows copy runner that read an SSH key path; unused, kept only for history).
 - **Recognition model (optional, off by default)** (`plugin/dashboard/erkennung.py`): an OCR stage (local Ollama vision model
   reads page images of scans, or reads every PDF a second time for rule R7) and a field stage (reads text only; local
   Ollama/OpenAI-compatible endpoint on this machine or the private network, or an LLM provider through Hermes' plugin LLM

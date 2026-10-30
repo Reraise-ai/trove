@@ -219,8 +219,8 @@ sonst startet `--http` nicht). Der HTTP-Zugang hat keine Anmeldung: jedes Progra
 Trove ist auch ein Claude-Plugin: Das Repository enthält ein Plugin-Manifest und einen eigenen Marketplace, sodass Claude Desktop und
 Claude Code den MCP-Server (plus einen kurzen Skill, der die Werkzeuge erklärt) ohne Konfigurationsdatei installieren.
 
-- **Claude Desktop**: *Einstellungen → Plugins → Marketplace hinzufügen*, `Reraise-ai/trove` eintragen, dann **Trove** aus dem Marketplace `reraise` installieren.
-- **Claude Code**: `claude plugin marketplace add Reraise-ai/trove`, dann `claude plugin install trove@reraise`.
+- **Claude Desktop**: *Einstellungen → Plugins → Marketplace hinzufügen*, `Reraise-ai/trove` eintragen, dann **Trove** (`reraise-trove`) aus dem Marketplace `reraise` installieren.
+- **Claude Code**: `claude plugin marketplace add Reraise-ai/trove`, dann `claude plugin install reraise-trove@reraise`.
 
 Beim Einschalten fragt das Plugin nach einer Einstellung, dem **Python-Befehl**: ein Python 3.10+, in dem die Pakete installiert sind
 (`python3 -m pip install mcp fastapi pypdfium2`; unter Windows heißt der Befehl meist `python`). Das Plugin startet damit

@@ -6,5 +6,4 @@ They are now part of the plugin (`plugin/dashboard/`), off by default, and get t
 
 ## `extras/legacy/`
 
-Old one-off scripts from the standalone repository (register migration, a Windows copy runner that reads an SSH key path, measurement
-scripts). They are kept only for history, are **not part of the plugin or the catalog build**, and nothing imports them.
+Old one-off scripts from the standalone repository (register migration, measurement scripts). They are kept only for history, are **not part of the plugin or the catalog build**, and nothing imports them.

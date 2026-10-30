@@ -371,8 +371,8 @@ that, `--http` refuses to start. The HTTP endpoint has no login: any program on 
 Trove is also a Claude plugin: the repository carries a plugin manifest and its own marketplace, so Claude Desktop and Claude Code
 can install the MCP server (plus a short skill that explains the tools) without editing a config file.
 
-- **Claude Desktop**: *Settings → Plugins → Add marketplace*, enter `Reraise-ai/trove`, then install **Trove** from the `reraise` marketplace.
-- **Claude Code**: `claude plugin marketplace add Reraise-ai/trove`, then `claude plugin install trove@reraise`.
+- **Claude Desktop**: *Settings → Plugins → Add marketplace*, enter `Reraise-ai/trove`, then install **Trove** (`reraise-trove`) from the `reraise` marketplace.
+- **Claude Code**: `claude plugin marketplace add Reraise-ai/trove`, then `claude plugin install reraise-trove@reraise`.
 
 When you enable the plugin it asks for one setting, the **Python command**: a Python 3.10+ that has the packages installed
 (`python3 -m pip install mcp fastapi pypdfium2`; on Windows the command is usually `python`). The plugin starts

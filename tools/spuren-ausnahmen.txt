@@ -1,0 +1,3 @@
+# Bewusste Ausnahmen fuer tools/spuren-pruefen.sh: ein Regex je Zeile, gegen "datei:zeile:inhalt" geprueft.
+# Testadressen in tools/test_erkennung.py: die CGNAT-Adresse 100.64.0.1 ist dort ein Pruefwert fuer "wird abgelehnt", keine Spur.
+^tools/test_erkennung\.py:[0-9]+:.*100\.64\.0\.1
