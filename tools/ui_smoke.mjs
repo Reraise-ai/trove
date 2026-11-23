@@ -17,7 +17,7 @@ src += "\nexport { sortEntries, TrovePage, Side, IntoKnowledge, ResultPanel, Pre
 
 let locale = 'en'; const bundles = {}; const notes = []; let storageData = {}
 const tr = (loc, key, args) => { const v = (bundles[loc] || {})[key] ?? (bundles.en || {})[key] ?? key; return typeof v === 'function' ? v(...args) : v }
-const calls = []
+const calls = []; const postFake = {}
 const fake = {
   '/status': { ok: true, mandant: 'haus', profile: ['default', 'helper'], protokolle: [{ mandant: 'haus', zeilen: 3 }] },
   '/quellen': { quellen: [{ id: 'a1', art: 'ordner', name: 'Inbox', pfad: '/tmp/inbox', nur_lesen: true }, { id: 'b2', art: 'ordner', name: 'Archive', pfad: '/tmp/archive', nur_lesen: false }] },
@@ -30,7 +30,7 @@ const opened = []
 globalThis.__T = {
   host: { notify: (n) => notes.push(n), navigate() {}, restartGateway() {} },
   Button: (p) => React.createElement('button', { disabled: p.disabled, title: p.title, onClick: p.onClick }, p.children),
-  Badge: (p) => React.createElement('span', null, p.children), Input: (p) => React.createElement('input', { placeholder: p.placeholder, value: p.value, onChange: p.onChange }),
+  Badge: (p) => React.createElement('span', null, p.children), Input: (p) => React.createElement('input', { placeholder: p.placeholder, value: p.value, onChange: p.onChange, onKeyDown: p.onKeyDown }),
   SandboxedFrame: () => null, ROUTES_AREA: 'routes', SIDEBAR_NAV_AREA: 'nav', PALETTE_AREA: 'palette',
   usePluginI18n: () => (k, ...a) => tr(locale, k, a), useI18n: () => ({ locale }),
   useState: React.useState, useEffect: React.useEffect, useCallback: React.useCallback, useRef: React.useRef, jsx: jsxRuntime.jsx, jsxs: jsxRuntime.jsxs,
@@ -44,7 +44,11 @@ const text = (tree) => JSON.stringify(tree.toJSON())
 async function render(el) { let t; await TR.act(async () => { t = TR.create(el); await settle() }); return t }
 
 const ctx = {
-  rest: async (p, o = {}) => { const k = p.split('?')[0]; calls.push([k, o.method || 'GET', o.body]); if (fake[k] && !o.method) return fake[k]; return { ergebnis: [], lauf: 'r1' } },
+  rest: async (p, o = {}) => {
+    const k = p.split('?')[0]; calls.push([k, o.method || 'GET', o.body]); if (fake[k] && !o.method) return fake[k]
+    if (o.method && postFake[k]) return typeof postFake[k] === 'function' ? postFake[k]() : postFake[k]
+    return { ergebnis: [], lauf: 'r1' }
+  },
   storage: { get: (k, d) => (k in storageData ? storageData[k] : d), set: (k, v) => { storageData[k] = v } },
   files: { requestFolder: async () => ({ ok: true, folder: { id: 'f', name: 'Picked', path: '/tmp/picked' } }) },
   i18n: { register: (b) => { Object.assign(bundles, b) }, t: (k, ...a) => tr(locale, k, a) },
@@ -114,6 +118,79 @@ const rp = await render(React.createElement(mod.ResultPanel, { r: { art: 'lesen'
 ok(text(rp).includes('passed (sure)'), 'ResultPanel (read) renders')
 const tk = await render(React.createElement(mod.Tasks, {}))
 ok(text(tk).includes('Release'), 'Tasks lists a blocked card with a Release button')
+// new card: the label follows the switch (freigabe_pflicht in every GET /auftraege); one click = exactly one POST /auftrag with confirm and client_id
+class FakeSR { constructor() { FakeSR.last = this } start() { this.started = true } stop() { this.stopped = true; if (this.onend) this.onend() } abort() { this.stop() } }
+globalThis.window = globalThis; globalThis.SpeechRecognition = FakeSR
+const btnText = (tree, re) => tree.root.findAllByType('button').find((b) => re.test(JSON.stringify(b.props.children)))
+for (const [loc, pflicht, label, hint] of [['en', false, 'Create card and start', 'starts right away'], ['en', true, 'Create card (waits for release)', 'Release'],
+                                         ['de', false, 'Karte anlegen und starten', 'startet sofort'], ['de', true, 'Karte anlegen (wartet auf Freigabe)', 'Freigeben']]) {
+  locale = loc
+  fake['/auftraege'] = { auftraege: [{ id: 't1', status: 'blocked', titel: 'Check' }], freigabe_pflicht: pflicht }
+  const t0 = await render(React.createElement(mod.Tasks, {}))
+  await TR.act(async () => { btnText(t0, /^"(\+ Task|\+ Auftrag)"$/).props.onClick(); await settle() })
+  const ti = t0.root.findAllByType('input').find((i) => /Title|Titel/.test(i.props.placeholder))
+  await TR.act(async () => { ti.props.onChange({ target: { value: 'Smoke ' + loc + pflicht } }); await settle() })
+  ok(JSON.stringify(t0.toJSON()).includes(label) && JSON.stringify(t0.toJSON()).includes(hint), loc + ' switch ' + (pflicht ? 'ON' : 'OFF') + ': button says "' + label + '"')
+  // dictation: text is appended, create is blocked while recording
+  const dict = btnText(t0, /^"(Dictate|Diktieren)"$/)
+  await TR.act(async () => { dict.props.onClick(); await settle() })
+  ok(FakeSR.last && FakeSR.last.started && FakeSR.last.lang === 'de-DE', loc + ': dictation starts speech recognition in de-DE')
+  const createBtn = () => btnText(t0, new RegExp(label.replace(/[()]/g, '\\$&')))
+  ok(createBtn().props.disabled === true, loc + ': create is disabled while recording')
+  await TR.act(async () => { FakeSR.last.onresult({ resultIndex: 0, results: [Object.assign([{ transcript: ' Hallo Welt ' }], { isFinal: true })] }); await settle() })
+  const n0 = calls.filter((c) => c[0] === '/auftrag').length
+  await TR.act(async () => { ti.props.onKeyDown({ key: 'Enter' }); await settle() })
+  ok(calls.filter((c) => c[0] === '/auftrag').length === n0, loc + ': Enter does not create while recording')
+  await TR.act(async () => { FakeSR.last.stop(); await settle() })
+  ok(createBtn().props.disabled === false, loc + ': create is enabled again after the recording ended')
+  await TR.act(async () => { createBtn().props.onClick(); await settle() })
+  const posts = calls.filter((c) => c[0] === '/auftrag' && c[1] === 'POST').slice(n0)
+  ok(posts.length === 1 && posts[0][2].confirm === true && typeof posts[0][2].client_id === 'string' && /^[A-Za-z0-9_-]{8,64}$/.test(posts[0][2].client_id) && posts[0][2].text === 'Hallo Welt' && !('quelle' in posts[0][2]),
+     loc + ': one click = exactly one POST /auftrag with confirm, client_id and the dictated text, no origin flag')
+}
+{
+  // the tab's 20-s refresh carries the switch: the label follows a change without reloading the page
+  const takte = []; const echtIv = globalThis.setInterval
+  globalThis.setInterval = (fn) => { takte.push(fn); return 0 }
+  locale = 'en'
+  fake['/auftraege'] = { auftraege: [], freigabe_pflicht: false }
+  const tw = await render(React.createElement(mod.Tasks, {}))
+  globalThis.setInterval = echtIv
+  await TR.act(async () => { btnText(tw, /^"\+ Task"$/).props.onClick(); await settle() })
+  const tiw = tw.root.findAllByType('input').find((i) => /Title/.test(i.props.placeholder))
+  await TR.act(async () => { tiw.props.onChange({ target: { value: 'Switch' } }); await settle() })
+  ok(!!btnText(tw, /Create card and start/), 'switch OFF from GET /auftraege: "Create card and start"')
+  fake['/auftraege'] = { auftraege: [], freigabe_pflicht: true }
+  await TR.act(async () => { takte.forEach((f) => f()); await settle() })
+  ok(!!btnText(tw, /Create card \(waits for release\)/) && !btnText(tw, /Create card and start/), 'switch turned ON: the next refresh changes the label, no reload')
+  // two creates in a row in the same tab: two different client_ids; a response with "fehler" shows its text; "wiederholt" shows a note
+  fake['/auftraege'] = { auftraege: [], freigabe_pflicht: false }
+  const ids = []
+  const anlegen = async (titel) => {
+    if (!tw.root.findAllByType('input').some((i) => /Title/.test(i.props.placeholder))) await TR.act(async () => { btnText(tw, /^"\+ Task"$/).props.onClick(); await settle() })
+    const ti = tw.root.findAllByType('input').find((i) => /Title/.test(i.props.placeholder))
+    if (titel !== null) await TR.act(async () => { ti.props.onChange({ target: { value: titel } }); await settle() })
+    const n0 = calls.filter((c) => c[0] === '/auftrag' && c[1] === 'POST').length
+    await TR.act(async () => { btnText(tw, /Create card/).props.onClick(); await settle() })
+    const p = calls.filter((c) => c[0] === '/auftrag' && c[1] === 'POST').slice(n0)
+    ids.push(p.length === 1 ? p[0][2].client_id : null)
+  }
+  postFake['/auftrag'] = { id: 't7', status: 'blocked', fehler: 'created, start failed (card stays blocked, use Release): FEHLERTEXT-A11' }
+  await anlegen('Erste')
+  ok(text(tw).includes('FEHLERTEXT-A11'), 'a create answered with "fehler": the text is shown in the tab')
+  postFake['/auftrag'] = { id: 't8', status: 'started', wiederholt: true }
+  await anlegen('Zweite')
+  ok(ids[0] && ids[1] && ids[0] !== ids[1], 'two creates in a row in the same tab use two different client_ids')
+  ok(text(tw).includes('had already created task t8'), 'a repeated create ("wiederholt") says that the task existed')
+  // a failed create: the retry with the same text keeps the client_id, a changed text gets a new one
+  postFake['/auftrag'] = () => { throw new Error('503 Task list busy, try again') }
+  await anlegen('Dritte')
+  await anlegen(null)
+  ok(ids[2] && ids[3] === ids[2], 'retry after a failure without changes: same client_id')
+  await anlegen('Dritte, geaendert')
+  ok(ids[4] && ids[4] !== ids[2], 'retry after a failure with a changed text: new client_id')
+  delete postFake['/auftrag']
+}
 // optional integrations: off by default; Reraise without a key is only a link (no upload call possible)
 for (const loc of ['en', 'de']) {
   locale = loc

@@ -1,16 +1,18 @@
 # Trove
 
-> Trove is a local file desk ("cleanup desk") for a human and their AI agents, made by Reraise (https://reraise.ai). Agents read freely; every change becomes a blocked request that a human releases in the Trove tab. Apache-2.0. Version 0.4.0, first public version, early alpha.
+> Trove is a local file desk ("cleanup desk") for a human and their AI agents, made by Reraise (https://reraise.ai). Agents read freely and, by default, change files directly through Trove inside the folders the human marked writable; an agent task runs a Hermes agent with Hermes' own permissions; every step is logged with its origin. An optional switch (`freigabe_pflicht`, default off) makes every new task card and every MCP request wait as a blocked request until a human clicks Release in the Trove tab. Apache-2.0. Version 0.4.0, first public version, early alpha.
 
 Trove runs on the user's own computer as a Hermes Desktop plugin, as a Claude plugin (MCP server + skill) and as a plain MCP server for any MCP client. Folders are registered as sources and stay where they are; Trove writes only into its own data folder (`~/Trove` by default).
 
 ## Security model
 
 - Reading is free: list sources and folders, preview, search, receipt fields, change check, file trail, task status.
-- Every change (copy, move, sync, "Into knowledge", rename, new folder, agent task) is created as a blocked request and runs only after a human clicks Release in the Trove tab. There is no tool that releases.
-- Folders are read-only unless the human marked them writable in the tab. Nothing is overwritten; links are never followed.
+- Default: agents steer Trove directly. A change (copy, move, sync, "Into knowledge", rename, new folder, agent task) over MCP or from the tab starts at once and is written to the receipt log with its origin (the tab, or `mcp:<client name>`). Requests started over MCP run inside the MCP server process and end with it.
+- Optional switch `freigabe_pflicht` (default off). Set it with `"freigabe_pflicht": true` in `trove.json` (the recommended way); the environment variable `TROVE_FREIGABE_PFLICHT` can only switch it on, never off, and applies only to the process that sees it. Unclear values, a `trove.json` that cannot be read and a `TROVE_KONFIG` that points to a missing file count as on, with a warning in `/status`. Whoever sets the environment of the MCP server process (`TROVE_KONFIG`, `TROVE_DATEN`) decides which `trove.json` it reads; `status` shows the file (`freigabe_pflicht_datei`). When on, every new task card and every MCP request is created blocked and runs only after Release in the Trove tab. There is no tool that releases. This holds back MCP clients and foreign web pages, not programs on the same computer (a local program can call the tab's release route itself).
+- Folder rights bind the file actions (copy, move, sync, "Into knowledge", rename, new folder) in both positions of the switch: folders are read-only unless the human marked them writable in the tab. Nothing is overwritten; links are never followed.
+- An agent task starts a Hermes agent with Hermes' own permissions. Trove's folder rights do not bind it. If `TROVE_ARBEITSORDNER` is set, Trove starts the task only when that folder is marked writable; the agent's working directory is then that folder, but the agent can still reach other files with Hermes' rights. Without `TROVE_ARBEITSORDNER` the task runs in a Hermes scratch workspace with Hermes' rights. With `freigabe_pflicht` off, an MCP client can therefore trigger work outside the folder rights; switch it on if you do not want that.
 - Every action goes into a hash-chained receipt log with the client's name.
-- No telemetry, no accounts, no update checks, no network listener by default; the optional MCP HTTP transport binds to 127.0.0.1 only. Optional integrations (IMAP/Gmail, DocuSeal, ERPNext, Reraise cards, recognition model) are off until configured in Hermes, which holds their credentials. Secrets are masked in every output.
+- No telemetry, no accounts, no update checks, no network listener by default; the optional MCP HTTP transport binds to 127.0.0.1 only. Optional integrations (IMAP/Gmail, DocuSeal, ERPNext, Reraise cards, recognition model) are off until configured in Hermes, which holds their credentials. Secrets are masked in every output. The dictation button in the new-task form uses the browser's or Electron's speech recognition; with Chromium the audio goes to Google.
 
 ## Install
 

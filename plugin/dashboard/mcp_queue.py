@@ -1,13 +1,17 @@
-"""Approval queue for requests that arrive over MCP (mcp_server.py).
+"""Request queue for requests that arrive over MCP (mcp_server.py).
 
-An MCP client (Claude, Cursor, any agent system) never changes files directly. Every write request becomes an entry here with
-status "blocked". It shows up in the Trove tab's task list next to the Hermes kanban cards. Only the tab's release button
-(POST /auftrag/<id>/freigeben in plugin_api.py, i.e. a human click) moves it on; the MCP server has no code path that releases.
-After release, the request runs through the same backend functions as a click in the tab (plugin_api.aktion, plugin_api.wissen),
-with the permission checks as they are at that moment.
+An MCP client (Claude, Cursor, any agent system) does not change files directly; every write runs through this queue: it becomes an entry here, is
+logged, and runs through the same backend functions as a click in the tab (plugin_api.aktion, plugin_api.wissen), with the
+permission checks (folder rights) as they are at that moment.
+Default (switch `freigabe_pflicht` OFF, konfig.freigabe_pflicht): the MCP server starts the entry right after queueing it
+(status running -> done | failed). Switch ON: the entry waits as "blocked", shows up in the Trove tab's task list next to the
+Hermes kanban cards, and only the tab's release button (POST /auftrag/<id>/freigeben in plugin_api.py) moves it on; the MCP
+server then has no code path that releases. The run is a thread in the process that starts it: it ends with the MCP server
+process (LAUFZEIT_S cleans up such entries).
 
-Storage: <TROVE_DATEN>/<client>/mcp_auftraege.json, written under a lock file because two processes use it
-(the MCP server creates entries, the Hermes dashboard releases them).
+Storage: <TROVE_DATEN>/<client>/mcp_auftraege.json, written under a lock file (belegprotokoll.WarteSperre) because two processes
+use it (the MCP server creates entries and starts them when the switch is off; the Hermes dashboard releases them when it is on).
+An agent task (agent_auftrag) starts a Hermes agent with Hermes' own permissions; Trove's folder rights do not bind it.
 Status: blocked -> running -> done | failed; blocked -> rejected (archive button in the tab). Every step goes to the receipt log.
 """
 from __future__ import annotations
@@ -25,30 +29,36 @@ PREFIX = "mcp-"
 RE_ID = re.compile(r"mcp-[0-9a-f]{10}")
 DATEI = "mcp_auftraege.json"
 WERKZEUG = "trove-mcp"
+KARTE_MAX_RUNTIME_S, KARTE_MAX_RETRIES = 900, 1  # limits of a Hermes card (plugin_api._auftrag_anlegen): how long its agent can run
+ANLEGEN_LOG_WARTEN_S = 5  # anlegen waits this long for the receipt log while it holds the queue lock (see anlegen)
+SETZEN_FRIST_S = 600  # a finished run retries saving its result this long while the queue is busy
+
+
 def _agent_auftrag(api, body):
-    """Released agent task: create the Hermes kanban card and release it in one go (the human has seen the full text in the tab)."""
-    karte = api.auftrag_anlegen(body)
-    api._hermes("kanban", "unblock", karte["id"], "--reason", "Released by a human in the Trove tab (MCP request)")
-    try:
-        api._hermes("kanban", "dispatch", "--max", "1", timeout=60)
-    except Exception:
-        pass
+    """Agent task (started directly, or released in the tab): create the Hermes kanban card and start it in one go."""
+    herkunft = "mcp:%s" % ((body.get("kontext") or {}).get("mcp_client") or "?")
+    karte = api._auftrag_anlegen(body, herkunft, starten=True)
+    if karte.get("fehler"):
+        raise RuntimeError(karte["fehler"])
     return {"karte": karte["id"]}
 
 
-# kind -> (backend function in plugin_api, label). Extension point: rename / new folder plug in here once the backend has them.
+# kind -> (backend function in plugin_api, label, after-run seconds). After-run: how long a finished request still counts against
+# the limits because work it started can still be going on (an agent task: its card's agent, every attempt at full runtime,
+# 30 min; done or failed alike, and archiving does not free the place).
+# Extension point: rename / new folder plug in here once the backend has them.
 AUSFUEHRUNG = {
-    "kopieren": ("aktion", "copy"),
-    "verschieben": ("aktion", "move"),
-    "sync": ("aktion", "sync"),
-    "wissen": ("wissen", "into knowledge"),
-    "umbenennen": ("umbenennen", "rename"),  # active once the backend has POST /umbenennen
-    "ordner_neu": ("ordner_neu", "new folder"),  # active once the backend has POST /ordner-neu
-    "agent_auftrag": (_agent_auftrag, "agent task"),
+    "kopieren": ("aktion", "copy", 0),
+    "verschieben": ("aktion", "move", 0),
+    "sync": ("aktion", "sync", 0),
+    "wissen": ("wissen", "into knowledge", 0),
+    "umbenennen": ("umbenennen", "rename", 0),  # active once the backend has POST /umbenennen
+    "ordner_neu": ("ordner_neu", "new folder", 0),  # active once the backend has POST /ordner-neu
+    "agent_auftrag": (_agent_auftrag, "agent task", KARTE_MAX_RUNTIME_S * (KARTE_MAX_RETRIES + 1)),
 }
-_LOCK_STALE_S = 60
-MAX_OFFEN_JE_CLIENT = 20  # blocked requests per MCP client name
-MAX_OFFEN_GESAMT = 50  # blocked requests of all clients together (client names are self-reported)
+MAX_OFFEN_JE_CLIENT = 20  # open requests per MCP client name: blocked, running, or an agent task within its after-run
+MAX_OFFEN_GESAMT = 50  # open requests of all clients together (client names are self-reported)
+OFFEN_TEXT = "waiting, running, or an agent task finished less than %d min ago; archiving does not free it" % (AUSFUEHRUNG["agent_auftrag"][2] // 60)
 LAUFZEIT_S = int(os.environ.get("TROVE_MCP_LAUFZEIT_S") or 3 * 3600)  # "running" longer than this: the run is presumed dead, archivable
 
 
@@ -64,36 +74,6 @@ def _pfad(mandant):
     return os.path.join(d, DATEI)
 
 
-class _Sperre:
-    def __init__(self, pfad):
-        self.pfad = pfad + ".lock"
-
-    def __enter__(self):
-        ende = time.time() + 20
-        while True:
-            try:
-                fd = os.open(self.pfad, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                os.write(fd, str(os.getpid()).encode())
-                os.close(fd)
-                return self
-            except FileExistsError:
-                try:
-                    if time.time() - os.path.getmtime(self.pfad) > _LOCK_STALE_S:
-                        os.remove(self.pfad)
-                        continue
-                except OSError:
-                    continue
-                if time.time() > ende:
-                    raise RuntimeError("MCP queue is locked by another process")
-                time.sleep(0.05)
-
-    def __exit__(self, *a):
-        try:
-            os.remove(self.pfad)
-        except OSError:
-            pass
-
-
 def _lesen(p):
     if os.path.exists(p):
         with open(p, encoding="utf-8") as f:
@@ -107,13 +87,13 @@ def _speichern(p, liste):
     os.replace(p + ".neu", p)
 
 
-def log(mandant, meldung, ereignis="notiz", warten_s=30, **felder):
+def log(mandant, meldung, ereignis="notiz", warten_s=30, werkzeug=WERKZEUG, **felder):
     """One receipt-log line. The log lock is held for a whole copy run by the backend, so wait for it (up to warten_s)
     instead of failing at once; still locked -> belegprotokoll.ProtokollGesperrt."""
     ende = time.time() + warten_s
     while True:
         try:
-            return bp.schreiben(bp.pfad_fuer(mandant), ereignis=ereignis, werkzeug=WERKZEUG, mandant=mandant, meldung=meldung, **felder)
+            return bp.schreiben(bp.pfad_fuer(mandant), ereignis=ereignis, werkzeug=werkzeug, mandant=mandant, meldung=meldung, **felder)
         except bp.ProtokollGesperrt:
             if time.time() > ende:
                 raise
@@ -124,24 +104,35 @@ def _log(mandant, kid, meldung, ereignis="notiz", **extra):
     log(mandant, meldung, ereignis=ereignis, lauf=kid, mcp_auftrag=kid, **extra)
 
 
+def _offen(e, jetzt):
+    """Counts against the limits: waiting, running and not yet presumed dead (LAUFZEIT_S), or finished but within its after-run
+    time (belegt_bis, see AUSFUEHRUNG)."""
+    return (e["status"] == "blocked" or (e["status"] == "running" and jetzt - float(e.get("freigegeben_ts") or 0) <= LAUFZEIT_S)
+            or jetzt < float(e.get("belegt_bis") or 0))
+
+
 def anlegen(mandant, client, art, body, titel, details):
-    """New request, status blocked. details: the complete text the human sees before releasing (all names, exact paths, full text).
+    """New request, status blocked (the MCP server starts it right away when the switch is off, see freigeben(direkt=True)).
+    details: the complete text shown in the tab (all names, exact paths, full text).
     Returns the entry. Called by the MCP server. Raises ValueError when the client already has too many open requests."""
     if art not in AUSFUEHRUNG:
         raise ValueError("unknown kind: %s" % art)
     kid = PREFIX + secrets.token_hex(5)
     e = {"id": kid, "art": art, "body": body, "client": client, "titel": titel, "details": details, "zeit": bp.jetzt(), "status": "blocked"}
     p = _pfad(mandant)
-    with _Sperre(p):
+    with bp.WarteSperre(p + ".lock"):  # waits up to 20 s, then bp.DateiBelegt
         alle = _lesen(p)
-        offen = sum(1 for x in alle if x.get("client") == client and x["status"] == "blocked")
-        if offen >= MAX_OFFEN_JE_CLIENT:
-            raise ValueError("%d requests from this client are still waiting for release; wait until the human has handled them" % offen)
-        gesamt = sum(1 for x in alle if x["status"] == "blocked")
-        if gesamt >= MAX_OFFEN_GESAMT:
-            raise ValueError("%d requests are still waiting for release in the Trove tab; wait until the human has handled them" % gesamt)
-        _log(mandant, kid, "MCP request from %s created (blocked, waits for human release in the Trove tab): %s" % (client, titel),
-             mcp_client=client, anfrage={"art": art, **body})  # log first: no queue entry without its log line
+        jetzt = time.time()
+        offen = [x for x in alle if _offen(x, jetzt)]
+        n = sum(1 for x in offen if x.get("client") == client)
+        if n >= MAX_OFFEN_JE_CLIENT:
+            raise ValueError("%d requests from this client are still open (%s); try again later" % (n, OFFEN_TEXT))
+        if len(offen) >= MAX_OFFEN_GESAMT:
+            raise ValueError("%d requests are still open (%s); try again later" % (len(offen), OFFEN_TEXT))
+        # log first: no queue entry without its log line. Lock holders never wait longer than lock waiters (WarteSperre, 20 s):
+        # a long copy run holds the receipt log, and waiting 30 s here would make the end of a running request lose its result.
+        _log(mandant, kid, "MCP request from %s queued: %s" % (client, titel), warten_s=ANLEGEN_LOG_WARTEN_S,
+             mcp_client=client, herkunft="mcp:" + client, anfrage={"art": art, **body})
         _speichern(p, alle + [e])
     return e
 
@@ -160,7 +151,7 @@ def liste(mandant):
 def _setzen(mandant, kid, erwartet, **felder):
     """Atomic status transition. Returns the updated entry or None if the entry was not in an expected state."""
     p = _pfad(mandant)
-    with _Sperre(p):
+    with bp.WarteSperre(p + ".lock"):  # waits up to 20 s, then bp.DateiBelegt
         alle = _lesen(p)
         for e in alle:
             if e["id"] == kid:
@@ -170,6 +161,17 @@ def _setzen(mandant, kid, erwartet, **felder):
                 _speichern(p, alle)
                 return e
     return None
+
+
+def _setzen_wartend(mandant, kid, erwartet, **felder):
+    """_setzen, retried while the queue is busy (bp.DateiBelegt) for up to SETZEN_FRIST_S: a state change that must not be lost."""
+    ende = time.time() + SETZEN_FRIST_S
+    while True:
+        try:
+            return _setzen(mandant, kid, erwartet, **felder)
+        except bp.DateiBelegt:
+            if time.time() > ende:
+                raise
 
 
 def _details_text(e):
@@ -189,15 +191,21 @@ def fuer_tab(mandant):
     return out
 
 
-def freigeben(mandant, kid, api, warten=False):
-    """Human release (only called from the tab's release route). Runs the request in a background thread through the backend function."""
+def freigeben(mandant, kid, api, warten=False, direkt=False):
+    """Start a blocked request in a background thread through the backend function. Called from the tab's release route (a click),
+    or with direkt=True by the MCP server right after queueing when the switch freigabe_pflicht is OFF (no click involved)."""
     e = _setzen(mandant, kid, ("blocked",), status="running", freigegeben=bp.jetzt(), freigegeben_ts=time.time())
     if e is None:
         cur = holen(mandant, kid)
         if cur is None:
             raise KeyError(kid)
         raise ValueError("request %s is %s, only a blocked request can be released" % (kid, cur["status"]))
-    _log(mandant, kid, "MCP request from %s released by a human in the Trove tab: %s" % (e["client"], e["titel"]), mcp_client=e["client"])
+    try:
+        _log(mandant, kid, ("MCP request from %s started directly (freigabe_pflicht off): %s" if direkt else
+                            "MCP request from %s released in the Trove tab: %s") % (e["client"], e["titel"]), mcp_client=e["client"], herkunft="mcp:" + e["client"])
+    except BaseException:  # receipt log held by a long run: no run without its log line, and not stuck in "running" either
+        _setzen_wartend(mandant, kid, ("running",), status="blocked")
+        raise
 
     def lauf():
         fn = AUSFUEHRUNG[e["art"]][0]
@@ -205,6 +213,8 @@ def freigeben(mandant, kid, api, warten=False):
         body = dict(e["body"], mandant=mandant)
         if e["art"] in ("kopieren", "verschieben", "sync"):
             body["art"] = e["art"]
+        if e["art"] == "agent_auftrag":
+            body["client_id"] = kid  # a repeated run of the same request never creates a second kanban card
         try:
             r = fn(body)
             kurz = json.dumps({k: r.get(k) for k in ("lauf", "ergebnis", "verarbeitet", "neu", "fehler") if k in r}, ensure_ascii=False)[:600]
@@ -218,7 +228,11 @@ def freigeben(mandant, kid, api, warten=False):
             _log(mandant, kid, "MCP request %s from %s %s" % (kid, e["client"], ergebnis), ereignis="notiz" if status == "done" else "fehler",
                  mcp_client=e["client"], warten_s=600)
         finally:
-            _setzen(mandant, kid, None, status=status, ende=bp.jetzt(), ergebnis=ergebnis)
+            try:
+                _setzen_wartend(mandant, kid, None, status=status, ende=bp.jetzt(), ergebnis=ergebnis, belegt_bis=time.time() + AUSFUEHRUNG[e["art"]][2])
+            except bp.DateiBelegt:  # gave up after SETZEN_FRIST_S: say so in the log instead of ending silently in this thread
+                _log(mandant, kid, "MCP request %s from %s: result could not be saved, the request queue stayed busy for %d s (%s)"
+                     % (kid, e["client"], SETZEN_FRIST_S, ergebnis), ereignis="fehler", mcp_client=e["client"], warten_s=600)
 
     if warten:
         lauf()
@@ -231,7 +245,7 @@ def ablehnen(mandant, kid):
     """Archive button in the tab, one atomic step: a blocked request is rejected, a finished one is hidden, a running one only
     when it has been running longer than LAUFZEIT_S (the run is presumed dead, e.g. the dashboard was closed)."""
     p = _pfad(mandant)
-    with _Sperre(p):
+    with bp.WarteSperre(p + ".lock"):  # waits up to 20 s, then bp.DateiBelegt
         alle = _lesen(p)
         e = next((x for x in alle if x["id"] == kid), None)
         if e is None:
@@ -241,7 +255,7 @@ def ablehnen(mandant, kid):
             e.update(status="rejected", ende=bp.jetzt())
         elif vorher in ("done", "failed"):
             e["status"] = "archived"
-        elif vorher == "running" and time.time() - float(e.get("freigegeben_ts") or 0) > LAUFZEIT_S:
+        elif vorher == "running" and not _offen(e, time.time()):
             e.update(status="archived", ende=bp.jetzt(), ergebnis="abandoned: still running after %d s, presumed dead (no result recorded)" % LAUFZEIT_S)
         elif vorher == "running":
             raise ValueError("request %s is running right now; it can be archived when it has finished" % kid)
@@ -249,7 +263,7 @@ def ablehnen(mandant, kid):
             raise ValueError("request %s is already %s" % (kid, vorher))
         _speichern(p, alle)
     if vorher == "blocked":
-        _log(mandant, kid, "MCP request from %s rejected by a human in the Trove tab: %s" % (e["client"], e["titel"]), mcp_client=e["client"])
+        _log(mandant, kid, "MCP request from %s rejected in the Trove tab: %s" % (e["client"], e["titel"]), mcp_client=e["client"])
     elif vorher == "running":
-        _log(mandant, kid, "MCP request from %s archived by a human after it hung in 'running': %s" % (e["client"], e["titel"]), ereignis="fehler", mcp_client=e["client"])
+        _log(mandant, kid, "MCP request from %s archived in the Trove tab after it hung in 'running': %s" % (e["client"], e["titel"]), ereignis="fehler", mcp_client=e["client"])
     return {"ok": True}

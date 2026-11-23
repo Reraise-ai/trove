@@ -84,7 +84,9 @@ man = json.load(open(os.path.join(DASH, "manifest.json"), encoding="utf-8"))
 mid = re.search(r"const ID = '([^']+)'", js).group(1)
 pruefe(man.get("name") == mid, "plugin.js ID (%s) matches manifest name (%s)" % (mid, man.get("name")))
 pruefe("hermesDesktop" not in js and "selectPaths" not in js and "recycleBackend" not in js, "no undocumented host bridges (window.hermesDesktop, selectPaths, recycleBackend)")
-pruefe("de-DE" not in js and "'de'" not in ohne_de, "no hard-coded locale for dates")
+ohne_diktat = re.sub(r"^const DICTATE_LANG = 'de-DE'.*$", "", js, flags=re.M)  # the one allowed use: the dictation language (spec: always German)
+pruefe(len(re.findall(r"^const DICTATE_LANG = 'de-DE'", js, flags=re.M)) == 1 and ohne_diktat.count("DICTATE_LANG") == 1 and "de-DE" not in ohne_diktat and "'de'" not in ohne_de,
+       "no hard-coded locale for dates (de-DE only in the DICTATE_LANG constant, used once for speech recognition)")
 
 # optional render smoke test
 nm = os.environ.get("TROVE_UI_NODE_MODULES", "")

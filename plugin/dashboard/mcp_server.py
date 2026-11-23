@@ -6,10 +6,20 @@
     python mcp_server.py --mandant haus  # other Trove client than the configured one
 
 Reading is free: sources, folder listings, previews, search, the receipt-log trail, receipt reading, change check.
-Writing is never direct: copy / move / sync / into knowledge become a BLOCKED request in Trove's approval queue (mcp_queue.py).
-It shows up in the Trove tab and runs only after a human clicks "Release" there. There is no MCP tool that releases or approves.
-The client gets a task id and polls task_status. Every request, refusal, release and result goes to the receipt log with the
-MCP client's name. The server wraps the plugin backend (plugin_api.py) -- the same functions and checks as the tab.
+Writing (copy / move / sync / into knowledge / rename / new folder / agent task) goes through Trove's request queue (mcp_queue.py).
+File actions are bound to the folder rights the human set (read-only unless marked writable; nothing is overwritten).
+An agent task starts a Hermes agent with Hermes' own permissions. Trove's folder rights do not bind it. If
+TROVE_ARBEITSORDNER is set, Trove starts the task only when that folder is marked writable; the agent's working directory is
+then that folder, but the agent can still reach other files with Hermes' rights. Without TROVE_ARBEITSORDNER the task runs in
+a Hermes scratch workspace with Hermes' rights. With freigabe_pflicht off, an MCP client can therefore trigger work outside
+the folder rights; switch it on if you do not want that.
+Default (switch `freigabe_pflicht` OFF in trove.json): the request starts right after it is queued. Switch ON (trove.json, or
+TROVE_FREIGABE_PFLICHT for this process only; the variable can switch on, never off; unclear values count as ON): it stays
+BLOCKED, shows up in the Trove tab and runs only after someone clicks "Release" there; there is no MCP tool that releases or
+approves. The switch is read on every call.
+The client gets a task id and polls task_status. Every request, refusal, start and result goes to the receipt log with the
+MCP client's name. A started request runs inside this MCP server process and ends with it. The server wraps the plugin backend
+(plugin_api.py) -- the same functions and checks as the tab.
 Needs: the Python packages `mcp` and `fastapi` (Hermes ships both when installed with its MCP support).
 No credentials, no network listener except the optional HTTP transport on 127.0.0.1, no self-update.
 """
@@ -47,13 +57,36 @@ MAX_TITEL = 200
 MAX_TEXT = 4000
 LESEN = ToolAnnotations(readOnlyHint=True, openWorldHint=False)
 LESEN_MIT_SPUR = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False)  # writes only into Trove's own data
-ANTRAG = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False)  # only queues a blocked request
-HINWEIS = ("Waits for a human: the request is BLOCKED in the Trove tab and runs only after someone clicks Release there. "
-           "Poll task_status with the task_id. You cannot release it yourself.")
-ANLEITUNG = ("Trove (by Reraise, reraise.ai) is a file desk shared by a human and agents; every change needs human release. Sources are local folders with an id; paths are relative to a source. "
-             "Reading tools work immediately. Every change (copy, move, sync, into knowledge, agent task) is only a REQUEST: it is "
-             "created blocked and runs after a human releases it in the Trove tab. Folders are read-only unless the human marked them "
-             "writable. Nothing is ever overwritten.")
+ANTRAG = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False)  # queues a request (starts at once unless freigabe_pflicht is on)
+
+
+AGENT = ("An agent task starts a Hermes agent with Hermes' own permissions. Trove's folder rights do not bind it. If "
+         "`TROVE_ARBEITSORDNER` is set, Trove starts the task only when that folder is marked writable; the agent's "
+         "working directory is then that folder, but the agent can still reach other files with Hermes' rights. Without "
+         "`TROVE_ARBEITSORDNER` the task runs in a Hermes scratch workspace with Hermes' rights. With `freigabe_pflicht`"
+         " off, an MCP client can therefore trigger work outside the folder rights; switch it on if you do not want "
+         "that.")  # README "Agent tasks" says the same
+
+
+def hinweis(pflicht):
+    """Sentence in every write tool and in every answer: what happens to the request, by the switch freigabe_pflicht."""
+    if pflicht:
+        return ("Waits for a human: the request is BLOCKED in the Trove tab and runs only after someone clicks Release there "
+                "(the human's switch freigabe_pflicht is on). Poll task_status with the task_id. You cannot release it yourself.")
+    return ("Starts at once: the request is logged with your client name and runs right away (freigabe_pflicht is off, the default; "
+            "the answer says if that changed). Poll task_status with the task_id. It ends if this MCP server process ends.")
+
+
+def anleitung(pflicht):
+    kopf = "Trove (by Reraise, reraise.ai) is a file desk shared by a human and agents. Sources are local folders with an id; paths are relative to a source. Reading tools work immediately. "
+    fuss = (" Folders are read-only unless the human marked them writable; that binds the file actions. Nothing is ever overwritten. "
+            "An agent task runs a Hermes agent with Hermes' own permissions, not bound by the folder rights.")
+    if pflicht:
+        return (kopf + "Every change (copy, move, sync, into knowledge, rename, new folder, agent task) is only a REQUEST: it is created blocked and "
+                "runs after someone releases it in the Trove tab (the human's switch freigabe_pflicht is on)." + fuss)
+    return (kopf + "Changes (copy, move, sync, into knowledge, rename, new folder, agent task) are requests that start right away, each one is "
+            "logged with your client name (the human's switch freigabe_pflicht is off, the default). If the human turns it on, they wait blocked "
+            "for Release in the Trove tab; every answer tells which case applies." + fuss)
 
 
 def _sauber(detail, code, api):
@@ -92,7 +125,9 @@ def bauen(mandant=None, client=None):
 
     mandant = api._mandant_pruefen(mandant or api.MANDANT)
     fest = client or os.environ.get("TROVE_MCP_CLIENT")
-    server = _Server(NAME, instructions=ANLEITUNG)
+    pflicht0 = api.konfig.freigabe_pflicht()  # texts only: the behaviour follows the switch on every call (restart the client to refresh the tool texts)
+    HINWEIS = hinweis(pflicht0)
+    server = _Server(NAME, instructions=anleitung(pflicht0))
 
     def wer(ctx):
         name = fest
@@ -113,6 +148,8 @@ def bauen(mandant=None, client=None):
             raise ToolError(_sauber(ex.detail, ex.status_code, api)) from None
         except ToolError:
             raise
+        except bp.DateiBelegt:
+            raise ToolError("Trove's task list is busy; try again") from None
         except Exception as ex:  # no traceback, no system paths to the client; the full error goes to the server log (stderr)
             print("trove-mcp: %s: %r" % (getattr(fn, "__name__", "?"), ex), file=sys.stderr)
             raise ToolError("internal error in Trove (%s); details are in the MCP server log" % type(ex).__name__) from None
@@ -133,10 +170,13 @@ def bauen(mandant=None, client=None):
     # ------------------------------------------------------------------ read
     @server.tool(annotations=LESEN)
     def status(ctx: Context) -> str:
-        """Trove version, the Trove client (mandant) this server works for, and how writes are approved."""
+        """Trove version, the Trove client (mandant) this server works for, and whether writes start at once or wait for Release."""
         s = api.status()
+        pflicht = s["freigabe_pflicht"]
         return _text({"version": s["version"], "mandant": mandant, "mcp_client": wer(ctx), "data_root": s["datenwurzel"],
-                      "writes": "every change is a blocked request; a human releases it in the Trove tab"})
+                      **{k: v for k, v in s.items() if k.startswith("freigabe_pflicht")},
+                      "writes": ("every change is a blocked request; it runs after Release in the Trove tab" if pflicht else
+                                 "every change starts right after it is queued and is logged; folder rights still apply")})
 
     @server.tool(annotations=LESEN)
     def list_sources() -> str:
@@ -195,31 +235,42 @@ def bauen(mandant=None, client=None):
             if e is None:
                 raise ToolError("unknown task id")
             return _text({k: e.get(k) for k in ("id", "art", "status", "titel", "client", "zeit", "freigegeben", "ende", "ergebnis")})
-        for a in api._auftraege_lesen(mandant):
+        for a in rufen(api._auftraege_lesen, mandant):
             if a.get("id") == task_id:
                 return _text({k: a.get(k) for k in ("id", "titel", "status", "zeit", "zusammenfassung", "ergebnis_kommentar")})
         raise ToolError("unknown task id")
 
     @server.tool(annotations=LESEN)
     def list_tasks(limit: int = 30) -> str:
-        """The latest requests in Trove's MCP approval queue (all MCP clients), newest first."""
+        """The latest requests in Trove's MCP request queue (all MCP clients), newest first."""
         alle = list(reversed(mq.liste(mandant)))[:max(1, min(int(limit), 200))]
         return _text([{k: e.get(k) for k in ("id", "art", "status", "titel", "client", "zeit", "ergebnis")} for e in alle])
 
-    # ------------------------------------------------------------------ write requests (never executed here)
+    # ------------------------------------------------------------------ write requests (queued in mcp_queue; started in this process when freigabe_pflicht is off)
     def ablehnen(ctx, was, grund):
         grund = api._aussen(grund) if hasattr(api, "_aussen") else grund
         log(ctx, "request refused before queueing (%s): %s" % (was, grund))
         raise ToolError(grund)
 
     def antrag(ctx, art, body, titel, details):
+        pflicht = api.konfig.freigabe_pflicht()
         try:
             e = mq.anlegen(mandant, wer(ctx), art, body, titel, details)
         except bp.ProtokollGesperrt:
             raise ToolError("Trove is busy with a long run that holds the receipt log; nothing was queued, try again in a minute") from None
+        except bp.DateiBelegt:
+            raise ToolError("Trove's request queue is busy, nothing was queued; try again") from None
         except ValueError as ex:
             return ablehnen(ctx, art, str(ex))
-        return _text({"task_id": e["id"], "status": e["status"], "what": titel, "note": HINWEIS})
+        status, hinweis_jetzt = e["status"], hinweis(pflicht)
+        if not pflicht:  # switch off: no approval step, the request starts now (same code path as a Release in the tab)
+            try:
+                status = mq.freigeben(mandant, e["id"], api, direkt=True)["status"]
+            except (bp.ProtokollGesperrt, bp.DateiBelegt):
+                status, hinweis_jetzt = "blocked", "Queued but NOT started: Trove was busy (receipt log or request queue held). It stays BLOCKED until someone releases it in the Trove tab."
+            except (KeyError, ValueError):  # someone released it in the tab in the same moment
+                status = (mq.holen(mandant, e["id"]) or e)["status"]
+        return _text({"task_id": e["id"], "status": status, "what": titel, "note": hinweis_jetzt})
 
     def text_pruefen(text, feld, maximum):
         if text is not None and not isinstance(text, str):
@@ -267,7 +318,7 @@ def bauen(mandant=None, client=None):
             links = [n for n in namen if api.ist_verknuepfung(os.path.join(von, n))]
             if links:
                 raise ValueError("these entries are links; Trove does not copy, move or sync links: %s" % ", ".join(links[:10]))
-            for n in (namen or [None]):  # B3: nothing in the target may be written through a link (checked again at release, per file)
+            for n in (namen or [None]):  # B3: nothing in the target may be written through a link (checked again when the request starts, per file)
                 start = os.path.join(von, n) if n else von
                 for i, (datei, rel) in enumerate(api._dateien_unter(start)):
                     if i >= 20000:
@@ -407,8 +458,8 @@ def bauen(mandant=None, client=None):
             details = "\n".join(["Action: new empty folder", "Inside: %s" % ordner, "Name: %s" % name, grund_zeile(reason)])
             return antrag(ctx, "ordner_neu", body, "new folder %s in %s" % (name, ort(q, path)), details)
 
-    @server.tool(annotations=ANTRAG, description="Ask for work by a Hermes agent (needs the hermes command line). The full text waits as a "
-                 "BLOCKED request in the Trove tab; when the human releases it, a Hermes kanban card is created and started. " + HINWEIS)
+    @server.tool(annotations=ANTRAG, description="Ask for work by a Hermes agent (needs the hermes command line). A Hermes kanban card with your "
+                 "full text is created and started (with freigabe_pflicht on: after Release in the Trove tab). " + AGENT + " " + HINWEIS)
     def request_agent_task(title: str, text: str = "", ctx: Context = None) -> str:
         try:
             title = text_pruefen(title, "title", MAX_TITEL)
@@ -417,11 +468,12 @@ def bauen(mandant=None, client=None):
                 raise ValueError("title is missing")
             if api._hermes_exe() is None:
                 raise ValueError("the hermes command line is not available on this machine")
+            rufen(api._arbeitsordner_pruefen, mandant, api._arbeitsordner())
         except (ValueError, ToolError) as ex:
             return ablehnen(ctx, "agent_auftrag", str(ex))
-        c = wer(ctx)
-        body = {"titel": title, "text": text + "\n\n(requested over MCP by %s, released by a human in the Trove tab)" % c, "kontext": {"mcp_client": c}}
-        details = "\n".join(["Action: task for a Hermes agent. After release a Hermes agent works on it with its own permissions.",
+        c = wer(ctx)  # the switch is read once, in antrag: these texts do not depend on it
+        body = {"titel": title, "text": text + "\n\n(requested over MCP by %s)" % c, "kontext": {"mcp_client": c}}
+        details = "\n".join(["Action: task for a Hermes agent. A Hermes agent works on it with its own permissions.",
                              "Title: %s" % title, "Full text:", text or "(empty)"])
         return antrag(ctx, "agent_auftrag", body, "agent task: " + title, details)
 

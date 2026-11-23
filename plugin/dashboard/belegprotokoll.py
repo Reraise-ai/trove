@@ -47,6 +47,10 @@ class LaufLaeuft(ProtokollGesperrt):
     """Laufsperre belegt: ein anderer Lauf desselben Werkzeugs laeuft (Unterklasse, damit Aufrufer weiter funktionieren)."""
 
 
+class DateiBelegt(RuntimeError):
+    """A data file (task list, MCP request queue) stayed locked by a living process for the whole wait (WarteSperre)."""
+
+
 def pfad_fuer(mandant):
     return os.path.join(WURZEL, mandant, "belegprotokoll.jsonl")
 
@@ -207,6 +211,23 @@ class Sperre:
                 except OSError:
                     if i < 4:
                         time.sleep(0.2)
+
+
+class WarteSperre(Sperre):
+    """Sperre for short read-modify-write steps on a data file: waits up to warten_s seconds (retry every 50 ms) instead of failing at
+    once; still held by a living process -> DateiBelegt. A dead holder never blocks (POSIX: the kernel drops flock; Windows:
+    the delete attempt succeeds), so there is no age-based takeover."""
+    warten_s = 20
+
+    def sperren(self):
+        ende = time.monotonic() + self.warten_s
+        while True:
+            try:
+                return super().sperren()
+            except ProtokollGesperrt:
+                if time.monotonic() >= ende:
+                    raise DateiBelegt("%s is locked by another process (%s)" % (os.path.basename(self.pfad), _pid_aus(self.pfad) or "?"))
+                time.sleep(0.05)
 
 
 class Protokoll:
@@ -494,6 +515,22 @@ def _selbsttest():
                 pass  # zweiter Durchlauf: wieder KeyError, nicht ProtokollGesperrt
         with Sperre(kaputt + ".lock"):
             pass
+        # WarteSperre: waits for a living holder, gives up with DateiBelegt (not ProtokollGesperrt)
+        import threading
+        dp = os.path.join(w, "liste.json.lock")
+        halter = Sperre(dp)
+        halter.sperren()
+        kurz = WarteSperre(dp)
+        kurz.warten_s = 0.2
+        try:
+            kurz.sperren()
+            raise AssertionError("WarteSperre ueber lebendem Halter vergeben")
+        except DateiBelegt as ex:
+            assert not isinstance(ex, ProtokollGesperrt), ex
+        threading.Timer(0.3, halter.entsperren).start()
+        t0 = time.monotonic()
+        with WarteSperre(dp):
+            assert 0.2 < time.monotonic() - t0 < 5
         _selbsttest_windows(w)
 
 

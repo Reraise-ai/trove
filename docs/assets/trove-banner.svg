@@ -44,7 +44,7 @@
   <g font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif">
     <text x="320" y="170" fill="#ffffff" font-size="96" font-weight="700" letter-spacing="-2">Trove</text>
     <text x="324" y="218" fill="#d9d4ff" font-size="28" font-weight="500">The cleanup desk for you and your AI agents.</text>
-    <text x="324" y="254" fill="#a9a2d9" font-size="20">You see, click and approve. Agents do the work. Every step is tamper-evident.</text>
+    <text x="324" y="254" fill="#a9a2d9" font-size="20">You see, click and decide. Agents do the work. Every step is tamper-evident.</text>
 
     <!-- chips -->
     <g font-size="15" font-weight="600">

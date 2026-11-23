@@ -8,6 +8,7 @@ import { host, Button, Badge, Input, SandboxedFrame, ROUTES_AREA, SIDEBAR_NAV_AR
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
+const DICTATE_LANG = 'de-DE'  // Vorgabe: Diktat immer Deutsch (speech recognition language of the dictation button, not a date locale)
 const ID = 'reraise-trove'
 let rest = null
 let storage = null
@@ -379,19 +380,41 @@ function Search() {
 function Tasks() {
   const t = usePluginI18n(ID)
   const [list, setList] = useState([]); const [title, setTitle] = useState(''); const [text, setText] = useState(''); const [assignee, setAssignee] = useState('')
-  const [open, setOpen] = useState(false); const [error, setError] = useState(null); const [busy, setBusy] = useState(false)
-  const load = useCallback(() => rest('/auftraege').then((r) => { setList(r.auftraege || []); if (r.fehler) setError(r.fehler) }).catch((e) => setError(errText(e))), [])
+  const [open, setOpen] = useState(false); const [error, setError] = useState(null); const [note, setNote] = useState(null); const [busy, setBusy] = useState(false)
+  const [pflicht, setPflicht] = useState(true)  // switch freigabe_pflicht, from every GET /auftraege (the backend decides); until then the careful wording
+  const load = useCallback(() => rest('/auftraege').then((r) => { setList(r.auftraege || []); setPflicht(r.freigabe_pflicht !== false); if (r.fehler) setError(r.fehler) }).catch((e) => setError(errText(e))), [])
   useEffect(() => { load(); const iv = setInterval(load, 20000); return () => clearInterval(iv) }, [load])
   const titleEff = title.trim() || text.trim().split('\n')[0].slice(0, 80)
-  const create = async () => {
-    if (!titleEff || busy) return
-    setBusy(true); setError(null)
-    try {
-      await rest('/auftrag', { method: 'POST', body: { mandant: MANDANT, titel: titleEff, text, assignee: (PROFILE_LOADED && assignee && !PROFILE.includes(assignee)) ? '' : assignee, kontext: { links: storage.get('links', {}), rechts: storage.get('rechts', {}) } } })
-      setTitle(''); setText(''); setOpen(false); load()
-    } catch (e) { setError(errText(e)) } finally { setBusy(false) }
+  const newId = () => (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : 'f' + Date.now().toString(36) + Math.random().toString(36).slice(2, 12)
+  const formId = useRef(null)  // one id per form: a repeated create (retry, double click) returns the card that already exists
+  const failed = useRef(false)
+  const edited = () => { if (failed.current) { formId.current = null; failed.current = false } }  // changed after a failed create: new content, new id
+  const recRef = useRef(null); const [rec, setRec] = useState(false)
+  const SR = typeof window !== 'undefined' ? (window.SpeechRecognition || window.webkitSpeechRecognition) : null
+  const dictate = () => {
+    if (recRef.current) { recRef.current.stop(); return }
+    if (!SR) { setError(t('dictateNone')); return }
+    setError(null)
+    const r = new SR(); r.lang = DICTATE_LANG; r.continuous = true; r.interimResults = false
+    r.onresult = (e) => { let add = ''; for (let i = e.resultIndex; i < e.results.length; i++) if (e.results[i].isFinal) add += e.results[i][0].transcript; add = add.trim(); if (add) { edited(); setText((v) => v + (v && !/\s$/.test(v) ? ' ' : '') + add) } }
+    r.onerror = (e) => { if (e.error !== 'no-speech' && e.error !== 'aborted') setError(t('dictateError', e.error)) }
+    r.onend = () => { recRef.current = null; setRec(false) }
+    recRef.current = r; setRec(true)
+    try { r.start() } catch (e) { recRef.current = null; setRec(false); setError(t('dictateError', String((e && e.message) || e))) }
   }
-  const act = async (id, what) => { setError(null); try { await rest('/auftrag/' + id + '/' + what, { method: 'POST', body: { mandant: MANDANT, confirm: true } }); load() } catch (e) { setError(errText(e)) } }
+  useEffect(() => () => { if (recRef.current) recRef.current.abort() }, [])
+  const create = async () => {
+    if (!titleEff || busy || recRef.current) return  // not while recording: the last words arrive only after the recognizer has stopped
+    if (!formId.current) formId.current = newId()
+    setBusy(true); setError(null); setNote(null)
+    try {
+      const r = await rest('/auftrag', { method: 'POST', body: { mandant: MANDANT, confirm: true, client_id: formId.current, titel: titleEff, text, assignee: (PROFILE_LOADED && assignee && !PROFILE.includes(assignee)) ? '' : assignee, kontext: { links: storage.get('links', {}), rechts: storage.get('rechts', {}) } } })
+      formId.current = null; failed.current = false; setTitle(''); setText(''); setOpen(false); load()
+      if (r && r.wiederholt) setNote(t('taskExisted', r.id))
+      if (r && r.fehler) setError(r.fehler)  // card exists, but a later step failed (e.g. start): the card is listed, "Release" retries
+    } catch (e) { failed.current = true; setError(errText(e)) } finally { setBusy(false) }
+  }
+  const act = async (id, what) => { setError(null); try { const r = await rest('/auftrag/' + id + '/' + what, { method: 'POST', body: { mandant: MANDANT, confirm: true } }); load(); if (r && r.fehler) setError(r.fehler) } catch (e) { setError(errText(e)) } }
   const [shown, setShown] = useState(null)
   const color = (s) => s === 'done' ? 'text-(--ui-text-success)' : s === 'blocked' ? 'text-(--ui-text-warning)' : s === 'running' ? 'text-(--ui-text-info)' : quiet
   return jsxs('div', { className: box + ' p-2 text-xs flex flex-col gap-1 shrink-0', children: [
@@ -402,16 +425,20 @@ function Tasks() {
       jsx(Button, { size: 'sm', variant: 'ghost', onClick: () => setOpen(!open), children: open ? t('close') : t('newTask') })
     ] }),
     open ? jsxs('div', { className: 'flex flex-col gap-1', children: [
-      jsx(Input, { placeholder: t('taskTitlePlaceholder'), value: title, onChange: (e) => setTitle(e.target.value), onKeyDown: (e) => { if (e.key === 'Enter') create() } }),
-      jsx('textarea', { className: 'rounded border border-(--ui-stroke-secondary) bg-transparent p-1', style: { minHeight: 60 }, placeholder: t('taskTextPlaceholder'), value: text, onChange: (e) => setText(e.target.value) }),
+      jsx(Input, { placeholder: t('taskTitlePlaceholder'), value: title, onChange: (e) => { edited(); setTitle(e.target.value) }, onKeyDown: (e) => { if (e.key === 'Enter') create() } }),
+      jsxs('div', { className: 'flex gap-1 items-start', children: [
+        jsx('textarea', { className: 'flex-1 rounded border border-(--ui-stroke-secondary) bg-transparent p-1', style: { minHeight: 60 }, placeholder: t('taskTextPlaceholder'), value: text, onChange: (e) => { edited(); setText(e.target.value) } }),
+        jsx(Button, { size: 'sm', variant: rec ? 'default' : 'ghost', disabled: busy || (!SR && !rec), title: SR ? t('dictateTip') : t('dictateNone'), onClick: dictate, children: rec ? t('dictating') : t('dictate') })
+      ] }),
       jsxs('div', { className: 'flex gap-2 items-center', children: [
         jsx('span', { className: quiet, children: t('agent') }),
         jsxs('select', { className: selectCls, value: assignee, onChange: (e) => setAssignee(e.target.value), children: [jsx('option', { value: '', children: t('defaultAgent') }), ...(PROFILE_LOADED ? PROFILE : []).map((p) => jsx('option', { value: p, children: p }, p))] }),
-        jsx(Button, { size: 'sm', disabled: busy || !titleEff, onClick: create, children: busy ? t('creating') : !titleEff ? t('titleFirst') : t('createCard') }),
-        jsx('span', { className: quiet, children: t('startsAfterRelease') })
+        jsx(Button, { size: 'sm', disabled: busy || !titleEff || rec, title: rec ? t('finishDictationFirst') : undefined, onClick: create, children: busy ? t('creating') : !titleEff ? t('titleFirst') : pflicht ? t('createCard') : t('createCardStart') }),
+        jsx('span', { className: quiet, children: pflicht ? t('waitsForRelease') : t('startsNow') })
       ] })
     ] }) : null,
     error ? jsx('div', { className: 'text-destructive', children: error }) : null,
+    note ? jsx('div', { className: quiet, children: note }) : null,
     ...[...list.filter((a) => a.status === 'blocked'), ...list.filter((a) => a.status !== 'archived' && a.status !== 'blocked').slice(0, 12)].map((a) => jsxs('div', { className: 'flex flex-col', children: [jsxs('div', { className: 'flex items-center gap-2', children: [
       jsx('span', { className: 'font-mono ' + color(a.status), children: a.status }),
       jsx('span', { className: 'font-mono', children: a.id }),
@@ -685,9 +712,10 @@ const EN = {
   searchPlaceholder: 'Search the index and the receipt log: file name, invoice number, sender, sha256 …', search: 'Search', collapse: 'hide', expand: 'show', searching: 'searching …',
   foundUnder: (w, n) => 'located ' + w + ' (' + n + '):', receiptLogN: (n) => 'Receipt log (' + n + '):',
   tasksTitle: 'Tasks for your agents (Hermes Kanban)', details: 'Details', nOpen: (n) => n + ' open', close: 'close', newTask: '+ Task',
-  taskTitlePlaceholder: 'Title (e.g. review the batch in the left source and list duplicates)', taskTextPlaceholder: 'Task text: what exactly should be done. The card stays blocked until you release it.',
-  agent: 'Agent:', defaultAgent: '(Hermes default)', creating: 'creating …', titleFirst: 'enter a title or text first', createCard: 'Create card (blocked)',
-  startsAfterRelease: 'The agent starts only after you press "Release" in the list.', release: 'Release', archive: 'Archive',
+  taskTitlePlaceholder: 'Title (e.g. review the batch in the left source and list duplicates)', taskTextPlaceholder: 'Task text: what exactly should be done.',
+  agent: 'Agent:', defaultAgent: '(Hermes default)', creating: 'creating …', titleFirst: 'enter a title or text first', createCard: 'Create card (waits for release)', createCardStart: 'Create card and start',
+  taskExisted: (id) => 'This form had already created task ' + id + '; nothing new was created.', startsNow: 'The agent starts right away.', waitsForRelease: 'The agent starts only after you press "Release" in the list.', release: 'Release', archive: 'Archive',
+  dictate: 'Dictate', dictating: 'Recording', dictateTip: 'Dictate into the task text (speech recognition of the browser or Electron: the audio may be sent to Google); press again to stop', dictateNone: 'Dictation is not available in this window (no speech recognition).', dictateError: (e) => 'Dictation failed: ' + e, finishDictationFirst: 'Stop the dictation first',
   sortBy: 'Sort', sortName: 'Name', sortSize: 'Size', sortDate: 'Date modified', sortType: 'Type', sortAsc: 'ascending', sortDesc: 'descending',
   sortTip: 'Sort this pane (folders always first)', sortDirTip: (d) => 'Sort order: ' + d + '. Click to reverse.',
   renameBtn: 'Rename', renameTip: 'Rename the clicked file or folder (never overwrites)', newFolderBtn: 'New folder', newFolderTip: 'Create a new folder here',
@@ -774,9 +802,10 @@ const DE = {
   searchPlaceholder: 'Index und Belegprotokoll durchsuchen: Dateiname, Rechnungsnummer, Absender, sha256 …', search: 'Suchen', collapse: 'zu', expand: 'auf', searching: 'suche …',
   foundUnder: (w, n) => 'liegt ' + w + ' (' + n + '):', receiptLogN: (n) => 'Belegprotokoll (' + n + '):',
   tasksTitle: 'Aufträge an deine Agenten (Hermes Kanban)', details: 'Details', nOpen: (n) => n + ' offen', close: 'schließen', newTask: '+ Auftrag',
-  taskTitlePlaceholder: 'Titel (z. B. Belegstapel in der linken Quelle sichten und Dubletten listen)', taskTextPlaceholder: 'Auftragstext: was genau getan werden soll. Die Karte bleibt gesperrt, bis du sie freigibst.',
-  agent: 'Agent:', defaultAgent: '(Hermes-Standard)', creating: 'lege an …', titleFirst: 'erst Titel oder Text eingeben', createCard: 'Karte anlegen (gesperrt)',
-  startsAfterRelease: 'Der Agent startet erst nach „Freigeben“ in der Liste.', release: 'Freigeben', archive: 'Archivieren',
+  taskTitlePlaceholder: 'Titel (z. B. Belegstapel in der linken Quelle sichten und Dubletten listen)', taskTextPlaceholder: 'Auftragstext: was genau getan werden soll.',
+  agent: 'Agent:', defaultAgent: '(Hermes-Standard)', creating: 'lege an …', titleFirst: 'erst Titel oder Text eingeben', createCard: 'Karte anlegen (wartet auf Freigabe)', createCardStart: 'Karte anlegen und starten',
+  taskExisted: (id) => 'Dieses Formular hatte schon den Auftrag ' + id + ' angelegt; es wurde nichts Neues angelegt.', startsNow: 'Der Agent startet sofort.', waitsForRelease: 'Der Agent startet erst nach „Freigeben“ in der Liste.', release: 'Freigeben', archive: 'Archivieren',
+  dictate: 'Diktieren', dictating: 'Aufnahme läuft', dictateTip: 'In den Auftragstext diktieren (Spracherkennung des Browsers bzw. von Electron: die Aufnahme kann an Google gehen); nochmal drücken zum Beenden', dictateNone: 'Diktat ist in diesem Fenster nicht verfügbar (keine Spracherkennung).', dictateError: (e) => 'Diktat fehlgeschlagen: ' + e, finishDictationFirst: 'Erst das Diktat beenden',
   sortBy: 'Sortierung', sortName: 'Name', sortSize: 'Größe', sortDate: 'Änderungsdatum', sortType: 'Typ', sortAsc: 'aufsteigend', sortDesc: 'absteigend',
   sortTip: 'Dieses Fenster sortieren (Ordner stehen immer oben)', sortDirTip: (d) => 'Reihenfolge: ' + d + '. Klick kehrt sie um.',
   renameBtn: 'Umbenennen', renameTip: 'Angeklickte Datei oder angeklickten Ordner umbenennen (überschreibt nie)', newFolderBtn: 'Neuer Ordner', newFolderTip: 'Hier einen neuen Ordner anlegen',

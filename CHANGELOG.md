@@ -6,6 +6,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Agents steer Trove directly; the release step is a switch.** New setting `freigabe_pflicht` in `trove.json` (default **off**; shown with its source
+  `freigabe_pflicht_quelle` in `GET /status`, `GET /auftraege` and the MCP tool `status`). `TROVE_FREIGABE_PFLICHT` can only switch it on, never off; unclear values
+  and an unreadable `trove.json` count as on, with `freigabe_pflicht_warnung`. Off: a card created in the tab and a request over MCP start at once. On: both are created
+  blocked and start only after **Release** in the Trove tab, as before. Folder rights (read-only unless marked writable) bind the file actions in both positions; an
+  agent task runs a Hermes agent with Hermes' own permissions, and starts only if `TROVE_ARBEITSORDNER` (when set) lies in a writable folder. Every action is
+  logged with its origin (`tab` or `mcp:<client>`) as a log field, not as an approval criterion. The environment can only make the switch stricter: an empty value in
+  `trove.json` and a `TROVE_KONFIG` that points to a missing file count as on; `freigabe_pflicht_datei` shows which `trove.json` was read. The working folder is
+  checked at every start, and Hermes gets the resolved path that was checked; Release in the tab checks the folder stored with the card (its `--workspace`), resolved again, not the current variable. A finished agent task counts against the per-client
+  limit for as long as its agent can run (card runtime × attempts). A request started over MCP runs inside the MCP server
+  process and ends with it. Texts in `mcp_server.py`, the skill file, both READMEs, `llms.txt`, `docs/PRIVACY.md` and `docs/TERMS.md` describe the new behaviour.
+- **Web-page protection of the tab routes in both positions.** Create (`POST /auftrag`), release and archive accept only a JSON request from the local address (Host
+  `127.0.0.1`, `localhost`, `[::1]`; more via `TROVE_DASHBOARD_HOSTS`, origins via `TROVE_DASHBOARD_ORIGIN`), for **every** card (before, plain Hermes cards were
+  not checked). `Origin: null` is refused. The 403 names the host and the origin it saw. Hermes Desktop reaches the routes through its main process (Host `127.0.0.1:<port>`, no Origin header).
+  Honest limit: this holds back MCP clients and foreign web pages, not programs on the same computer.
+- Log texts say what happened ("created from the tab and started", "started directly (freigabe_pflicht off)", "released in the Trove tab") instead of "by a human".
+  A card started by Trove has the display status `started` until the next board check shows the real one.
+
+### Added
+- **Dictation button** in the new-task form (speech recognition of the browser / Electron, German `de-DE`, text is appended; creating is blocked while recording).
+  Chromium sends the audio to Google; see `docs/PRIVACY.md`. Not yet tested inside Hermes Desktop.
+- `client_id` for `POST /auftrag` (one id per form in the tab): a repeated create within 10 minutes returns the existing card instead of creating a second one;
+  the same `client_id` with a different title or text is refused with 409, and the tab takes a new id once the text is changed after a failed create.
+
+### Fixed
+- **Parallel creates no longer mix up cards.** The task text goes into a uniquely named temp file (before: a file named by the second, so two creates in one second
+  could start the wrong text). `auftraege.json` is read and written only under a lock (`auftraege.json.lock`) through one writer with a unique temp file; creating,
+  archiving and the 20-second list refresh can no longer overwrite each other (before: a card created while the list refreshed could vanish from the file).
+- **No error for a card that exists.** After `kanban create` succeeded, a busy receipt log (waits up to 30 s), a failed start or a failed bookkeeping step come back as
+  HTTP 200 with `fehler` and the card in the list; before, the tab saw an error and a second click created a second card.
+- A request whose receipt-log line cannot be written at start goes back to `blocked` instead of staying `running`.
+- **Lock of `auftraege.json` and `mcp_auftraege.json`:** one waiting lock (`belegprotokoll.WarteSperre`: flock on POSIX, the open-handle rule on Windows)
+  instead of a lock file taken over by age. A crashed holder no longer blocks the list for 60 s, and two waiters can no longer both take over a stale lock
+  (a card could vanish). Held by a living process for more than 20 s: HTTP 503 "Task list busy, try again" before anything was created or released
+  (MCP: "request queue is busy, nothing was queued").
+- **Limits count running requests too:** 20 open (waiting, running, or an agent task that ended less than 30 minutes ago) MCP requests per client and 50 in total, also with the switch off (before: unlimited when off).
+- **`trove.json` with `datenwurzel` no longer loses `freigabe_pflicht`:** the `trove.json` read at start is pinned (`TROVE_KONFIG`), so later reads and writes use the same file instead of `<datenwurzel>/trove.json`.
+- **Release only for blocked cards:** releasing a card the task list shows as started or done gives 409 without a `hermes` call. Task ids handed to the `hermes`
+  command line must match `[A-Za-z0-9][A-Za-z0-9_.-]{0,63}` (no leading `-`), else 400.
+- **Archiving during the list refresh** no longer flips the card back to its old status for one round.
+
 ## [0.4.0] - 2026-10-30
 
 ### Added

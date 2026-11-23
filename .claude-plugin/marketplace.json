@@ -12,7 +12,7 @@
     {
       "name": "reraise-trove",
       "source": "./",
-      "description": "Trove — cleanup desk for you and your agents: two-pane file desk, tamper-evident log, receipt reading, knowledge cards. Agents read freely; every change becomes a blocked request a human releases in the Trove tab.",
+      "description": "Trove — cleanup desk for you and your agents: two-pane file desk, tamper-evident log, receipt reading, knowledge cards. Agents read freely and change files directly inside the folders you marked writable; agent tasks run with Hermes' own permissions; an optional switch makes every new task card and every MCP request wait for your release in the Trove tab.",
       "category": "productivity",
       "tags": [
         "files",

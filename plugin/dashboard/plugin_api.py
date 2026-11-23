@@ -9,6 +9,7 @@ Optional integrations (mail, DocuSeal, ERPNext, Reraise) are inactive until conf
 from __future__ import annotations
 
 import base64
+import contextlib
 import errno
 import functools
 import hashlib
@@ -22,6 +23,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 from fastapi import APIRouter, HTTPException, Request
@@ -276,7 +278,15 @@ def status():
                          "kette_ende": (letzte.get("kette") or "")[:16] if letzte else None, "anker": bp.letzter_anker(m)})
     return {"ok": True, "mandant": MANDANT, "datenwurzel": TROVE_DATEN, "wiki": _wiki_oder_none(), "profile": gesundheit.hermes_profile(),
             "hermes_cli": _hermes_exe() is not None, "zeit": _jetzt(), "geraet": os.environ.get("COMPUTERNAME", ""),
-            "pid": os.getpid(), "protokolle": prot, "version": VERSION}
+            "pid": os.getpid(), "protokolle": prot, "version": VERSION, **_schalter_felder()}
+
+
+def _schalter_felder():
+    """freigabe_pflicht, its source, the trove.json it was read from and (if any) the warning, for /status and GET /auftraege
+    (the tab and the MCP server may run with different environments, so the file shows whether both read the same one)."""
+    wert, quelle, warnung = konfig.freigabe_pflicht_stand()
+    return {"freigabe_pflicht": wert, "freigabe_pflicht_quelle": quelle, "freigabe_pflicht_datei": konfig.konfig_pfad(),
+            **({"freigabe_pflicht_warnung": warnung} if warnung else {})}
 
 
 @router.get("/gesundheit")
@@ -914,7 +924,7 @@ def aenderungen_lauf(body: dict):
             "befunde": {k: v[:100] for k, v in b.items() if isinstance(v, list)}}
 
 
-# ---------- F10: Auftraege an die KI ueber das Kanban (Freigabe durch Menschen) ----------
+# ---------- F10: Auftraege an die KI ueber das Kanban (Freigabe nur bei Schalter freigabe_pflicht) ----------
 
 def _hermes_exe():
     return konfig.hermes_exe()
@@ -943,7 +953,8 @@ def _auftraege_pfad(mandant):
     return os.path.join(_mandant_dir(mandant), "auftraege.json")
 
 
-def _auftraege_lesen(mandant):
+def _auftraege_roh(mandant):
+    """auftraege.json as it is on disk. Only for callers that hold the file lock (_auftraege_lesen, _auftraege_aendern)."""
     p = _auftraege_pfad(mandant)
     if os.path.exists(p):
         with open(p, encoding="utf-8") as f:
@@ -951,150 +962,392 @@ def _auftraege_lesen(mandant):
     return []
 
 
-def _auftraege_speichern(mandant, liste):
+def _auftraege_lesen(mandant):
+    with bp.WarteSperre(_auftraege_pfad(mandant) + ".lock"):  # waits up to 20 s, then bp.DateiBelegt
+        return _auftraege_roh(mandant)
+
+
+def _auftraege_aendern(mandant, fn):
+    """The only writer of auftraege.json: lock, read the current file, fn(liste) changes the list in place, write through a
+    unique temp file + os.replace (only when fn changed something). Returns what fn returns. Keep fn short: no hermes call,
+    no receipt-log write inside (other callers wait for the lock up to 20 s)."""
     p = _auftraege_pfad(mandant)
-    with open(p + ".neu", "w", encoding="utf-8") as f:
-        json.dump(liste, f, ensure_ascii=False, indent=1)
-    os.replace(p + ".neu", p)
+    with bp.WarteSperre(p + ".lock"):
+        liste = _auftraege_roh(mandant)
+        vorher = json.dumps(liste, ensure_ascii=False)
+        erg = fn(liste)
+        if json.dumps(liste, ensure_ascii=False) != vorher:
+            fd, tmp = tempfile.mkstemp(dir=os.path.dirname(p), prefix="auftraege_", suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(liste, f, ensure_ascii=False, indent=1)
+                os.replace(tmp, p)
+            except BaseException:
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+                raise
+        return erg
 
 
-@router.post("/auftrag")
-def auftrag_anlegen(body: dict):
-    """Create a card on the Hermes kanban board -- blocked until a human releases it."""
-    mandant = body.get("mandant") or MANDANT
-    titel = (body.get("titel") or "").strip()
-    if not titel:
-        raise HTTPException(400, "Title is missing")
-    text = (body.get("text") or "").strip()
-    assignee = (body.get("assignee") or os.environ.get("TROVE_ASSIGNEE") or "").strip()  # Hermes profile; empty = Hermes default
-    kontext = body.get("kontext") or {}
-    rumpf = text + "\n\n--\nCreated from the Trove tab, client %s. Context: %s\nRules: delete nothing, overwrite nothing; post the result as a comment on this card, then set the card to done." % (mandant, json.dumps(kontext, ensure_ascii=False))
-    tmp = os.path.join(_mandant_dir(mandant), "auftrag_%d.txt" % int(time.time()))
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(rumpf)
+RE_CLIENT_ID = re.compile(r"[A-Za-z0-9_-]{8,64}")
+RE_KARTE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")  # a card id handed to the hermes command line: no leading "-"
+IDEMPOTENZ_S = 600  # a repeated create with the same client_id within this time returns the existing card
+_anlege_sperren = {}
+_anlege_meta = threading.Lock()
+
+
+@contextlib.contextmanager
+def _anlege_schluessel(mandant, client_id):
+    """Two creates with the same client_id (double click, retry while the first still runs) run one after the other, so the
+    second one finds the card of the first instead of creating another."""
+    if not client_id:
+        yield
+        return
+    k = (mandant, client_id)
+    with _anlege_meta:
+        sperre, n = _anlege_sperren.get(k, (threading.Lock(), 0))
+        _anlege_sperren[k] = (sperre, n + 1)
     try:
-        args = ["kanban", "create", "Trove: " + titel, "--body-file", tmp, "--initial-status", "blocked",
-                "--workspace", ("dir:" + os.environ["TROVE_ARBEITSORDNER"]) if os.environ.get("TROVE_ARBEITSORDNER") else "scratch",
-                "--max-retries", "1", "--max-runtime", "900"]
-        if assignee:
-            args += ["--assignee", assignee]
-        if os.environ.get("TROVE_SKILL"):  # optional Hermes skill for the agent, none by default
-            args += ["--skill", os.environ["TROVE_SKILL"]]
-        karte = _hermes_json(*args)
+        with sperre:
+            yield
     finally:
-        try:
-            os.remove(tmp)
-        except OSError:
-            pass
-    kid = karte.get("id")
-    eintrag = {"id": kid, "titel": titel, "assignee": assignee, "zeit": _jetzt(), "status": "blocked", "protokolliert": [], "kontext": kontext}
-    _auftraege_speichern(mandant, _auftraege_lesen(mandant) + [eintrag])
-    bp.schreiben(bp.pfad_fuer(mandant), ereignis="notiz", werkzeug="trove-plugin/kanban", mandant=mandant, lauf=kid,
-                 meldung="Task for an agent created (blocked, waits for human release): " + titel, karte=kid, assignee=assignee, kontext=kontext)
-    return eintrag
+        with _anlege_meta:
+            sperre, n = _anlege_sperren[k]
+            if n <= 1:
+                del _anlege_sperren[k]
+            else:
+                _anlege_sperren[k] = (sperre, n - 1)
 
 
-def _menschenklick(request, body):
-    """Release/archive of an MCP request: only a JSON request with {"confirm": true}, as the tab sends it through the Hermes
-    desktop/dashboard (which also adds its session token). Refuses forms and other plain browser posts (no CORS preflight) and any
-    request from a foreign web origin."""
-    art = (request.headers.get("content-type") or "").split(";")[0].strip().lower()
-    if art != "application/json":
-        raise HTTPException(415, "Send JSON (Content-Type: application/json)")
-    if not isinstance(body, dict) or body.get("confirm") is not True:
-        raise HTTPException(400, 'Confirmation missing: send {"confirm": true}')
-    host = (request.headers.get("host") or "").strip().lower()
-    name = host[1:host.index("]")] if host.startswith("[") and "]" in host else host.rsplit(":", 1)[0] if host.count(":") == 1 else host
-    erlaubte_hosts = {"127.0.0.1", "localhost", "::1"} | {h.strip().lower() for h in os.environ.get("TROVE_DASHBOARD_HOSTS", "").split(",") if h.strip()}
-    if name not in erlaubte_hosts:  # DNS rebinding: a foreign page reaches the dashboard under its own host name
-        raise HTTPException(403, "Release only through the local dashboard (host %s is not allowed)" % (name or "missing"))
-    origin = request.headers.get("origin")
-    if origin is not None:
-        eigen = "%s://%s" % (request.url.scheme, request.headers.get("host", ""))
-        erlaubt = {eigen.lower()} | {o.strip().lower() for o in os.environ.get("TROVE_DASHBOARD_ORIGIN", "").split(",") if o.strip()}
-        if origin.lower() not in erlaubt:
-            raise HTTPException(403, "Foreign origin")
+def _eintrag_setzen(liste, kid, nur_status, **felder):
+    """In the list handed to an _auftraege_aendern callback: set fields on card kid (only if its status is nur_status, None = any)."""
+    for a in liste:
+        if a.get("id") == kid and (nur_status is None or a.get("status") == nur_status):
+            a.update(felder)
 
 
-@router.post("/auftrag/{kid}/freigeben")
-def auftrag_freigeben(kid: str, request: Request, body: dict = None):
-    mandant = (body or {}).get("mandant") or MANDANT
-    if mcp_queue.ist_mcp(kid):  # request from an MCP client: a human click here is its only way to run
-        _menschenklick(request, body)
-        try:
-            return mcp_queue.freigeben(_mandant_pruefen(mandant), kid, sys.modules[__name__])
-        except KeyError:
-            raise HTTPException(404, "Unknown task %s" % kid)
-        except ValueError as ex:
-            raise HTTPException(409, str(ex))
-    _hermes("kanban", "unblock", kid, "--reason", "Freigabe durch Mensch im Trove-Tab")
+def _protokoll_zurueck(kid, status):
+    """Callback for _auftraege_aendern: take back the "result logged" claim of card kid."""
+    def f(liste):
+        for a in liste:
+            if a.get("id") == kid and status in a.get("protokolliert", []):
+                a["protokolliert"].remove(status)
+    return f
+
+
+def _kanban_log(mandant, meldung, kid, ereignis="notiz", **felder):
+    """Receipt-log line for a kanban card; waits up to 30 s for a long run that holds the log (mcp_queue.log)."""
+    mcp_queue.log(mandant, meldung, ereignis=ereignis, werkzeug="trove-plugin/kanban", lauf=kid, karte=kid, **felder)
+
+
+def _arbeitsordner():
+    """TROVE_ARBEITSORDNER resolved (realpath), or None when not set. Hermes gets exactly this path, the one that was checked."""
+    ordner = os.environ.get("TROVE_ARBEITSORDNER")
+    return os.path.realpath(ordner) if ordner else None
+
+
+def _arbeitsordner_pruefen(mandant, ordner):
+    """Before an agent task starts (create with start, Release in the tab, MCP request): ordner (the card's --workspace) must,
+    after resolving every link now, lie inside a source marked writable, else HTTP 403. None = Hermes' scratch workspace, no
+    check. Callers pass _arbeitsordner() for a card created now and the folder stored with the card on Release. Either way the
+    agent works with Hermes' own permissions; this check only keeps Trove from pointing it at a folder the human did not mark writable."""
+    if ordner and not any(q.get("pfad") and not q.get("nur_lesen", True) and _unter_real(ordner, q["pfad"]) for q in _quellen(mandant)):
+        raise HTTPException(403, "working folder %s is not inside a folder marked writable" % os.path.basename(ordner))
+
+
+def _kanban_starten(kid, grund):
+    """Release a blocked kanban card and ask Hermes to dispatch at once (a failed dispatch is not an error: Hermes' own
+    dispatcher picks the card up)."""
+    _hermes("kanban", "unblock", kid, "--reason", grund)
     try:
         _hermes("kanban", "dispatch", "--max", "1", timeout=60)
     except HTTPException:
         pass
-    bp.schreiben(bp.pfad_fuer(mandant), ereignis="notiz", werkzeug="trove-plugin/kanban", mandant=mandant, lauf=kid, meldung="Task released by a human", karte=kid)
-    return {"ok": True}
+
+
+@contextlib.contextmanager
+def _liste_belegt():
+    """bp.DateiBelegt (task list or MCP queue held by a living process for 20 s) -> HTTP 503. Raised only before anything was
+    changed: after `kanban create` / `unblock` / `archive` the routes report problems in "fehler" instead."""
+    try:
+        yield
+    except bp.DateiBelegt:
+        raise HTTPException(503, "Task list busy, try again") from None
+
+
+def _inhalt_hash(titel, text):
+    return hashlib.sha256((titel + "\0" + text).encode("utf-8")).hexdigest()
+
+
+def _auftrag_anlegen(body, herkunft, starten):
+    """Create a card on the Hermes kanban board. herkunft: "tab" or "mcp:<client>" (receipt-log field only, it decides nothing).
+    starten=True: release and dispatch it at once; False: it stays blocked until /freigeben.
+    Once `kanban create` has succeeded nothing below raises any more: every later problem (task list, start, receipt log)
+    comes back in the entry's "fehler" with HTTP 200, so the card is never reported as failed while it exists. client_id
+    (one per form in the tab, the request id for MCP) makes a repeated call with the same title and text return the existing
+    entry; the same client_id with other content is refused (409)."""
+    mandant = _mandant_pruefen(body.get("mandant") or MANDANT)
+    titel = (body.get("titel") or "").strip()
+    if not titel:
+        raise HTTPException(400, "Title is missing")
+    client_id = body.get("client_id")
+    if client_id is not None and not (isinstance(client_id, str) and RE_CLIENT_ID.fullmatch(client_id)):
+        raise HTTPException(400, "client_id: 8-64 characters a-z A-Z 0-9 _ -")
+    text = (body.get("text") or "").strip()
+    assignee = (body.get("assignee") or os.environ.get("TROVE_ASSIGNEE") or "").strip()  # Hermes profile; empty = Hermes default
+    kontext = body.get("kontext") or {}
+    rumpf = text + "\n\n--\nCreated via Trove (origin: %s), client %s. Context: %s\nRules: delete nothing, overwrite nothing; post the result as a comment on this card, then set the card to done." % (herkunft, mandant, json.dumps(kontext, ensure_ascii=False))
+    inhalt = _inhalt_hash(titel, text)
+    with _anlege_schluessel(mandant, client_id):
+        liste = _auftraege_lesen(mandant)  # also the busy check: a task list held for 20 s refuses here (503), before a card exists
+        if client_id:
+            for a in liste:
+                if a.get("client_id") == client_id and time.time() - (a.get("ts") or 0) < IDEMPOTENZ_S:
+                    if a.get("inhalt_hash") != inhalt:
+                        raise HTTPException(409, "same form id, different content: this form already created task %s" % a["id"])
+                    return dict(a, wiederholt=True)
+        ordner = _arbeitsordner()
+        if starten:  # not started now: the folder is stored with the card and checked at Release
+            _arbeitsordner_pruefen(mandant, ordner)
+        fd, tmp = tempfile.mkstemp(dir=_mandant_dir(mandant), prefix="auftrag_", suffix=".txt")  # unique name: parallel creates never share a file
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(rumpf)
+            args = ["kanban", "create", "Trove: " + titel, "--body-file", tmp, "--initial-status", "blocked",
+                    "--workspace", ("dir:" + ordner) if ordner else "scratch",
+                    "--max-retries", str(mcp_queue.KARTE_MAX_RETRIES), "--max-runtime", str(mcp_queue.KARTE_MAX_RUNTIME_S)]
+            if assignee:
+                args += ["--assignee", assignee]
+            if os.environ.get("TROVE_SKILL"):  # optional Hermes skill for the agent, none by default
+                args += ["--skill", os.environ["TROVE_SKILL"]]
+            karte = _hermes_json(*args)
+        finally:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+        kid = karte.get("id")
+        if not kid:
+            raise HTTPException(502, "hermes did not return a card id")
+        eintrag = {"id": kid, "titel": titel, "assignee": assignee, "zeit": _jetzt(), "ts": time.time(), "status": "blocked", "protokolliert": [],
+                   "kontext": kontext, "herkunft": herkunft, "inhalt_hash": inhalt, "arbeitsordner": ordner}
+        if client_id:
+            eintrag["client_id"] = client_id
+        probleme = []
+
+        def schritt(was, fn):
+            try:
+                fn()
+                return True
+            except Exception as ex:  # the card exists: report, never raise
+                probleme.append("%s: %s" % (was, _aussen(getattr(ex, "detail", None) or ex)))
+                return False
+
+        schritt("created, but not entered in the task list", lambda: _auftraege_aendern(mandant, lambda liste: liste.append(eintrag)))
+        gestartet = False
+        if starten:
+            gestartet = schritt("created, start failed (card stays blocked, use Release)",
+                                lambda: _kanban_starten(kid, "Started via Trove (origin: %s)" % herkunft))
+            if gestartet:
+                eintrag["status"] = "started"  # our own display value until the next board check shows the real one
+        if probleme:
+            eintrag["fehler"] = "; ".join(probleme)
+        if eintrag["status"] != "blocked" or "fehler" in eintrag:
+            schritt("created, but its state was not saved", lambda: _auftraege_aendern(
+                mandant, lambda liste: _eintrag_setzen(liste, kid, None, **{k: eintrag[k] for k in ("status", "fehler") if k in eintrag})))
+        if gestartet:
+            meldung = "Task for an agent created %s and started: %s" % ("from the tab" if herkunft == "tab" else "for an MCP request (%s)" % herkunft, titel)
+        elif starten:
+            meldung = "Task for an agent created (%s) but not started, card stays blocked: %s" % (herkunft, titel)
+        else:
+            meldung = "Task for an agent created from the tab (blocked, waits for Release in the Trove tab): " + titel
+        ok = schritt("created, but the receipt-log line could not be written", lambda: _kanban_log(
+            mandant, meldung, kid, ereignis="fehler" if (starten and not gestartet) else "notiz", assignee=assignee, kontext=kontext, herkunft=herkunft))
+        if not ok:
+            eintrag["fehler"] = "; ".join(probleme)
+        return eintrag
+
+
+# ---- protection of the tab routes against foreign web pages (not an approval: it does not depend on the switch) ----
+# Hermes Desktop (hermes-agent apps/desktop @ c314285): ctx.rest -> pluginRest (src/api/plugins.ts) -> IPC 'hermes:api' ->
+# Electron main process, Node http.request (electron/main.ts fetchJson) to the local backend http://127.0.0.1:<port>.
+# That request is made by Node, not by the web view: Host is 127.0.0.1:<port>, there is NO Origin header, plus
+# X-Hermes-Session-Token and Content-Type: application/json. The Hermes dashboard itself checks Host the same way
+# (hermes_cli/web_server.py host_header_middleware). SSH-tunnelled remote connections are 127.0.0.1 tunnels as well.
+# A remote Hermes behind its own address (dashboard.public_url) arrives with that host name: add it to TROVE_DASHBOARD_HOSTS.
+# The dashboard opened in a browser sends Origin = its own address (allowed). "Origin: null" (sandboxed frames, file://) is
+# NOT allowed: nothing shows that the Desktop sends it.
+STANDARD_HOSTS = ("127.0.0.1", "localhost", "::1")
+
+
+def _kurz(wert):
+    return re.sub(r"[^\x20-\x7e]", "?", str(wert))[:100]
+
+
+def _web_abwehr(request):
+    """JSON only (no form post from a foreign page), local host name only (DNS rebinding), no foreign web origin.
+    The refusal names the host and the origin it saw."""
+    art = (request.headers.get("content-type") or "").split(";")[0].strip().lower()
+    if art != "application/json":
+        raise HTTPException(415, "Send JSON (Content-Type: application/json)")
+    host = (request.headers.get("host") or "").strip().lower()
+    name = host[1:host.index("]")] if host.startswith("[") and "]" in host else host.rsplit(":", 1)[0] if host.count(":") == 1 else host
+    erlaubte_hosts = set(STANDARD_HOSTS) | {h.strip().lower() for h in os.environ.get("TROVE_DASHBOARD_HOSTS", "").split(",") if h.strip()}
+    origin = request.headers.get("origin")
+    fehl = None
+    if name not in erlaubte_hosts:
+        fehl = "host"
+    elif origin is not None:
+        eigen = "%s://%s" % (request.url.scheme, request.headers.get("host", ""))
+        erlaubt = {eigen.lower()} | {o.strip().lower() for o in os.environ.get("TROVE_DASHBOARD_ORIGIN", "").split(",") if o.strip()}
+        if origin.strip().lower() not in erlaubt:
+            fehl = "origin"
+    if fehl:
+        raise HTTPException(403, "Refused: only the local dashboard may do this. Seen: host '%s', origin '%s' (%s not allowed). Allowed hosts: %s; "
+                            "for another address set TROVE_DASHBOARD_HOSTS (host names) or TROVE_DASHBOARD_ORIGIN (origins) for the Hermes process."
+                            % (_kurz(name or "missing"), _kurz(origin if origin is not None else "none"), fehl, ", ".join(sorted(erlaubte_hosts))))
+
+
+def _karte_pruefen(kid):
+    if not RE_KARTE.fullmatch(kid):
+        raise HTTPException(400, "Invalid task id")
+
+
+def _menschenklick(request, body):
+    """Release / archive: _web_abwehr plus a JSON body {"confirm": true}, as the tab sends it."""
+    _web_abwehr(request)
+    if not isinstance(body, dict) or body.get("confirm") is not True:
+        raise HTTPException(400, 'Confirmation missing: send {"confirm": true}')
+
+
+@router.post("/auftrag")
+def auftrag_anlegen(body: dict, request: Request):
+    """Card from the tab. Switch freigabe_pflicht OFF (default): the card starts at once. ON: it is created blocked and starts
+    after /freigeben."""
+    _web_abwehr(request)
+    with _liste_belegt():
+        return _auftrag_anlegen(body, "tab", starten=not konfig.freigabe_pflicht())
+
+
+@router.post("/auftrag/{kid}/freigeben")
+def auftrag_freigeben(kid: str, request: Request, body: dict = None):
+    """Start a blocked card or MCP request (switch ON, or a card whose direct start failed). A card the task list knows is
+    released only while it is blocked; an id the list does not know goes to hermes as it is (retry path)."""
+    mandant = _mandant_pruefen((body or {}).get("mandant") or MANDANT)
+    _menschenklick(request, body)
+    _karte_pruefen(kid)
+    with _liste_belegt():
+        if mcp_queue.ist_mcp(kid):
+            try:
+                return mcp_queue.freigeben(mandant, kid, sys.modules[__name__])
+            except KeyError:
+                raise HTTPException(404, "Unknown task %s" % kid)
+            except ValueError as ex:
+                raise HTTPException(409, str(ex))
+        eintrag = next((a for a in _auftraege_lesen(mandant) if a.get("id") == kid), {})
+        stand = eintrag.get("status", "blocked")
+        if stand != "blocked":
+            raise HTTPException(409, "task %s is %s, only a blocked task can be released" % (kid, stand))
+        # the folder the card was created with (its --workspace); unknown id or an entry from before this field: the current one
+        _arbeitsordner_pruefen(mandant, eintrag.get("arbeitsordner", _arbeitsordner()))  # rights or links may have changed: 403, hermes is not called
+    _kanban_starten(kid, "Released in the Trove tab")
+    antwort = {"ok": True}
+    try:
+        _auftraege_aendern(mandant, lambda liste: _eintrag_setzen(liste, kid, "blocked", status="started", fehler=None))
+        _kanban_log(mandant, "Task released in the Trove tab", kid, herkunft="tab")
+    except Exception as ex:  # the card is started: do not report an error
+        antwort["fehler"] = "started, but the bookkeeping failed: " + _aussen(getattr(ex, "detail", None) or ex)
+    return antwort
 
 
 @router.post("/auftrag/{kid}/archivieren")
 def auftrag_archivieren(kid: str, request: Request, body: dict = None):
-    mandant = (body or {}).get("mandant") or MANDANT
+    mandant = _mandant_pruefen((body or {}).get("mandant") or MANDANT)
+    _menschenklick(request, body)
+    _karte_pruefen(kid)
     if mcp_queue.ist_mcp(kid):
-        _menschenklick(request, body)
         try:
-            return mcp_queue.ablehnen(_mandant_pruefen(mandant), kid)
+            with _liste_belegt():
+                return mcp_queue.ablehnen(mandant, kid)
         except KeyError:
             raise HTTPException(404, "Unknown task %s" % kid)
         except ValueError as ex:
             raise HTTPException(409, str(ex))
     _hermes("kanban", "archive", kid)
-    liste = _auftraege_lesen(mandant)
-    for a in liste:
-        if a["id"] == kid:
-            a["status"] = "archived"
-    _auftraege_speichern(mandant, liste)
-    bp.schreiben(bp.pfad_fuer(mandant), ereignis="notiz", werkzeug="trove-plugin/kanban", mandant=mandant, lauf=kid, meldung="Task archived", karte=kid)
-    return {"ok": True}
+    antwort = {"ok": True}
+    try:
+        _auftraege_aendern(mandant, lambda liste: _eintrag_setzen(liste, kid, None, status="archived"))
+        _kanban_log(mandant, "Task archived in the Trove tab", kid, herkunft="tab")
+    except Exception as ex:  # the card is archived: do not report an error
+        antwort["fehler"] = "archived, but the bookkeeping failed: " + _aussen(getattr(ex, "detail", None) or ex)
+    return antwort
 
 
 @router.get("/auftraege")
 def auftraege(mandant: str = MANDANT):
-    """Trove-Karten mit Stand; Ergebnisse (Kommentare, Zusammenfassung) fertiger Karten landen einmalig im Belegprotokoll."""
+    """Trove-Karten mit Stand; Ergebnisse (Kommentare, Zusammenfassung) fertiger Karten landen einmalig im Belegprotokoll.
+    The board is fetched outside the file lock, the comparison with auftraege.json happens inside it, and only for cards that
+    were in the list before the fetch: a card created meanwhile stays untouched."""
+    with _liste_belegt():
+        return _auftraege_abgleichen(_mandant_pruefen(mandant))
+
+
+def _auftraege_abgleichen(mandant):
     liste = _auftraege_lesen(mandant)
-    mcp = mcp_queue.fuer_tab(_mandant_pruefen(mandant))  # requests from MCP clients (mcp_server.py), blocked until released here
+    mcp = mcp_queue.fuer_tab(mandant)  # requests from MCP clients (mcp_server.py); blocked ones wait for Release here (switch ON)
     try:
         board = {k["id"]: k for k in _hermes_json("kanban", "ls", timeout=60)}
     except HTTPException as ex:
-        return {"auftraege": mcp + list(reversed(liste)), "fehler": str(ex.detail)}
-    geaendert = False
+        return {"auftraege": mcp + list(reversed(liste)), "fehler": str(ex.detail), **_schalter_felder()}
+    bekannt = {a["id"] for a in liste}
+    details = {}
     for a in liste:
         k = board.get(a["id"])
-        if k is None:
-            if a.get("status") != "archived":
-                a["status"] = "archived"; geaendert = True
-            continue
-        if k.get("status") != a.get("status"):
-            a["status"] = k.get("status"); geaendert = True
-        a["zusammenfassung"] = (k.get("result") or "")[:600]
-        fehler = k.get("last_failure_error") or ""
-        if a["status"] == "blocked" and fehler and fehler[:200] != a.get("letzter_fehler"):
-            a["letzter_fehler"] = fehler[:200]; geaendert = True
-            bp.schreiben(bp.pfad_fuer(mandant), ereignis="fehler", werkzeug="trove-plugin/kanban", mandant=mandant, lauf=a["id"],
-                         meldung="Task failed, card blocked again: " + fehler[:800], karte=a["id"])
-        if a["status"] in ("done", "review") and a["status"] not in a.get("protokolliert", []):
+        if k is not None and k.get("status") in ("done", "review") and k.get("status") not in a.get("protokolliert", []):
             try:
-                detail = _hermes_json("kanban", "show", a["id"], timeout=60)
+                details[a["id"]] = _hermes_json("kanban", "show", a["id"], timeout=60)
             except HTTPException:
-                detail = {}
-            kommentare = detail.get("comments") or []
-            letzter = (kommentare[-1].get("body") or kommentare[-1].get("text") or "") if kommentare else ""
-            bp.schreiben(bp.pfad_fuer(mandant), ereignis="notiz", werkzeug="trove-plugin/kanban", mandant=mandant, lauf=a["id"],
-                         meldung="Task result (%s): %s" % (a["status"], (a["zusammenfassung"] or letzter or "(no text)")[:1500]), karte=a["id"],
-                         kommentare=len(kommentare), ergebnis_kommentar=letzter[:1500])
-            a.setdefault("protokolliert", []).append(a["status"]); a["ergebnis_kommentar"] = letzter[:1500]; geaendert = True
-    if geaendert:
-        _auftraege_speichern(mandant, liste)
-    return {"auftraege": mcp + list(reversed(liste))}
+                details[a["id"]] = {}
+
+    def abgleich(aktuell):
+        zu_loggen = []
+        for a in aktuell:
+            if a.get("id") not in bekannt or a.get("status") == "archived":  # archived is final here (set only after `kanban archive`)
+                continue
+            k = board.get(a["id"])
+            if k is None:
+                if a.get("status") != "archived":
+                    a["status"] = "archived"
+                continue
+            if k.get("status") != a.get("status"):
+                a["status"] = k.get("status")
+            a["zusammenfassung"] = (k.get("result") or "")[:600]
+            fehler = k.get("last_failure_error") or ""
+            if a["status"] == "blocked" and fehler and fehler[:200] != a.get("letzter_fehler"):
+                alt = a.get("letzter_fehler")
+                a["letzter_fehler"] = fehler[:200]
+                zu_loggen.append((a["id"], "fehler", "Task failed, card blocked again: " + fehler[:800], {},
+                                  lambda l, i=a["id"], alt=alt: _eintrag_setzen(l, i, None, letzter_fehler=alt)))
+            if a["status"] in ("done", "review") and a["status"] not in a.get("protokolliert", []):
+                detail = details.get(a["id"], {})
+                kommentare = detail.get("comments") or []
+                letzter = (kommentare[-1].get("body") or kommentare[-1].get("text") or "") if kommentare else ""
+                a.setdefault("protokolliert", []).append(a["status"])  # claimed under the lock: a second check does not log it again
+                a["ergebnis_kommentar"] = letzter[:1500]
+                zu_loggen.append((a["id"], "notiz", "Task result (%s): %s" % (a["status"], (a["zusammenfassung"] or letzter or "(no text)")[:1500]),
+                                  {"kommentare": len(kommentare), "ergebnis_kommentar": letzter[:1500]},
+                                  _protokoll_zurueck(a["id"], a["status"])))
+        return zu_loggen, aktuell
+
+    zu_loggen, neu = _auftraege_aendern(mandant, abgleich)
+    for kid, ereignis, meldung, felder, zurueck in zu_loggen:
+        try:
+            bp.schreiben(bp.pfad_fuer(mandant), ereignis=ereignis, werkzeug="trove-plugin/kanban", mandant=mandant, lauf=kid, meldung=meldung, karte=kid, **felder)
+        except bp.ProtokollGesperrt:  # a long run holds the log: take the claim back, the next check (20 s) logs it
+            _auftraege_aendern(mandant, zurueck)
+    return {"auftraege": mcp + list(reversed(neu)), **_schalter_felder()}
 
 
 # ---------- F3/F4/F6: Lesen, Verproben, Stapel zerlegen (alles lokal, keine bezahlten Token) ----------
