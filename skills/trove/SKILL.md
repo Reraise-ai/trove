@@ -49,7 +49,7 @@ releases a request. A started request runs inside this MCP server process: if th
    Keep names exact (the entry names from `list_folder`), at most 200 per request.
 4. After a request, you get a task id and a status. If it is `blocked`, tell the user the request is waiting in the Trove tab for release. Then poll `task_status`
    (every ~10 s, give up after a few minutes and say so). Do not re-submit the same request while one is open.
-5. Read-only sources stay read-only: only the user can mark a folder writable, in the tab. If a request is refused, say why and stop.
+5. Read-only sources stay read-only: only the user can mark a folder writable, in the tab, never Trove's own data folder or `trove.json`, a folder inside it or containing it, also through a link, or when the folder itself is another path (for example a bind mount) to the data root or a folder above it; this includes Trove's install folder (also `desktop/`, `skills/`, `.claude-plugin/`), Hermes' folder `HERMES_HOME` (default `~/.hermes`, on Windows `%LOCALAPPDATA%\hermes`, with its settings and the Desktop tab) and the folders above them (so `~` stays read-only); not the Python environment from `TROVE_PYTHON` (Mac default `~/.trove-venv`) or Python's user site (`~/.local/…`): do not mark them writable. Trove does not detect a second mount of its data root, its install folder or Hermes' folder, or of a folder inside them, placed inside a writable folder (nor such a mount of a folder inside them marked writable itself): do not mount these folders a second time. If a request is refused, say why and stop.
 
 ## Setup problems
 

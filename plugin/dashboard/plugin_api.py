@@ -46,7 +46,7 @@ RE_MANDANT = r"[a-z0-9][a-z0-9_-]{0,40}"  # muss gleich gemeinsam.RE_MANDANT sei
 router = APIRouter()
 BLOCK = 1 << 20
 MANDANT = konfig.mandant()  # trove.json / TROVE_MANDANT
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 
 
 def _jetzt():
@@ -91,8 +91,35 @@ def _quellen(mandant):
     p = _quellen_pfad(mandant)
     if os.path.exists(p):
         with open(p, encoding="utf-8") as f:
-            return json.load(f)
+            liste = json.load(f)
+        # never writable at Trove's own places, also when an older quellen.json says so: every write path reads the sources here
+        return [{**q, "nur_lesen": True} if not q.get("nur_lesen", True) and q.get("pfad") and _geschuetzt(q["pfad"]) else q for q in liste]
     return []
+
+
+DATENWURZEL_TEXT = ("This folder is the Trove data root, Trove's install or Hermes' folder, contains trove.json, or lies inside or above one of them, also through a link or a bind mount. "
+                    "Trove keeps its settings, receipt log, sources and queue there, so it never marks such a folder writable. Add it read-only.")
+
+
+def _kette(p):
+    """(st_dev, st_ino) of realpath(p), then of each ancestor up to the root, None where missing: the identity samefile compares (_gleich)."""
+    p, ids = os.path.realpath(p), []
+    while True:
+        try:
+            st = os.stat(p)
+        except OSError:  # missing: nothing to compare
+            st = None
+        ids.append(st and (st.st_dev, st.st_ino))
+        if os.path.dirname(p) == p:
+            return ids
+        p = os.path.dirname(p)
+
+
+def _geschuetzt(pfad):
+    """Does pfad reach one of Trove's own places (konfig.geschuetzte_orte): is it one, inside one or above one, by resolved path or by
+    identity, so another path to the same folder (bind mount, other spelling) counts too?"""
+    ich, orte = _kette(pfad), {o: _kette(o) for o in konfig.geschuetzte_orte()}
+    return any(_unter_real(pfad, o) or _unter_real(o, pfad) or (ko[0] and ko[0] in ich) or (ich[0] and ich[0] in ko) for o, ko in orte.items())
 
 
 def _quellen_speichern(mandant, liste):
@@ -311,6 +338,8 @@ def quelle_anlegen(body: dict):
         raise HTTPException(400, "Folder not found: " + pfad)
     q = {"id": hashlib.sha1(("ordner:" + pfad.casefold()).encode()).hexdigest()[:10], "art": "ordner", "name": name or pfad, "pfad": pfad,
          "nur_lesen": body.get("nur_lesen", True) is not False}  # fail-safe: only an explicit false makes the source writable
+    if not q["nur_lesen"] and _geschuetzt(pfad):
+        raise HTTPException(400, DATENWURZEL_TEXT)
     liste = [x for x in _quellen(mandant) if x["id"] != q["id"]] + [q]
     _quellen_speichern(mandant, liste)
     bp.schreiben(bp.pfad_fuer(mandant), ereignis="notiz", werkzeug="trove-plugin", mandant=mandant,
@@ -325,6 +354,8 @@ def quelle_schreibbar(qid: str, body: dict):
     mandant = body.get("mandant") or MANDANT
     q = _quelle(mandant, qid)
     nur_lesen = body.get("nur_lesen") is not False
+    if not nur_lesen and _geschuetzt(q["pfad"]):
+        raise HTTPException(400, DATENWURZEL_TEXT)
     liste = [({**x, "nur_lesen": nur_lesen} if x["id"] == qid else x) for x in _quellen(mandant)]
     _quellen_speichern(mandant, liste)
     bp.schreiben(bp.pfad_fuer(mandant), ereignis="notiz", werkzeug="trove-plugin", mandant=mandant,

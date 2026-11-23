@@ -39,7 +39,7 @@
 > new task card and every MCP request waits as a blocked request until someone clicks Release in the Trove tab, and no MCP tool releases
 > (`plugin/dashboard/mcp_server.py`). It runs on the user's machine: no telemetry, no accounts, no network except an optional
 > `127.0.0.1` HTTP transport; optional integrations are off until configured (`docs/PRIVACY.md`). Every action is written to a
-> hash-chained receipt log. Maturity: 0.4.0, first public version, early alpha, tested on Windows and macOS; limits are listed under
+> hash-chained receipt log. Maturity: 0.5.0, early alpha, tested on Windows and macOS; limits are listed under
 > *What works today* and in `CHANGELOG.md`. Tell the user it installs as a Claude plugin from `Reraise-ai/trove`:
 > `claude plugin marketplace add Reraise-ai/trove` then `claude plugin install reraise-trove@reraise` (Claude Desktop: *Add marketplace* → `Reraise-ai/trove`);
 > it needs a Python 3.10+ with `mcp fastapi pypdfium2`. Machine-readable summary: `llms.txt`.
@@ -138,7 +138,7 @@ it back. Trove only writes into writable folders (copy, move, sync, rename, new 
   refuse an action on a link or on a path through a link; links inside a copied folder are skipped and logged; nothing is written
   through a link inside the target (checked per file; on a move the original of such a file is kept).
 - An action onto itself (same file or folder, target inside the moved folder) is refused before anything is touched.
-- Never mark a folder writable that contains the Trove data root (`TROVE_DATEN`, default `~/Trove`): Trove's own task list and receipt log would then be in reach of file actions.
+- Trove refuses (HTTP 400 with the reason) to mark a folder writable that is its data root (`TROVE_DATEN`, default `~/Trove`, as it was when Trove started), lies inside it or contains it, or that contains its settings file `trove.json`, also through a link, or when the folder itself is another path (for example a bind mount) to the data root or a folder above it; this includes Trove's install folder (also `desktop/`, `skills/`, `.claude-plugin/`), Hermes' folder `HERMES_HOME` (default `~/.hermes`, on Windows `%LOCALAPPDATA%\hermes`, with its settings and the Desktop tab) and the folders above them (so `~` stays read-only); not the Python environment from `TROVE_PYTHON` (Mac default `~/.trove-venv`) or Python's user site (`~/.local/…`): do not mark them writable. So its settings, task list and receipt log stay out of reach of file actions. Trove does not detect a second mount of its data root, its install folder or Hermes' folder, or of a folder inside them, placed inside a writable folder (nor such a mount of a folder inside them marked writable itself): do not mount these folders a second time. Adding such a folder read-only works. If an older source list already has such a folder as writable, Trove treats it as read-only.
 
 **What Trove writes outside your folders** (all under your control):
 - Its own data folder (`TROVE_DATEN`, default `~/Trove`): the receipt log (`belegprotokoll`), the file register (`register.db`), the list of sources, the task list,
@@ -160,7 +160,7 @@ except an MCP client you configure yourself (Claude Desktop, Claude Code, Cursor
 It uses the same backend functions and checks as the tab. MCP clients can **read** (sources, folder listings, previews, search, the log trail,
 receipt reading, change check) and, **by default, change things directly through Trove**: copy, move, sync, "Into knowledge", rename, new folder and agent
 tasks are requests that start right after they are queued and appear in the Trove tab's task list with the client's name and full details. File actions are bound
-to the folder rights you set (read-only unless you marked a folder writable; nothing is overwritten; links are never followed). Agent tasks are not: An agent task starts a Hermes agent with Hermes' own permissions. Trove's folder rights do not bind it. If `TROVE_ARBEITSORDNER` is set, Trove starts the task only when that folder is marked writable; the agent's working directory is then that folder, but the agent can still reach other files with Hermes' rights. Without `TROVE_ARBEITSORDNER` the task runs in a Hermes scratch workspace with Hermes' rights. With `freigabe_pflicht` off, an MCP client can therefore trigger work outside the folder rights; switch it on if you do not want that. Every request, refusal, start and result is
+to the folder rights you set (read-only unless you marked a folder writable; nothing is overwritten; links are never followed). Agent tasks are not: An agent task starts a Hermes agent with Hermes' own permissions. Trove's folder rights do not bind it. If `TROVE_ARBEITSORDNER` is set, Trove starts the task only when that folder is marked writable; the agent's working directory is then that folder, but the agent can still reach other files with Hermes' rights. Release in the Trove tab checks the folder stored with the card, resolved again (for a card Trove does not know: the current `TROVE_ARBEITSORDNER`); if it is no longer inside a writable folder, Release gives 403 and nothing starts. Without `TROVE_ARBEITSORDNER` the task runs in a Hermes scratch workspace with Hermes' rights. With `freigabe_pflicht` off, an MCP client can therefore trigger work outside the folder rights; switch it on if you do not want that. Every request, refusal, start and result is
 written to the receipt log with the client's name. With `--http PORT` it serves MCP over HTTP instead, bound to `127.0.0.1` only.
 A started request runs inside the MCP server process: if the MCP client closes that process, the run ends with it.
 
@@ -269,19 +269,24 @@ Trove is early alpha. Here is what exists and what is next.
 | | Search the file register and the receipt log | ✅ |
 | | Split PDF stacks into single documents (via [Stirling-PDF](https://github.com/Stirling-Tools/Stirling-PDF)) | ✅ |
 | | Rename, new folder, sort (name, size, date, type; folders first) | ✅ |
-| | Print, merge PDFs, compare file contents | 🔜 |
 | **Agents** | Tasks for Hermes agents (Kanban): start when you create them, or wait for your release with the switch `freigabe_pflicht`; dictation into the task text | ✅ |
 | | MCP access, so other agent systems use the same desk, with your folder rights for file actions and the same optional release step ([how](#use-trove-from-other-agents-mcp)) | ✅ |
 | **Integrations** | Optional mail (IMAP, Gmail), signing (DocuSeal), ERPNext mirror, Reraise cards: off until configured in Hermes, credentials only via Hermes, secrets scrubbed from every output ([what talks to what](#optional-integrations)) | ✅ |
 | **Log & receipts** | Tamper-evident, append-only log | ✅ |
 | | Read receipts: e-invoice XML (ZUGFeRD / Factur-X) → PDF text → local OCR | ✅ |
 | | Rule-based checks: totals, VAT rates, CUIT, IBAN, German VAT ID | ✅ |
-| | Argentina: CAE and QR check for ARCA e-invoices | 💡 |
 | **Knowledge** | "Into knowledge": markdown twin per file, bound to the original by checksum, plus a knowledge card in your wiki | ✅ |
 | **Automation** | Watched folders kept in sync with your knowledge wiki on a schedule (optional scheduler job) | ✅ |
-| | Rules: source → action → target on a schedule, optional approval | 🔜 |
+| **Desk** | Searchable copy: recognised text as an invisible layer in a copy of the document, original untouched | 🔜 |
+| **Automation** | Rules: source → action → target on a schedule, with the optional release step of the switch `freigabe_pflicht` | 🔜 |
+| **Desk** | Print, merge PDFs, compare file contents | 🔜 |
+| **Desk** | Open a file in your own program (Excel, Word, PDF app) and detect the changed version | 🔜 |
+| **Storage** | Storage view (like WizTree): folders by size, largest files, duplicates with possible savings; display only | 🔜 |
+| **Automation** | Plan-vs-result check for larger runs: list what should happen before a run, compare the result against it afterwards | 💡 |
+| **Storage** | More storage: cloud drives (rclone) | 💡 |
+| **Log & receipts** | Argentina: CAE and QR check for ARCA e-invoices | 💡 |
 
-✅ works today · 🔜 planned next · 💡 idea
+✅ works today · 🔜 planned next · 💡 idea. Planned rows are listed in the order we intend to build them; none of them exists yet.
 
 ## Quick start
 
@@ -392,7 +397,7 @@ claude mcp add trove -- python3 /path/to/trove/plugin/dashboard/mcp_server.py
 
 On Windows use `python` and a path like `C:/path/to/trove/plugin/dashboard/mcp_server.py`. If you changed Trove's data folder or client
 (`TROVE_DATEN`, `TROVE_MANDANT`) only in Hermes's environment, pass the same values in the client's `env` block (or `--mandant <name>`), so both
-work on the same desk. Hermes agents can use it the same way (`mcp_servers:` in Hermes's `config.yaml`).
+work on the same desk. Give the MCP server the same `TROVE_KONFIG`, `TROVE_DATEN` and `HERMES_HOME` as Hermes; otherwise each process protects only its own `trove.json` and its own Hermes folder. Hermes agents can use it the same way (`mcp_servers:` in Hermes's `config.yaml`).
 Optional: `python3 mcp_server.py --http 8765` serves MCP over HTTP at `http://127.0.0.1:8765/mcp` (localhost only). It accepts only the
 Host `127.0.0.1:8765` / `localhost:8765` and no browser origin (protection against DNS rebinding); if the installed `mcp` package cannot enforce
 that, `--http` refuses to start. The HTTP endpoint has no login: any program on this computer can read through it, so prefer stdio.

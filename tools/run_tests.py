@@ -45,6 +45,7 @@ def main():
     erg.append(lauf([os.path.join(REPO, "tools", "test_fehlertexte.py")], REPO))
     erg.append(lauf([os.path.join(REPO, "tools", "test_verknuepfung.py")], REPO))
     erg.append(lauf([os.path.join(REPO, "tools", "test_mcp.py")], REPO))
+    erg.append(lauf([os.path.join(REPO, "tools", "test_datenwurzel.py")], REPO))
     erg.append(lauf([os.path.join(REPO, "tools", "test_geheimnisse.py")], REPO))
     erg.append(lauf([os.path.join(REPO, "tools", "test_erkennung.py")], REPO))
     shutil.rmtree(HERMES_LEER, ignore_errors=True)

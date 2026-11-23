@@ -809,7 +809,7 @@ const DE = {
   sortBy: 'Sortierung', sortName: 'Name', sortSize: 'Größe', sortDate: 'Änderungsdatum', sortType: 'Typ', sortAsc: 'aufsteigend', sortDesc: 'absteigend',
   sortTip: 'Dieses Fenster sortieren (Ordner stehen immer oben)', sortDirTip: (d) => 'Reihenfolge: ' + d + '. Klick kehrt sie um.',
   renameBtn: 'Umbenennen', renameTip: 'Angeklickte Datei oder angeklickten Ordner umbenennen (überschreibt nie)', newFolderBtn: 'Neuer Ordner', newFolderTip: 'Hier einen neuen Ordner anlegen',
-  needWritableTip: 'Dieser Ordner ist nur lesbar. Zuerst auf „beschreibbar“ stellen.', clickEntryFirst: 'erst eine Datei oder einen Ordner anklicken',
+  needWritableTip: 'Dieser Ordner ist nur lesbar. Zuerst auf „schreibbar“ stellen.', clickEntryFirst: 'erst eine Datei oder einen Ordner anklicken',
   renameLabel: (n) => '„' + n + '“ umbenennen in:', newFolderLabel: 'Name des neuen Ordners:', newNamePlaceholder: 'Name', confirmBtn: 'OK',
   logBusy: 'Das Belegprotokoll ist gerade belegt (ein anderer Lauf schreibt hinein). Es wurde nichts geändert. Gleich noch einmal versuchen.',
   inUse: 'Dieser Ordner ist als Quelle eingetragen oder wird von „Ins Wissen“ beobachtet. Umbenennen würde das zerstören. Zuerst dort entfernen.',

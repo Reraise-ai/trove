@@ -88,6 +88,51 @@ ohne_diktat = re.sub(r"^const DICTATE_LANG = 'de-DE'.*$", "", js, flags=re.M)  #
 pruefe(len(re.findall(r"^const DICTATE_LANG = 'de-DE'", js, flags=re.M)) == 1 and ohne_diktat.count("DICTATE_LANG") == 1 and "de-DE" not in ohne_diktat and "'de'" not in ohne_de,
        "no hard-coded locale for dates (de-DE only in the DICTATE_LANG constant, used once for speech recognition)")
 
+# the folder rule names trove.json where a foreign AI reads it: else it sends the human to mark such a folder writable and gets 400.
+# It also warns about a second mount, which Trove does not detect, and never promises "another path to the same folder" again.
+for rel in ("llms.txt", "skills/trove/SKILL.md"):
+    regel = [z for z in open(os.path.join(WURZEL, rel), encoding="utf-8") if "mark" in z and "writable" in z and "own data folder" in z]
+    pruefe(any("`trove.json`" in z and "second mount" in z for z in regel), rel + ": folder rule names trove.json and warns about a second mount")
+    pruefe(any("TROVE_PYTHON" in z for z in regel), rel + ": folder rule says the venv (TROVE_PYTHON) and user site are not protected")
+    pruefe(any("Hermes' folder, or of a folder inside them" in z for z in regel), rel + ": second-mount warning covers the install folder and Hermes' folder")
+for rel, warnung in (("README.md", "second mount"), ("README.de.md", "zweites Mal")):
+    pruefe(warnung in open(os.path.join(WURZEL, rel), encoding="utf-8").read(), rel + ": warns about a second mount of the data root")
+# the MCP process protects only the trove.json and Hermes' folder of its own environment
+for rel, satz in (("llms.txt", "`TROVE_DATEN` and `HERMES_HOME`"), ("README.md", "`TROVE_DATEN` and `HERMES_HOME`"), ("README.de.md", "`TROVE_DATEN` und `HERMES_HOME`")):
+    pruefe(satz in open(os.path.join(WURZEL, rel), encoding="utf-8").read(), rel + ": MCP server needs the same HERMES_HOME as Hermes")
+for rel in ("llms.txt", "skills/trove/SKILL.md", "README.md", "README.de.md", "CHANGELOG.md"):
+    text = " ".join(open(os.path.join(WURZEL, rel), encoding="utf-8").read().split())
+    pruefe("another path to the same folder" not in text, rel + ": no promise of 'another path to the same folder' (a second mount is not detected)")
+    # the venv and user site are not protected: never promise the "whole install"
+    pruefe("whole install" not in text and "ganze Installation" not in text and "`TROVE_PYTHON` (Mac" in text, rel + ": no 'whole install' promise, names TROVE_PYTHON")
+    pruefe("Hermes' folder `HERMES_HOME`" in text or "Hermes' Ordner `HERMES_HOME`" in text, rel + ": folder rule names HERMES_HOME")
+pruefe("anderen Pfad zum selben Ordner" not in " ".join(open(os.path.join(WURZEL, "README.de.md"), encoding="utf-8").read().split()),
+       "README.de.md: no promise of 'anderen Pfad zum selben Ordner' (a second mount is not detected)")
+
+# one version everywhere: manifests, backend, READMEs, llms.txt and the latest CHANGELOG release
+def _lies(rel):
+    return open(os.path.join(WURZEL, rel), encoding="utf-8").read()
+
+
+def _treffer(rel, muster):
+    return re.findall(muster, _lies(rel), re.M)
+
+
+versionen = {
+    "plugin/plugin.yaml": _treffer("plugin/plugin.yaml", r'^version: "([^"]+)"'),
+    ".claude-plugin/plugin.json": [json.loads(_lies(".claude-plugin/plugin.json")).get("version")],
+    ".claude-plugin/marketplace.json": [x["version"] for x in json.loads(_lies(".claude-plugin/marketplace.json"))["plugins"] if "version" in x],
+    "plugin/dashboard/manifest.json": [man.get("version")],
+    "plugin/dashboard/plugin_api.py": _treffer("plugin/dashboard/plugin_api.py", r'^VERSION = "([^"]+)"'),
+    "README.md": _treffer("README.md", r"Maturity: (\d+\.\d+\.\d+)"),
+    "README.de.md": _treffer("README.de.md", r"Reifegrad: (\d+\.\d+\.\d+)"),
+    "llms.txt": _treffer("llms.txt", r"Version (\d+\.\d+\.\d+)") + _treffer("llms.txt", r"^(\d+\.\d+\.\d+), "),
+    "CHANGELOG.md": _treffer("CHANGELOG.md", r"^## \[(\d+\.\d+\.\d+)\]")[:1],
+}
+alle = {v for liste in versionen.values() for v in liste}
+leer = sorted(k for k, liste in versionen.items() if not liste and k != ".claude-plugin/marketplace.json")
+pruefe(len(alle) == 1 and not leer, "one version everywhere (%s)" % ("; ".join("%s=%s" % (k, ",".join(map(str, v)) or "missing") for k, v in versionen.items())))
+
 # optional render smoke test
 nm = os.environ.get("TROVE_UI_NODE_MODULES", "")
 if nm and shutil.which("node"):

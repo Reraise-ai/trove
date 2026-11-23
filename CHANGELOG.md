@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-23
+
 ### Changed
 - **Agents steer Trove directly; the release step is a switch.** New setting `freigabe_pflicht` in `trove.json` (default **off**; shown with its source
   `freigabe_pflicht_quelle` in `GET /status`, `GET /auftraege` and the MCP tool `status`). `TROVE_FREIGABE_PFLICHT` can only switch it on, never off; unclear values
@@ -43,9 +45,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (MCP: "request queue is busy, nothing was queued").
 - **Limits count running requests too:** 20 open (waiting, running, or an agent task that ended less than 30 minutes ago) MCP requests per client and 50 in total, also with the switch off (before: unlimited when off).
 - **`trove.json` with `datenwurzel` no longer loses `freigabe_pflicht`:** the `trove.json` read at start is pinned (`TROVE_KONFIG`), so later reads and writes use the same file instead of `<datenwurzel>/trove.json`.
+  The pinned path is absolute, so a child process with another working folder reads the same file.
+- **The data root is never writable.** A folder that is the Trove data root (`TROVE_DATEN`, resolved), lies inside it or contains it cannot be marked writable
+  (`POST /quellen` and `POST /quellen/{id}/schreibbar` with `nur_lesen: false` give 400 with the reason); adding it read-only works. A `quellen.json` that
+  already lists such a folder as writable counts as read-only, so copy, move, sync, rename and new folder (tab and MCP) are refused there.
+  The same holds for a folder that contains `trove.json` (also `~/Trove/trove.json` with the data root elsewhere, and the `trove.json` of the start when
+  `TROVE_KONFIG` changes later), for a folder that is itself another path (bind mount, other spelling; compared by device and inode) to the data root or
+  a folder above it, for Trove's install folder (also `desktop/`, `skills/`, `.claude-plugin/`), Hermes' folder `HERMES_HOME` (default `~/.hermes`, on Windows
+  `%LOCALAPPDATA%\hermes`, with its settings and the Desktop tab) and the folders above them (so `~` stays read-only), and for the data root of the start
+  when `TROVE_DATEN` changes later; not the Python environment from `TROVE_PYTHON` (Mac default `~/.trove-venv`) or Python's user site (`~/.local/…`):
+  do not mark them writable. Trove does not detect a second mount of its data root, its install folder or Hermes' folder, or of a folder inside them, placed inside a writable folder
+  (nor such a mount of a folder inside them marked writable itself): do not mount these folders a second time.
 - **Release only for blocked cards:** releasing a card the task list shows as started or done gives 409 without a `hermes` call. Task ids handed to the `hermes`
   command line must match `[A-Za-z0-9][A-Za-z0-9_.-]{0,63}` (no leading `-`), else 400.
 - **Archiving during the list refresh** no longer flips the card back to its old status for one round.
+- One version everywhere: the dashboard manifest said 0.3.0; `tools/test_ui_strings.py` now compares every version string (manifests, backend, READMEs, `llms.txt`, this file).
 
 ## [0.4.0] - 2026-10-30
 
@@ -119,7 +133,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - First public version.
 
-[Unreleased]: https://github.com/Reraise-ai/trove/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/Reraise-ai/trove/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/Reraise-ai/trove/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Reraise-ai/trove/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Reraise-ai/trove/compare/v0.1.0...v0.3.0
 [0.1.0]: https://github.com/Reraise-ai/trove/releases/tag/v0.1.0

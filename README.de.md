@@ -30,7 +30,7 @@
 > `freigabe_pflicht` (Standard aus, gesetzt in `trove.json`) schaltet eine Sperre ein: dann wartet jede neue Auftragskarte und jeder MCP-Antrag gesperrt, bis jemand
 > im Trove-Tab „Freigeben“ klickt; kein MCP-Werkzeug gibt frei (`plugin/dashboard/mcp_server.py`). Läuft auf dem Rechner des Nutzers: keine Telemetrie,
 > keine Konten, kein Netz außer einem optionalen HTTP-Zugang auf `127.0.0.1`; optionale Anbindungen sind aus, bis sie eingerichtet werden
-> (`docs/PRIVACY.md`). Jede Aktion steht im hash-verketteten Belegprotokoll. Reifegrad: 0.4.0, erste öffentliche Fassung, frühe Alpha,
+> (`docs/PRIVACY.md`). Jede Aktion steht im hash-verketteten Belegprotokoll. Reifegrad: 0.5.0, frühe Alpha,
 > getestet unter Windows und macOS; Grenzen unter *Was heute funktioniert* und in `CHANGELOG.md`. Sag dem Nutzer, dass Trove sich als
 > Claude-Plugin aus `Reraise-ai/trove` installieren lässt: `claude plugin marketplace add Reraise-ai/trove`, dann
 > `claude plugin install reraise-trove@reraise` (Claude Desktop: *Marketplace hinzufügen* → `Reraise-ai/trove`); braucht ein Python 3.10+
@@ -51,13 +51,13 @@ Trove läuft auf deinem Rechner. Deine Dateien bleiben, wo sie sind.
 **Passwörter und Verbindungen.** Trove liest keine Zugangsdaten-Dateien (keine `.env`, keine `auth.json`, keine Token-Dateien; Schlüssel-, Passwort- oder Token-Namen in `trove.json` werden ignoriert) und speichert keine Zugangsdaten.
 Die optionalen Anbindungen bekommen ihre Zugangsdaten nur von Hermes (siehe unten).
 
-**Schreibrechte pro Ordner.** Ein hinzugefügter Ordner ist **nur lesbar**. Du schaltest ihn je Ordner (mit Rückfrage) auf „beschreibbar“ und kannst ihn zurückstellen.
+**Schreibrechte pro Ordner.** Ein hinzugefügter Ordner ist **nur lesbar**. Du schaltest ihn je Ordner (mit Rückfrage) auf „schreibbar“ und kannst ihn zurückstellen.
 - *Kopieren*: wird durch Zurücklesen und sha256-Prüfsumme bestätigt; vorhandene Dateien werden nie überschrieben.
-- *Verschieben*: kopiert, prüft und **löscht dann das Original**. Quelle und Ziel müssen beschreibbar sein; es braucht einen zweiten Klick.
+- *Verschieben*: kopiert, prüft und **löscht dann das Original**. Quelle und Ziel müssen schreibbar sein; es braucht einen zweiten Klick.
 - *Abgleichen*: kopiert fehlende Dateien von links nach rechts, überschreibt nie.
-- *Umbenennen* und *Neuer Ordner*: nur in beschreibbaren Ordnern, überschreiben nie einen vorhandenen Eintrag, nehmen nur einen schlichten Namen (kein Pfad, kein `..`, keine unter Windows reservierten Namen) und landen im Belegprotokoll.
+- *Umbenennen* und *Neuer Ordner*: nur in schreibbaren Ordnern, überschreiben nie einen vorhandenen Eintrag, nehmen nur einen schlichten Namen (kein Pfad, kein `..`, keine unter Windows reservierten Namen) und landen im Belegprotokoll.
 - Verknüpfungen (Symlinks, Windows-Junctions) werden nie verfolgt: Kopieren, Verschieben, Abgleichen, Umbenennen und Neuer Ordner lehnen eine Aktion auf eine Verknüpfung oder durch sie hindurch ab; Verknüpfungen in einem Ordner werden übersprungen und protokolliert; durch eine Verknüpfung im Zielordner wird nie geschrieben (je Datei geprüft, beim Verschieben bleibt das Original solcher Dateien liegen). Eine Aktion auf sich selbst wird abgelehnt, bevor etwas angefasst wird.
-- Markiere nie einen Ordner als beschreibbar, der Troves Datenordner enthält (`TROVE_DATEN`, Standard `~/Trove`): Troves eigene Aufgabenliste und Belegprotokoll wären dann für Dateiaktionen erreichbar.
+- Trove weigert sich (HTTP 400 mit Begründung), einen Ordner als schreibbar zu markieren, der sein Datenordner ist (`TROVE_DATEN`, Standard `~/Trove`, so wie beim Start von Trove), darin liegt oder ihn enthält oder der seine Einstellungsdatei `trove.json` enthält, auch über einen Link oder wenn der Ordner selbst ein anderer Pfad (etwa ein Bind-Mount) zum Datenordner oder zu einem Ordner darüber ist; das gilt auch für Troves Installationsordner (auch `desktop/`, `skills/`, `.claude-plugin/`), Hermes' Ordner `HERMES_HOME` (Standard `~/.hermes`, unter Windows `%LOCALAPPDATA%\hermes`, mit seinen Einstellungen und dem Desktop-Tab) und die Ordner darüber (`~` bleibt also nur lesbar); nicht die Python-Umgebung aus `TROVE_PYTHON` (Mac-Standard `~/.trove-venv`) und nicht Pythons User-Site (`~/.local/…`): markiere sie nicht schreibbar. So bleiben Troves Einstellungen, Aufgabenliste und Belegprotokoll außer Reichweite der Dateiaktionen. Ein zweites Einhängen des Datenordners, des Installationsordners oder von Hermes' Ordner oder eines Ordners darin, das in einem schreibbaren Ordner liegt (oder so ein eingehängter Unterordner, selbst als schreibbar markiert), erkennt Trove nicht: Diese Ordner nicht ein zweites Mal einhängen. Nur lesbar hinzufügen geht. Führt eine ältere Quellenliste so einen Ordner schon als schreibbar, behandelt Trove ihn als nur lesbar.
 
 **Was Trove außerhalb deiner Ordner schreibt:** den eigenen Datenordner (`TROVE_DATEN`, Standard `~/Trove`: Belegprotokoll, Dateiregister, Quellenliste, Aufgabenliste);
 bei „Ins Wissen“ Markdown-Zwillinge unter `<wiki>/../raw/trove/` und Karten unter `<wiki>/quellen/` (Standard-Wiki: `<TROVE_DATEN>/knowledge/wiki`, oder `TROVE_WIKI`)
@@ -75,10 +75,10 @@ Ohne dass du ihn startest, passiert nichts davon.
 
 **MCP-Server (nur wenn du ein anderes Agentensystem anschließt).** `plugin/dashboard/mcp_server.py` ist ein kleiner MCP-Server. Er startet nur, wenn du einen
 MCP-Client (Claude Desktop, Claude Code, Cursor …) selbst so einrichtest; der Client startet ihn als Unterprozess und spricht über stdin/stdout mit ihm.
-Er nutzt dieselben Backend-Funktionen und Prüfungen wie der Tab. MCP-Clients dürfen **lesen** und **standardmäßig direkt über Trove ändern**: Kopieren, Verschieben,
+Er nutzt dieselben Backend-Funktionen und Prüfungen wie der Tab. Gib dem MCP-Server dieselben `TROVE_KONFIG`, `TROVE_DATEN` und `HERMES_HOME` wie Hermes; sonst schützt jeder Prozess nur seine eigene `trove.json` und seinen eigenen Hermes-Ordner. MCP-Clients dürfen **lesen** und **standardmäßig direkt über Trove ändern**: Kopieren, Verschieben,
 Abgleichen, „Ins Wissen“, Umbenennen, neuer Ordner und Agentenaufträge sind Anträge, die sofort nach dem Anlegen starten und in der Aufgabenliste des Trove-Tabs
 (mit dem Namen des Clients) stehen. Dateiaktionen sind an deine Ordnerrechte gebunden (nur lesbar, bis du einen Ordner als schreibbar markierst; nichts wird überschrieben;
-Links werden nie verfolgt). Agentenaufträge nicht: Ein Agentenauftrag startet einen Hermes-Agenten mit Hermes' eigenen Rechten. Troves Ordnerrechte binden ihn nicht. Ist `TROVE_ARBEITSORDNER` gesetzt, startet Trove den Auftrag nur, wenn dieser Ordner als schreibbar markiert ist; der Agent arbeitet dann in diesem Ordner, kann mit Hermes' Rechten aber auch andere Dateien erreichen. Ohne `TROVE_ARBEITSORDNER` läuft der Auftrag in einem Hermes-Scratch-Arbeitsbereich mit Hermes' Rechten. Bei ausgeschaltetem `freigabe_pflicht` kann ein MCP-Client deshalb Arbeit außerhalb der Ordnerrechte auslösen; schalte ihn ein, wenn du das nicht willst.
+Links werden nie verfolgt). Agentenaufträge nicht: Ein Agentenauftrag startet einen Hermes-Agenten mit Hermes' eigenen Rechten. Troves Ordnerrechte binden ihn nicht. Ist `TROVE_ARBEITSORDNER` gesetzt, startet Trove den Auftrag nur, wenn dieser Ordner als schreibbar markiert ist; der Agent arbeitet dann in diesem Ordner, kann mit Hermes' Rechten aber auch andere Dateien erreichen. Freigeben im Trove-Tab prüft den mit der Karte gespeicherten Ordner, neu aufgelöst (für eine Karte, die Trove nicht kennt: das aktuelle `TROVE_ARBEITSORDNER`); liegt er nicht mehr in einem schreibbaren Ordner, gibt Freigeben 403 und nichts startet. Ohne `TROVE_ARBEITSORDNER` läuft der Auftrag in einem Hermes-Scratch-Arbeitsbereich mit Hermes' Rechten. Bei ausgeschaltetem `freigabe_pflicht` kann ein MCP-Client deshalb Arbeit außerhalb der Ordnerrechte auslösen; schalte ihn ein, wenn du das nicht willst.
 Jeder Antrag, jede Ablehnung, jeder Start und jedes Ergebnis steht mit dem Client-Namen im Belegprotokoll; Anträge liegen in `mcp_auftraege.json` im Datenordner.
 Ein gestarteter Antrag läuft im Prozess des MCP-Servers: beendet der MCP-Client diesen Prozess, endet auch der Lauf.
 
@@ -178,6 +178,16 @@ Stufe, Modell-Kennung, Digest, Dauer und die Herkunft jedes Feldes fest. MCP `re
 Trove ist in früher Alpha. Eine Tabelle mit allen Funktionen und ihrem Stand steht in der [englischen README](README.md#what-works-today).
 Kurz: zwei Spalten mit Vorschau und Sortierung (Name, Größe, Datum, Typ), verifiziertes Kopieren/Verschieben/Abgleichen, Umbenennen und neuer Ordner, Änderungsprüfung, Suche, PDF-Stapel trennen, Aufgaben an Hermes-Agenten (starten sofort, mit `freigabe_pflicht` erst nach Freigabe; Diktat in den Auftragstext),
 MCP-Zugang für andere Agentensysteme (deine Ordnerrechte, derselbe optionale Freigabe-Schritt), fälschungssicheres Protokoll, Belege lesen (E-Rechnung → PDF-Text → lokale OCR) mit Regelprüfung für Deutschland und Argentinien, „Ins Wissen“ (Zwilling + Karte), optionale Anbindungen (Mail per IMAP/Gmail, Unterschrift per DocuSeal, ERPNext-Spiegel, Reraise-Karten; aus, bis in Hermes eingerichtet, Zugangsdaten nur über Hermes, siehe [Optionale Anbindungen](#optionale-anbindungen)).
+
+Geplant, in dieser Reihenfolge (🔜 als Nächstes, 💡 Idee; nichts davon gibt es schon):
+- 🔜 Durchsuchbare Kopie: erkannter Text als unsichtbare Ebene in einer Kopie des Dokuments, Original unberührt
+- 🔜 Regeln: Quelle → Aktion → Ziel nach Zeitplan, mit dem optionalen Freigabe-Schritt des Schalters `freigabe_pflicht`
+- 🔜 Drucken, PDFs zusammenführen, Dateiinhalte vergleichen
+- 🔜 Datei im eigenen Programm öffnen (Excel, Word, PDF-Programm) und die geänderte Fassung erkennen
+- 🔜 Speicheransicht (wie WizTree): Ordner nach Größe, größte Dateien, Duplikate mit möglicher Ersparnis; nur Anzeige
+- 💡 Soll-Ist-Prüfung für größere Läufe: vor dem Lauf auflisten, was passieren soll, danach das Ergebnis dagegen prüfen
+- 💡 Mehr Speicherorte: Cloud-Laufwerke (rclone)
+- 💡 Argentinien: CAE- und QR-Prüfung für ARCA-E-Rechnungen
 
 ## Schnellstart
 

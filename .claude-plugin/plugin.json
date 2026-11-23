@@ -1,7 +1,7 @@
 {
   "name": "reraise-trove",
   "displayName": "Reraise Trove",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Trove — cleanup desk for you and your agents: two-pane file desk, tamper-evident log, receipt reading, knowledge cards. Agents read freely and change files directly inside the folders you marked writable; agent tasks run with Hermes' own permissions; an optional switch makes every new task card and every MCP request wait for your release in the Trove tab.",
   "author": {
     "name": "Reraise maintainers",

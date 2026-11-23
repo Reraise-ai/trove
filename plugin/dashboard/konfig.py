@@ -1,9 +1,11 @@
-"""Trove-Konfiguration: Reihenfolge Umgebungsvariable TROVE_* > trove.json (neben diesem Modul) > Standard.
+"""Trove-Konfiguration: Reihenfolge Umgebungsvariable TROVE_* > trove.json > Standard; trove.json findet konfig_pfad().
 
+Ausnahme freigabe_pflicht: AN, wenn trove.json ODER TROVE_FREIGABE_PFLICHT AN sagt; die Umgebung verschaerft nur, sie lockert nie.
 trove.json (vom Installer geschrieben): datenwurzel, mandant, python, register_db, umgebung {TROVE_X: Wert}.
 Namen von Geheimnissen (Schluessel, Passwoerter, Tokens) in "umgebung" werden verworfen: die kommen nur aus Hermes.
 Beim Import werden die Werte als Umgebungsvariablen vorbelegt (setdefault), damit jedes Werkzeug und jeder Unterprozess
-dieselbe Wahrheit sieht. Standard der Datenwurzel: <Benutzerverzeichnis>/Trove.
+dieselbe Wahrheit sieht. TROVE_KONFIG wird dagegen gesetzt (Zuweisung, absoluter Pfad) auf die Datei, die gelesen wurde.
+Standard der Datenwurzel: <Benutzerverzeichnis>/Trove.
 """
 import json
 import logging
@@ -80,7 +82,7 @@ def ist_geheimname(var):
 def umgebung_setzen():
     p = konfig_pfad()
     if os.path.isfile(p):  # pin the file read now: its "datenwurzel" must not move later reads and writes to <datenwurzel>/trove.json
-        os.environ["TROVE_KONFIG"] = p  # also over an empty TROVE_KONFIG, which konfig_pfad reads as unset
+        os.environ["TROVE_KONFIG"] = os.path.abspath(p)  # absolute: a child with another cwd reads the same file; also over an empty TROVE_KONFIG, which konfig_pfad reads as unset
     k = lesen()
     for feld, var in FELDER.items():
         if k.get(feld):
@@ -97,10 +99,25 @@ def umgebung_setzen():
 
 
 umgebung_setzen()
+_START = os.environ["TROVE_DATEN"]  # the data root at import: belegprotokoll.WURZEL, where Trove's files stay even if TROVE_DATEN changes later
+_KONFIG_START = konfig_pfad()  # the trove.json of the import, still the one read if TROVE_KONFIG changes later
 
 
 def datenwurzel():
     return os.environ["TROVE_DATEN"]
+
+
+def geschuetzte_orte():
+    """Trove's own places, absolute: the data root at import and now; every trove.json a start reads (now, at import, and
+    ~/Trove/trove.json, which a process with another environment reads) as files, not their folders (a TROVE_KONFIG of
+    ~/trove.json must not lock every folder in ~); and two folders whose code or settings run at the next start: Trove's install
+    root dirname(dirname(HIER)) (the repo, the Claude plugin root or <HERMES_HOME>/plugins), with desktop/, skills/ and
+    .claude-plugin/, and Hermes' folder hermes_home() with config.yaml, .env and desktop-plugins/ (the tab code of an installer
+    install). In a layout that is not <root>/<plugin>/dashboard the first entry reaches further: it fails towards protection.
+    File actions never reach them (plugin_api._geschuetzt)."""
+    return {os.path.abspath(p) for p in (_START, datenwurzel(), konfig_pfad(), _KONFIG_START,
+                                         os.path.join(os.path.expanduser("~"), "Trove", "trove.json"),
+                                         os.path.dirname(os.path.dirname(HIER)), hermes_home())}
 
 
 _AN = ("true", "1", "ja", "yes", "on", "an", "ein")
@@ -325,16 +342,29 @@ def _selbsttest_freigabe():
             os.makedirs(nas)
             with open(os.path.join(home, "Trove", "trove.json"), "w", encoding="utf-8") as f:
                 json.dump({"freigabe_pflicht": True, "datenwurzel": nas}, f)
-            env = {k: v for k, v in kind_env(HOME=home, USERPROFILE=home).items() if k not in ("TROVE_KONFIG", "TROVE_DATEN", "TROVE_FREIGABE_PFLICHT")}
+            env = {k: v for k, v in kind_env(HOME=home, USERPROFILE=home, HERMES_HOME=os.path.join(w, "hermes")).items() if k not in ("TROVE_KONFIG", "TROVE_DATEN", "TROVE_FREIGABE_PFLICHT")}
             r = subprocess.run([sys.executable, "-I", "-c", "import json, sys; sys.path.insert(0, %r); import konfig; "
-                                "print(json.dumps([konfig.freigabe_pflicht_stand()[:2], konfig.konfig_pfad(), konfig.datenwurzel()]))" % HIER],
+                                "print(json.dumps([konfig.freigabe_pflicht_stand()[:2], konfig.konfig_pfad(), konfig.datenwurzel(), "
+                                "sorted(konfig.geschuetzte_orte())]))" % HIER],
                                capture_output=True, text=True, env=env, timeout=60)
             assert r.returncode == 0, r.stderr
-            assert json.loads(r.stdout) == [[True, "trove.json"], os.path.join(home, "Trove", "trove.json"), nas], r.stdout
+            # data root on the NAS, trove.json in ~/Trove: both are protected (the file, not ~/Trove itself), Trove's install and Hermes' folder
+            assert json.loads(r.stdout) == [[True, "trove.json"], os.path.join(home, "Trove", "trove.json"), nas,
+                                            sorted([nas, os.path.join(home, "Trove", "trove.json"), os.path.dirname(os.path.dirname(HIER)),
+                                                    os.path.join(w, "hermes")])], r.stdout
             env["TROVE_KONFIG"] = ""  # empty = unset: the pin must still hold, never fall back to <datenwurzel>/trove.json
             r = subprocess.run(r.args, capture_output=True, text=True, env=env, timeout=60)
             assert r.returncode == 0, r.stderr
-            assert json.loads(r.stdout) == [[True, "trove.json"], os.path.join(home, "Trove", "trove.json"), nas], r.stdout
+            assert json.loads(r.stdout)[:3] == [[True, "trove.json"], os.path.join(home, "Trove", "trove.json"), nas], r.stdout
+            # a relative TROVE_KONFIG is pinned as an absolute path: after a chdir (as in a child with another cwd) the same file is read
+            env["TROVE_KONFIG"] = "rel-trove.json"
+            with open(os.path.join(w, "rel-trove.json"), "w", encoding="utf-8") as f:
+                json.dump({"freigabe_pflicht": True}, f)
+            r = subprocess.run([sys.executable, "-I", "-c", "import json, os, sys; sys.path.insert(0, %r); import konfig; os.chdir(%r); "
+                                "print(json.dumps([os.environ['TROVE_KONFIG'], konfig.freigabe_pflicht_stand()[:2]]))" % (HIER, home)],
+                               capture_output=True, text=True, env=env, timeout=60, cwd=w)
+            assert r.returncode == 0, r.stderr
+            assert json.loads(r.stdout) == [os.path.join(os.path.realpath(w), "rel-trove.json"), [True, "trove.json"]], r.stdout
         finally:
             for n, v in alt.items():
                 if v is None:
