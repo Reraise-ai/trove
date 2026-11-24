@@ -6,6 +6,8 @@ ON  - an MCP client can read, but every change is only a BLOCKED request that ru
 OFF (the default) - tab cards and MCP requests start at once, folder rights still apply (aus_teil), and the tab routes keep
       their protection against foreign web pages in both positions (web_teil);
 plus the races of auftraege.json, a repeated create and partial failures after `kanban create` (rennen_teil).
+The switches arbeitsordner_pruefen and mcp_mengenbremse are ON in the trove.json of the data root (main) for the sections that test
+the checks, and switched OFF in between to show that nothing holds the work up then.
 Skipped (not failed) when the `mcp` package is not installed."""
 import asyncio
 import importlib.util
@@ -26,6 +28,13 @@ OK = {"confirm": True}  # what the tab sends with Release / Archive
 
 
 HERMES_LOG = ""
+
+
+def _einstellung(**werte):
+    """Set switches in the trove.json that this process and the MCP servers it starts read (TROVE_KONFIG, the data root's)."""
+    import konfig
+    for n, w in werte.items():
+        konfig.eintrag_setzen(n, w)
 
 
 def _stand(wurzel):
@@ -137,6 +146,7 @@ async def stdio_teil(server_py, env, http, mod, tmp):
         # ---- read tools
         st, err = await _ruf(c, "status")
         assert not err and st["mandant"] == mandant, st
+        assert (st["neue_ordner_nur_lesen"], st["arbeitsordner_pruefen"], st["mcp_mengenbremse"]) == (True, True, True), st
         quellen, _ = await _ruf(c, "list_sources")
         assert {x["name"]: x["writable"] for x in quellen} == {"Inbox": False, "Archive": False}, quellen
         ls, _ = await _ruf(c, "list_folder", source=q["id"])
@@ -336,6 +346,26 @@ async def stdio_teil(server_py, env, http, mod, tmp):
         msg, err = await _ruf(c, "read_receipt", source=w["id"], path="kaputt.pdf")
         print("read_receipt on a broken PDF ->", msg if err else "ok")
         assert not err or ("Traceback" not in msg and "/usr/" not in msg and "site-packages" not in msg), msg
+        # ---- into knowledge: the agent chooses the card target (karten_befehl's --ziel); it reaches wissen.py as --ziel
+        r, err = await _ruf(c, "request_into_knowledge", source=w["id"], cards=True, target="akteure")
+        assert not err and r["status"] == "blocked" and mq.holen(mandant, r["task_id"])["body"]["ziel"] == "akteure", r
+        assert "Card target: akteure" in mq.holen(mandant, r["task_id"])["details"]
+        assert http.post(U + "/auftrag/%s/archivieren" % r["task_id"], json=OK).status_code == 200
+        msg, err = await _ruf(c, "request_into_knowledge", source=w["id"], cards=True, target="../belege")
+        assert err and "target" in msg, msg
+        gesehen, echt = [], mod._werkzeug
+        mod._werkzeug = lambda skript, *args, **k: gesehen.append(args) or {"eintraege": []}
+        try:
+            mod.wissen({"quelle": w["id"], "karten": True, "ziel": "akteure"})
+            mod.wissen({"quelle": w["id"], "karten": True})
+            try:
+                mod.wissen({"quelle": w["id"], "ziel": "-x"})
+                raise AssertionError("an invalid ziel must be refused")
+            except mod.HTTPException as ex:
+                assert ex.status_code == 400 and "ziel" in ex.detail, ex.detail
+        finally:
+            mod._werkzeug = echt
+        assert "--ziel=akteure" in gesehen[0] and not [a for a in gesehen[1] if a.startswith("--ziel")] and len(gesehen) == 2, gesehen
         # ---- S3: at most 20 open requests per client
         http.post(U + "/quellen/" + z["id"] + "/schreibbar", json={"nur_lesen": False})
         offen = sum(1 for x in mq.liste(mandant) if x["client"] == "test-client" and mq._offen(x, time.time()))
@@ -345,6 +375,14 @@ async def stdio_teil(server_py, env, http, mod, tmp):
                 break
             offen += 1
         assert err and "still open" in msg and offen == mq.MAX_OFFEN_JE_CLIENT, (offen, msg)
+        _einstellung(mcp_mengenbremse=False)  # switch OFF: no limit, the 21st open request is queued
+        try:
+            r, err = await _ruf(c, "request_sync", from_source=w["id"], to_source=z["id"])
+            assert not err and r["status"] == "blocked", r
+        finally:
+            _einstellung(mcp_mengenbremse=True)
+        msg, err = await _ruf(c, "request_sync", from_source=w["id"], to_source=z["id"])
+        assert err and "still open" in msg, msg
         # K7: a global cap, whatever names the clients report
         for i in range(100):
             try:
@@ -731,6 +769,7 @@ async def aus_teil(server_py, env, http, mod, tmp):
         st, _ = await _ruf(c, "status")
         assert st["freigabe_pflicht"] is False and st["freigabe_pflicht_quelle"] == "trove.json" and "starts right after" in st["writes"], st
         assert st["freigabe_pflicht_datei"] == konfig_datei, st  # the file the MCP process reads (TROVE_KONFIG)
+        assert (st["neue_ordner_nur_lesen"], st["arbeitsordner_pruefen"], st["mcp_mengenbremse"]) == (True, False, False), st  # defaults
         # copy: running at once, done without anyone releasing it
         r, err = await _ruf(c, "request_copy", from_source=q["id"], to_source=z["id"], names=["aus.txt"], reason="no click")
         assert not err and r["status"] == "running" and "Starts at once" in r["note"], r
@@ -845,6 +884,15 @@ async def aus_teil(server_py, env, http, mod, tmp):
                 assert r.json()["status"] == "started" and ("--workspace %s --max-retries" % workspace) in _aufrufe().splitlines()[-3], (ordner, _aufrufe()[-400:])
             else:
                 assert "not inside a folder marked writable" in r.json()["detail"], r.text
+        # switch arbeitsordner_pruefen OFF: the read-only working folder is not checked, the card starts in it
+        _einstellung(arbeitsordner_pruefen=False)
+        try:
+            os.environ["TROVE_ARBEITSORDNER"] = inbox
+            r = http.post(U + "/auftrag", json={"titel": "arbeitsordner aus", "confirm": True})
+            assert r.status_code == 200 and r.json()["status"] == "started", (r.status_code, r.text)
+            assert ("--workspace dir:%s --max-retries" % os.path.realpath(inbox)) in _aufrufe().splitlines()[-3], _aufrufe()[-400:]
+        finally:
+            _einstellung(arbeitsordner_pruefen=True)
         # switch ON: a card in a read-only working folder can be created (blocked), but Release refuses it and hermes is not called
         os.environ["TROVE_FREIGABE_PFLICHT"] = "1"
         os.environ["TROVE_ARBEITSORDNER"] = inbox
@@ -911,6 +959,14 @@ async def aus_teil(server_py, env, http, mod, tmp):
         async with Client(srv, client_info=Implementation(name="test-client", version="1")) as c:
             msg, err = await _ruf(c, "request_agent_task", title="im nur lesbaren Ordner", text="x")
             assert err and "not inside a folder marked writable" in msg and _n_create() == n0 and len(mq.liste(mandant)) == n_queue, msg
+            _einstellung(arbeitsordner_pruefen=False)  # switch OFF: the same request is queued
+            try:
+                r, err = await _ruf(c, "request_agent_task", title="im nur lesbaren Ordner, Schalter aus", text="x")
+            finally:
+                _einstellung(arbeitsordner_pruefen=True)
+            assert not err and r["status"] == "blocked" and len(mq.liste(mandant)) == n_queue + 1, r
+            assert http.post(U + "/auftrag/%s/archivieren" % r["task_id"], json=OK).status_code == 200
+            n_queue += 1
             # the request queue held by a living process for the whole wait: MCP refuses, nothing queued; the tab's archive -> 503
             wartet = mq.anlegen(mandant, "test-client", "sync", leer, "t", "d")
             n_queue += 1
@@ -1118,6 +1174,9 @@ def main():
         os.environ.pop("TROVE_KONFIG", None)
         os.environ.pop("TROVE_MCP_CLIENT", None)
         os.makedirs(os.environ["HOME"])
+        os.makedirs(os.environ["TROVE_DATEN"])
+        with open(os.path.join(os.environ["TROVE_DATEN"], "trove.json"), "w", encoding="utf-8") as f:  # the checks under test: ON
+            json.dump({"arbeitsordner_pruefen": True, "mcp_mengenbremse": True}, f)
         for d in ("inbox/sub", "archive"):
             os.makedirs(os.path.join(tmp, d))
         with open(os.path.join(tmp, "inbox", "note.txt"), "w", encoding="utf-8") as f:

@@ -3,6 +3,8 @@ receipt log) -> optional knowledge card in the wiki -> optional qmd search index
 
 Knowledge target (one plain setting, `wiki_wurzel` in trove.json / TROVE_WIKI): <wiki>/../raw/trove/<collection>/ holds the twins,
 <wiki>/quellen/ the cards (status zu-pruefen), <wiki>/log.md one line per run. Default: <data root>/knowledge/wiki (created on demand).
+Setting karten_befehl (Hermes or trove.json): cards go to that outside command instead of the wiki (wissenskarte.karte_ablegen),
+to the target --ziel (default belege; over MCP the agent chooses it).
 The original file is never changed. A card is never written twice (file exists = card exists).
 Receipt log (F8): per file a short lock for "gelesen" (before the twin is stored), a "notiz" per card; start/end/index as "notiz".
 Duplicates (same sha256) are read once per run; further finds are reported as "dublette".
@@ -45,6 +47,7 @@ QMD_VERBOTEN = set('&|<>^%"!')  # qmd.cmd ist eine Batch-Datei (BatBadBut): solc
 
 
 SAMMLUNG_STANDARD = "quellen"  # Ins Wissen ohne Sammlung: raw/trove/quellen, Karte wiki/quellen
+ZIEL_STANDARD = "belege"  # card target for karten_befehl when nobody chose one (the tab)
 ZUG_OFFEN = "offen"  # Ins Wissen ohne Zugehoerigkeit: als offen gekennzeichnet; die Belegbuchung fragt spaeter gezielt nach
 
 
@@ -70,12 +73,15 @@ class Lauf:
     max_seiten: int = 30
     embed: bool = True
     nur_dateien: Optional[list] = None  # Auswahl im Tab: nur diese Dateien (unter wurzel), sonst ganzer Ordner
+    ziel: str = ZIEL_STANDARD  # karten_befehl: --ziel of each card
     index: Optional[dict] = None  # oeffentlich.zwillings_index, einmal je Lauf
     name: str = dataclasses.field(init=False)
     ordner: str = dataclasses.field(init=False)
 
     def __post_init__(self):
         gm.pruefe_namen(self.mandant, self.sammlung)
+        if not re.fullmatch(gm.RE_MANDANT, self.ziel or ""):
+            raise ValueError("ziel: a-z 0-9 _ - (1-41 characters)")
         self.name = "wissen-" + self.sammlung
         import wissenskarte as wk
         # only the text twin, directly in the knowledge target (raw/trove/<collection>), nothing stored twice
@@ -478,10 +484,21 @@ def karte_erzeugen(l, md_erg, min_zeichen=1):
         inhalt = "Located at `%s`.\n\n%sRead as a document twin (verification: %s). Full text in the source.%s" % (
             kopf.get("quelle"), (anfang + "\n\n") if anfang else "", kopf.get("verprobung"),
             ("\n\n" + felder) if felder else "")
-    kid, neu = wk.karte_schreiben(l.sammlung, md, sha, titel, inhalt, kopf.get("quelle"), zugehoerigkeit)
+    befehl = wk.karten_befehl()
+    if befehl:  # the wiki card's head plus the fields a board needs; karte_ablegen writes every value with gm.yaml_wert
+        rel, q = wk.raw_rel(l.sammlung, md), kopf.get("quelle")
+        kid = wk.karte_ablegen(befehl, l.ziel, {
+            "typ": "quelle", "quellen": [rel], "stand": time.strftime("%Y-%m-%d"), "status": wk.STATUS_NEU, "created_by": wk.urheber(),
+            "source": str(q or rel), "ordner": os.path.dirname(str(q)) if q else None, "zugehoerigkeit": zugehoerigkeit, "titel": titel,
+            "pruefsumme": sha, "quelle_datum": datum or None, "sichtbarkeit": regel["sichtbarkeit"], "freigabe": regel["freigabe"],
+            "traeger": traeger}, "# %s\n\n%s\n\nTwin: `%s` (checksum sha256 `%s`)\n" % (titel, inhalt.strip(), rel, sha))
+        neu, werkzeug, extra, art = True, "wissen.py/karten_befehl", {"karten_ziel": l.ziel}, "new, target " + l.ziel
+    else:
+        kid, neu = wk.karte_schreiben(l.sammlung, md, sha, titel, inhalt, kopf.get("quelle"), zugehoerigkeit)
+        werkzeug, extra, art = "wissen.py/wiki", {}, "new" if neu else "existed, head line added"
     _karte_im_kopf(md, kid)
-    _notiz(l, quelle=md, ziel=kid, sha256=sha, werkzeug="wissen.py/wiki", karte=kid, sichtbarkeit=l.sichtbarkeit, md_sha256=bp.datei_sha(md),
-           meldung="Knowledge card %s (%s, %s)" % (kid, "new" if neu else "existed, head line added", titel[:80]))
+    _notiz(l, quelle=md, ziel=kid, sha256=sha, werkzeug=werkzeug, karte=kid, sichtbarkeit=l.sichtbarkeit, md_sha256=bp.datei_sha(md), **extra,
+           meldung="Knowledge card %s (%s, %s)" % (kid, art, titel[:80]))
     return {"karte": kid, "grund": None, "karte_neu": neu}
 
 
@@ -615,13 +632,13 @@ def dateien_auswahl(mandant, wurzel, pfade, hinweise, nicht_gelesen):
 
 
 def ordner_ins_wissen(mandant, wurzel, sammlung, sichtbarkeit, zugehoerigkeit, traeger=None, karten=False, max_dateien=None,
-                      max_seiten=30, embed=True, nur_dateien=None):
+                      max_seiten=30, embed=True, nur_dateien=None, ziel=ZIEL_STANDARD):
     regel = sichtbarkeit_regel(sichtbarkeit)
     zugehoerigkeit = (zugehoerigkeit or "").strip() or ZUG_OFFEN  # keine Pflicht
     sammlung = (sammlung or "").strip() or SAMMLUNG_STANDARD
     l = Lauf(mandant=mandant, sammlung=sammlung, sichtbarkeit=sichtbarkeit, zugehoerigkeit=zugehoerigkeit, wurzel=wurzel,
              traeger=traeger or traeger_auto(zugehoerigkeit), karten=karten,
-             max_dateien=max_dateien, max_seiten=max_seiten, embed=embed, nur_dateien=list(nur_dateien) if nur_dateien else None)
+             max_dateien=max_dateien, max_seiten=max_seiten, embed=embed, nur_dateien=list(nur_dateien) if nur_dateien else None, ziel=ziel)
     if regel["sichtbarkeit"] == "oeffentlich" and zugehoerigkeit == ZUG_OFFEN:
         raise ValueError("visibility oeffentlich (public) needs an affiliation (not offen) - aborted")
     if regel["sichtbarkeit"] == "oeffentlich" and "privat" in zugehoerigkeit.lower():
@@ -796,7 +813,8 @@ def main():
     ap.add_argument("--zugehoerigkeit", help="e.g. 'My Company Ltd' or 'Mine private'")
     ap.add_argument("--traeger", choices=["Person", "Firma", "Projekt", "Kunde", "Behoerde"],
                     help="ohne Angabe: Person, wenn 'privat' in der Zugehoerigkeit steht, sonst Firma")
-    ap.add_argument("--karten", action="store_true", help="write a knowledge card per file into the wiki")
+    ap.add_argument("--karten", action="store_true", help="write a knowledge card per file into the wiki (or hand it to karten_befehl)")
+    ap.add_argument("--ziel", default=ZIEL_STANDARD, help="karten_befehl only: target of the cards (collection / board), default belege")
     ap.add_argument("--max", type=int, help="at most this many files (trial)")
     ap.add_argument("--datei", action="append", default=[], help="only these file(s) under the folder (repeatable); default: the whole folder")
     ap.add_argument("--max-seiten", type=int, default=30)
@@ -815,7 +833,7 @@ def main():
         ap.error("--max: mindestens 1")  # 0 hiesse sonst "alle"
     try:
         z = ordner_ins_wissen(a.mandant, a.ordner, a.sammlung, a.sichtbarkeit, a.zugehoerigkeit, a.traeger, a.karten, a.max,
-                              a.max_seiten, not a.ohne_embed, a.datei or None)
+                              a.max_seiten, not a.ohne_embed, a.datei or None, a.ziel)
     except bp.LaufLaeuft as ex:  # JSON, rc 2; plugin_api macht daraus 409
         print(json.dumps({"abbruch": str(ex)[:300], "lauf_laeuft": True}, ensure_ascii=False) if a.json else "A run is already active: %s" % ex)
         return 2

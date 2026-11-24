@@ -88,8 +88,8 @@ ohne_diktat = re.sub(r"^const DICTATE_LANG = 'de-DE'.*$", "", js, flags=re.M)  #
 pruefe(len(re.findall(r"^const DICTATE_LANG = 'de-DE'", js, flags=re.M)) == 1 and ohne_diktat.count("DICTATE_LANG") == 1 and "de-DE" not in ohne_diktat and "'de'" not in ohne_de,
        "no hard-coded locale for dates (de-DE only in the DICTATE_LANG constant, used once for speech recognition)")
 
-# the folder rule names trove.json where a foreign AI reads it: else it sends the human to mark such a folder writable and gets 400.
-# It also warns about a second mount, which Trove does not detect, and never promises "another path to the same folder" again.
+# the folder rule (a warning, not a lock) names trove.json and Hermes' folder where a foreign AI reads it, so it knows why a source carries a
+# warnung. It also says that a second mount is not detected, and never promises "another path to the same folder" again.
 for rel in ("llms.txt", "skills/trove/SKILL.md"):
     regel = [z for z in open(os.path.join(WURZEL, rel), encoding="utf-8") if "mark" in z and "writable" in z and "own data folder" in z]
     pruefe(any("`trove.json`" in z and "second mount" in z for z in regel), rel + ": folder rule names trove.json and warns about a second mount")

@@ -33,8 +33,25 @@ def run(c, u, tmp, mod):
     assert r.status_code == 403 and os.path.exists(os.path.join(quelle, "note.txt")), r.text  # move deletes the original: source must be writable too
     r = c.post(u + "/quellen/" + z["id"] + "/schreibbar", json={})
     assert r.json()["nur_lesen"] is True  # anything but an explicit false means read-only
-    # --- Into knowledge: no hidden watch-list entry unless asked for ---
+    # --- switch neue_ordner_nur_lesen (default ON): OFF = a new source without nur_lesen is writable; read on every request ---
     import konfig
+    import zugang
+    assert c.get(u + "/status").json()["neue_ordner_nur_lesen"] is True
+    neu = os.path.join(tmp, "neu")
+    os.makedirs(neu)
+    konfig.eintrag_setzen("neue_ordner_nur_lesen", False)  # trove.json
+    try:
+        assert c.get(u + "/status").json()["neue_ordner_nur_lesen"] is False
+        assert c.post(u + "/quellen", json={"pfad": neu}).json()["nur_lesen"] is False
+        assert c.post(u + "/quellen", json={"pfad": neu, "nur_lesen": True}).json()["nur_lesen"] is True  # an explicit choice still counts
+        zugang.einstellungen_quelle = lambda: {"neue_ordner_nur_lesen": True}  # Hermes (Settings -> Plugins -> Trove) wins over trove.json
+        assert c.post(u + "/quellen", json={"pfad": neu}).json()["nur_lesen"] is True
+    finally:
+        zugang.einstellungen_quelle = None
+        konfig.eintrag_setzen("neue_ordner_nur_lesen", None)
+    assert c.post(u + "/quellen", json={"pfad": neu}).json()["nur_lesen"] is True
+    c.delete(u + "/quellen/" + c.post(u + "/quellen", json={"pfad": neu}).json()["id"])
+    # --- Into knowledge: no hidden watch-list entry unless asked for ---
     wiss = {"quelle": q["id"], "pfad": "", "sammlung": "t1", "karten": True, "ohne_embed": True}
     r = c.post(u + "/wissen", json=wiss)
     assert r.status_code == 200 and r.json()["nachgefuehrt"] is False and not konfig.lesen().get("ueberwacht"), r.text

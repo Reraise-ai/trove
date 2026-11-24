@@ -64,6 +64,7 @@ function AddSource({ onDone }) {
   const t = usePluginI18n(ID)
   const [name, setName] = useState(''); const [path, setPath] = useState(''); const [writable, setWritable] = useState(false)
   const [err, setErr] = useState(null); const [busy, setBusy] = useState(false)
+  useEffect(() => { rest('/status').then((s) => setWritable(s.neue_ordner_nur_lesen === false)).catch(() => {}) }, [])  // setting neue_ordner_nur_lesen presets the tick
   const canPick = !!(files && typeof files.requestFolder === 'function')
   const browse = async () => {
     setErr(null)
@@ -305,6 +306,7 @@ function Side({ side, sources, state, setState, selection, setSelection, reload,
       jsx('span', { className: 'text-destructive', children: t('writableWarn', q ? q.name : '') }),
       jsx(Button, { size: 'sm', onClick: () => setWritable(true), children: t('yesWritable') }),
       jsx(Button, { size: 'sm', variant: 'ghost', onClick: () => setAskWritable(false), children: t('cancel') })] }) : null,
+    q && q.warnung ? jsx('div', { 'data-zeile': 'warnung', role: 'note', className: 'text-xs text-destructive', title: q.warnung, children: '⚠ ' + t('folderWarning') }) : null,
     adding ? jsx(AddSource, { onDone: (ok) => { setAdding(false); if (ok) onSourcesChanged() } }) : null,
     jsxs('div', { 'data-zeile': 'pfad', className: 'text-xs', style: BAR, children: [
       q ? jsxs('span', { title: q.pfad, style: { flex: '1 1 140px', minWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, children: [
@@ -678,7 +680,8 @@ const EN = {
   removeSource: 'Remove this source from Trove (files stay untouched)',
   makeWritable: 'Make writable', makeWritableTip: 'Allow Trove to write into this folder (copy, move, sync, knowledge twins)', makeReadOnly: 'Make read-only', makeReadOnlyTip: 'Stop Trove from writing into this folder',
   writableWarn: (n) => 'Allow Trove to write into "' + n + '"? Copy, move (deletes originals after verification) and sync will work there.', yesWritable: 'Yes, make writable',
-  addFolder: '+ Folder', addHint: 'Add a folder from this computer. Folders are read-only until you mark them writable.', pathPlaceholder: 'Folder path, e.g. ~/Documents/Receipts', namePlaceholder: 'Name (optional)',
+  addFolder: '+ Folder', addHint: 'Add a folder from this computer. It stays read-only unless Writable is ticked.', pathPlaceholder: 'Folder path, e.g. ~/Documents/Receipts', namePlaceholder: 'Name (optional)',
+  folderWarning: 'This folder contains Trove\'s or Hermes\' settings or keys. Whoever may write here (agents too) can change them.',
   browse: 'Browse …', writableCheck: 'Writable (Trove may copy/move into it)', addBtn: 'Add folder', checking: 'checking …', cancel: 'Cancel',
   noSource: 'No source chosen.', pickSourceFirst: 'choose a source first', sourceLoading: 'source loading …', notNow: (r) => 'Not possible right now: ' + r,
   indexed: 'Index ✓', indexFiles: 'Index files', indexTip: 'Compute checksums (detects duplicates)', registerDone: (n, g) => 'index: ' + n + ' new, ' + g + ' total',
@@ -768,7 +771,8 @@ const DE = {
   removeSource: 'Diese Quelle aus Trove entfernen (Dateien bleiben unberührt)',
   makeWritable: 'Schreibbar machen', makeWritableTip: 'Trove erlauben, in diesen Ordner zu schreiben (Kopieren, Verschieben, Sync, Wissens-Zwillinge)', makeReadOnly: 'Nur lesen', makeReadOnlyTip: 'Trove das Schreiben in diesen Ordner verbieten',
   writableWarn: (n) => 'Trove erlauben, in „' + n + '“ zu schreiben? Kopieren, Verschieben (löscht Originale nach Prüfung) und Sync funktionieren dort dann.', yesWritable: 'Ja, schreibbar machen',
-  addFolder: '+ Ordner', addHint: 'Ordner von diesem Rechner hinzufügen. Ordner sind schreibgeschützt, bis du sie als schreibbar markierst.', pathPlaceholder: 'Ordnerpfad, z. B. ~/Dokumente/Belege', namePlaceholder: 'Name (optional)',
+  addFolder: '+ Ordner', addHint: 'Ordner von diesem Rechner hinzufügen. Ohne Häkchen bei „Schreibbar“ bleibt er schreibgeschützt.', pathPlaceholder: 'Ordnerpfad, z. B. ~/Dokumente/Belege', namePlaceholder: 'Name (optional)',
+  folderWarning: 'Dieser Ordner enthält Troves oder Hermes\' Einstellungen bzw. Schlüssel. Wer hier schreiben darf (auch Agenten), kann sie ändern.',
   browse: 'Durchsuchen …', writableCheck: 'Schreibbar (Trove darf hineinkopieren/-verschieben)', addBtn: 'Ordner hinzufügen', checking: 'prüfe …', cancel: 'Abbrechen',
   noSource: 'Keine Quelle gewählt.', pickSourceFirst: 'erst Quelle wählen', sourceLoading: 'Quelle lädt …', notNow: (r) => 'Gerade nicht möglich: ' + r,
   indexed: 'Index ✓', indexFiles: 'Indexieren', indexTip: 'Prüfsummen rechnen (erkennt Dubletten)', registerDone: (n, g) => 'Index: ' + n + ' neu, ' + g + ' gesamt',

@@ -92,13 +92,13 @@ def _quellen(mandant):
     if os.path.exists(p):
         with open(p, encoding="utf-8") as f:
             liste = json.load(f)
-        # never writable at Trove's own places, also when an older quellen.json says so: every write path reads the sources here
-        return [{**q, "nur_lesen": True} if not q.get("nur_lesen", True) and q.get("pfad") and _geschuetzt(q["pfad"]) else q for q in liste]
+        # Trove's own places get a warning, never a lock; computed here on every read, never stored
+        return [{**q, "warnung": WARNUNG_TEXT} if q.get("pfad") and _geschuetzt(q["pfad"]) else q for q in liste]
     return []
 
 
-DATENWURZEL_TEXT = ("This folder is the Trove data root, Trove's install or Hermes' folder, contains trove.json, or lies inside or above one of them, also through a link or a bind mount. "
-                    "Trove keeps its settings, receipt log, sources and queue there, so it never marks such a folder writable. Add it read-only.")
+WARNUNG_TEXT = ("This folder contains Trove's or Hermes' settings or keys (Trove's data root, trove.json, Trove's install or Hermes' folder, "
+                "or a folder inside or above one of them, also through a link or a bind mount). Whoever may write here (agents too) can change them.")
 
 
 def _kette(p):
@@ -126,7 +126,7 @@ def _quellen_speichern(mandant, liste):
     p = _quellen_pfad(mandant)
     tmp = p + ".neu"
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(liste, f, ensure_ascii=False, indent=1)
+        json.dump([{k: v for k, v in q.items() if k != "warnung"} for q in liste], f, ensure_ascii=False, indent=1)
     os.replace(tmp, p)
 
 
@@ -313,7 +313,7 @@ def _schalter_felder():
     (the tab and the MCP server may run with different environments, so the file shows whether both read the same one)."""
     wert, quelle, warnung = konfig.freigabe_pflicht_stand()
     return {"freigabe_pflicht": wert, "freigabe_pflicht_quelle": quelle, "freigabe_pflicht_datei": konfig.konfig_pfad(),
-            **({"freigabe_pflicht_warnung": warnung} if warnung else {})}
+            **({"freigabe_pflicht_warnung": warnung} if warnung else {}), **{n: konfig.schalter(n) for n in konfig.SCHALTER}}
 
 
 @router.get("/gesundheit")
@@ -328,7 +328,8 @@ def quellen(mandant: str = MANDANT):
 
 @router.post("/quellen")
 def quelle_anlegen(body: dict):
-    """Add a local folder as a source. Read-only unless the caller explicitly sends nur_lesen=false (writable source)."""
+    """Add a local folder as a source. Without nur_lesen the switch neue_ordner_nur_lesen decides (default ON: read-only);
+    with it on, only an explicit nur_lesen=false makes the source writable."""
     mandant = body.get("mandant") or MANDANT
     name = (body.get("name") or "").strip()
     if body.get("art") not in (None, "", "auto", "ordner"):
@@ -337,15 +338,13 @@ def quelle_anlegen(body: dict):
     if not os.path.isdir(pfad):
         raise HTTPException(400, "Folder not found: " + pfad)
     q = {"id": hashlib.sha1(("ordner:" + pfad.casefold()).encode()).hexdigest()[:10], "art": "ordner", "name": name or pfad, "pfad": pfad,
-         "nur_lesen": body.get("nur_lesen", True) is not False}  # fail-safe: only an explicit false makes the source writable
-    if not q["nur_lesen"] and _geschuetzt(pfad):
-        raise HTTPException(400, DATENWURZEL_TEXT)
+         "nur_lesen": body.get("nur_lesen", konfig.schalter("neue_ordner_nur_lesen")) is not False}  # anything but false: read-only
     liste = [x for x in _quellen(mandant) if x["id"] != q["id"]] + [q]
     _quellen_speichern(mandant, liste)
     bp.schreiben(bp.pfad_fuer(mandant), ereignis="notiz", werkzeug="trove-plugin", mandant=mandant,
                  meldung="Source added: %s (%s)" % (q["name"], "read-only" if q["nur_lesen"] else "writable"), quelle_id=q["id"], quelle_art=q["art"],
                  quelle_pfad=q.get("pfad", ""))
-    return q
+    return _quelle(mandant, q["id"])  # with its warning, if any
 
 
 @router.post("/quellen/{qid}/schreibbar")
@@ -354,8 +353,6 @@ def quelle_schreibbar(qid: str, body: dict):
     mandant = body.get("mandant") or MANDANT
     q = _quelle(mandant, qid)
     nur_lesen = body.get("nur_lesen") is not False
-    if not nur_lesen and _geschuetzt(q["pfad"]):
-        raise HTTPException(400, DATENWURZEL_TEXT)
     liste = [({**x, "nur_lesen": nur_lesen} if x["id"] == qid else x) for x in _quellen(mandant)]
     _quellen_speichern(mandant, liste)
     bp.schreiben(bp.pfad_fuer(mandant), ereignis="notiz", werkzeug="trove-plugin", mandant=mandant,
@@ -1080,11 +1077,11 @@ def _arbeitsordner():
 
 
 def _arbeitsordner_pruefen(mandant, ordner):
-    """Before an agent task starts (create with start, Release in the tab, MCP request): ordner (the card's --workspace) must,
-    after resolving every link now, lie inside a source marked writable, else HTTP 403. None = Hermes' scratch workspace, no
-    check. Callers pass _arbeitsordner() for a card created now and the folder stored with the card on Release. Either way the
+    """Before an agent task starts (create with start, Release in the tab, MCP request), only with the switch
+    arbeitsordner_pruefen ON (default OFF): ordner (the card's --workspace) must, after resolving every link now, lie inside a
+    source marked writable, else HTTP 403. None = Hermes' scratch workspace, no check. Callers pass _arbeitsordner() for a card created now and the folder stored with the card on Release. Either way the
     agent works with Hermes' own permissions; this check only keeps Trove from pointing it at a folder the human did not mark writable."""
-    if ordner and not any(q.get("pfad") and not q.get("nur_lesen", True) and _unter_real(ordner, q["pfad"]) for q in _quellen(mandant)):
+    if ordner and konfig.schalter("arbeitsordner_pruefen") and not any(q.get("pfad") and not q.get("nur_lesen", True) and _unter_real(ordner, q["pfad"]) for q in _quellen(mandant)):
         raise HTTPException(403, "working folder %s is not inside a folder marked writable" % os.path.basename(ordner))
 
 
@@ -1613,6 +1610,10 @@ def wissen(body: dict):
         args.append("--traeger=" + str(body["traeger"]))
     if body.get("karten"):
         args.append("--karten")
+    if body.get("ziel"):  # card target for karten_befehl; empty = wissen.py's default
+        if not isinstance(body["ziel"], str) or not re.fullmatch(RE_MANDANT, body["ziel"]):
+            raise HTTPException(400, "ziel: a-z 0-9 _ - (1-41 characters)")
+        args.append("--ziel=" + body["ziel"])
     if body.get("ohne_embed"):
         args.append("--ohne-embed")
     args += ["--datei=" + p for p in einzeln]

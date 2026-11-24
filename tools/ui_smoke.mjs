@@ -20,7 +20,7 @@ const tr = (loc, key, args) => { const v = (bundles[loc] || {})[key] ?? (bundles
 const calls = []; const postFake = {}
 const fake = {
   '/status': { ok: true, mandant: 'haus', profile: ['default', 'helper'], protokolle: [{ mandant: 'haus', zeilen: 3 }] },
-  '/quellen': { quellen: [{ id: 'a1', art: 'ordner', name: 'Inbox', pfad: '/tmp/inbox', nur_lesen: true }, { id: 'b2', art: 'ordner', name: 'Archive', pfad: '/tmp/archive', nur_lesen: false }] },
+  '/quellen': { quellen: [{ id: 'a1', art: 'ordner', name: 'Inbox', pfad: '/tmp/inbox', nur_lesen: true, warnung: 'This folder contains settings' }, { id: 'b2', art: 'ordner', name: 'Archive', pfad: '/tmp/archive', nur_lesen: false }] },
   '/liste': { quelle: 'a1', pfad: '', eintraege: [{ name: 'a.pdf', ordner: false, groesse: 2048, mtime: 1700000000, pfad: '/tmp/inbox/a.pdf', dublette: true, fundorte: 2 }, { name: 'sub', ordner: true, groesse: 0, mtime: 1700000000, pfad: '/tmp/inbox/sub' }], indexiert: false },
   '/auftraege': { auftraege: [{ id: 't1', status: 'blocked', titel: 'Check' }] },
   '/integrationen': { settings: '/settings?tab=plugins&plugin=reraise-trove', mail: { mailboxes: [{ id: 'imap', kind: 'imap', active: false, missing: ['imap_host'] }, { id: 'gmail', kind: 'gmail', active: false, missing: ['TROVE_GMAIL_CLIENT_ID'], signin: 'hermes auth add reraise-trove:gmail' }] },
@@ -68,6 +68,8 @@ for (const loc of ['en', 'de']) {
   ok(s.includes(loc === 'en' ? 'Backend connected' : 'Backend verbunden'), loc + ': connection badge')
   ok(s.includes(loc === 'en' ? 'Copy' : 'Kopieren'), loc + ': copy buttons present')
   ok(s.includes(loc === 'en' ? '(read-only)' : '(nur lesen)'), loc + ': read-only tag shown')
+  ok(s.includes(loc === 'en' ? 'Whoever may write here (agents too)' : 'Wer hier schreiben darf (auch Agenten)'), loc + ': warning shown at the source that has one')
+  ok(tree.root.findAll((n) => n.props && n.props['data-zeile'] === 'warnung').length === 1, loc + ': exactly one warning (Inbox only, not Archive)')
   ok(s.includes(new Date(1700000000 * 1000).toLocaleString(loc)), loc + ': dates follow the active locale')
   if (loc === 'en') ok(!/[äöüß]/.test(s.replace(/"/g, '')), 'en: no umlauts anywhere in the rendered page')
   const btns = tree.root.findAllByType('button')
@@ -112,6 +114,15 @@ const callsBeforeClicks = calls.slice()   // everything issued by rendering alon
 locale = 'en'
 const AddNode = await render(React.createElement(mod.AddSource, { onDone() {} }))
 ok(text(AddNode).includes('Browse'), 'AddSource offers the folder picker when ctx.files exists')
+const tick = (tree) => tree.root.findAllByType('input').find((i) => i.props.type === 'checkbox').props.checked
+ok(tick(AddNode) === false, 'AddSource: Writable not ticked while neue_ordner_nur_lesen is on (default)')
+fake['/status'] = { ...fake['/status'], neue_ordner_nur_lesen: false }
+const hint = (tree) => text(tree).includes('read-only unless Writable is ticked') && !text(tree).includes('read-only until')
+ok(hint(AddNode), 'AddSource: hint says read-only unless ticked (setting on)')
+const AddAus = await render(React.createElement(mod.AddSource, { onDone() {} }))
+ok(tick(AddAus) === true, 'AddSource: Writable ticked when neue_ordner_nur_lesen is off')
+ok(hint(AddAus), 'AddSource: no "read-only until" claim when neue_ordner_nur_lesen is off')
+delete fake['/status'].neue_ordner_nur_lesen
 const k = await render(React.createElement(mod.IntoKnowledge, { r: { art: 'wissen', quelle: 'a1', pfad: '', datei: 'Inbox', dateien: [], anzahl: 3 } }))
 ok(text(k).includes('WHOLE folder'), 'IntoKnowledge asks about the whole folder')
 const rp = await render(React.createElement(mod.ResultPanel, { r: { art: 'lesen', datei: 'a.pdf', methode: 'ocr', seiten: 1, dauer_s: 1, sha256: 'x', felder: {}, verprobung: { sicher: true, bestanden: true, gruende: [] }, zwilling: 'z.md', text_anfang: '' }, back() {} }))

@@ -9,8 +9,8 @@ Reading is free: sources, folder listings, previews, search, the receipt-log tra
 Writing (copy / move / sync / into knowledge / rename / new folder / agent task) goes through Trove's request queue (mcp_queue.py).
 File actions are bound to the folder rights the human set (read-only unless marked writable; nothing is overwritten).
 An agent task starts a Hermes agent with Hermes' own permissions. Trove's folder rights do not bind it. If
-TROVE_ARBEITSORDNER is set, Trove starts the task only when that folder is marked writable; the agent's working directory is
-then that folder, but the agent can still reach other files with Hermes' rights. Without TROVE_ARBEITSORDNER the task runs in
+TROVE_ARBEITSORDNER is set, the agent's working directory is that folder (with the switch arbeitsordner_pruefen ON, Trove
+starts the task only when that folder is marked writable), but the agent can still reach other files with Hermes' rights. Without TROVE_ARBEITSORDNER the task runs in
 a Hermes scratch workspace with Hermes' rights. With freigabe_pflicht off, an MCP client can therefore trigger work outside
 the folder rights; switch it on if you do not want that.
 Default (switch `freigabe_pflicht` OFF in trove.json): the request starts right after it is queued. Switch ON (trove.json, or
@@ -61,8 +61,8 @@ ANTRAG = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHi
 
 
 AGENT = ("An agent task starts a Hermes agent with Hermes' own permissions. Trove's folder rights do not bind it. If "
-         "`TROVE_ARBEITSORDNER` is set, Trove starts the task only when that folder is marked writable; the agent's "
-         "working directory is then that folder, but the agent can still reach other files with Hermes' rights. Without "
+         "`TROVE_ARBEITSORDNER` is set, the agent's working directory is that folder (with the human's switch "
+         "`arbeitsordner_pruefen` on, Trove starts the task only when that folder is marked writable), but the agent can still reach other files with Hermes' rights. Without "
          "`TROVE_ARBEITSORDNER` the task runs in a Hermes scratch workspace with Hermes' rights. With `freigabe_pflicht`"
          " off, an MCP client can therefore trigger work outside the folder rights; switch it on if you do not want "
          "that.")  # README "Agent tasks" says the same
@@ -174,14 +174,16 @@ def bauen(mandant=None, client=None):
         s = api.status()
         pflicht = s["freigabe_pflicht"]
         return _text({"version": s["version"], "mandant": mandant, "mcp_client": wer(ctx), "data_root": s["datenwurzel"],
-                      **{k: v for k, v in s.items() if k.startswith("freigabe_pflicht")},
+                      **{k: v for k, v in s.items() if k.startswith("freigabe_pflicht") or k in api.konfig.SCHALTER},
                       "writes": ("every change is a blocked request; it runs after Release in the Trove tab" if pflicht else
                                  "every change starts right after it is queued and is logged; folder rights still apply")})
 
     @server.tool(annotations=LESEN)
     def list_sources() -> str:
-        """The folders on the desk: id, name, absolute path and whether the human marked it writable (default: read-only)."""
-        return _text([{"id": q["id"], "name": q["name"], "path": q.get("pfad"), "writable": not q.get("nur_lesen", True)} for q in api._quellen(mandant)])
+        """The folders on the desk: id, name, absolute path, whether the human marked it writable (default: read-only) and a
+        warning (warnung) when the folder holds Trove's or Hermes' settings or keys."""
+        return _text([{"id": q["id"], "name": q["name"], "path": q.get("pfad"), "writable": not q.get("nur_lesen", True),
+                       **({"warnung": q["warnung"]} if q.get("warnung") else {})} for q in api._quellen(mandant)])
 
     @server.tool(annotations=LESEN)
     def list_folder(source: str, path: str = "", limit: int = 500) -> str:
@@ -368,9 +370,10 @@ def bauen(mandant=None, client=None):
 
     @server.tool(annotations=ANTRAG, description='Request "Into knowledge" for a folder: one markdown twin per file, optional knowledge '
                  "cards (cards=true), search index. visibility: privat (own use) or oeffentlich (card limited to the public allow-list). "
-                 "files: optional relative paths. " + HINWEIS)
+                 "files: optional relative paths. target: where each card belongs (a collection or board of the human's knowledge "
+                 "store, a-z 0-9 _ -), used when the human set a card command (karten_befehl); you decide; empty = belege. " + HINWEIS)
     def request_into_knowledge(source: str, path: str = "", collection: str = "", visibility: str = "privat", cards: bool = False,
-                               files: list[str] | None = None, reason: str = "", ctx: Context = None) -> str:
+                               files: list[str] | None = None, reason: str = "", target: str = "", ctx: Context = None) -> str:
         try:
             if files is not None and (not isinstance(files, list) or len(files) > MAX_NAMEN):
                 raise ValueError("files: a list of at most %d relative paths per request" % MAX_NAMEN)
@@ -385,8 +388,10 @@ def bauen(mandant=None, client=None):
                 raise ValueError("path goes through a link; Trove does not follow links")
             if visibility not in ("privat", "oeffentlich"):
                 raise ValueError("visibility: privat | oeffentlich")
+            if target and not re.fullmatch(api.RE_MANDANT, str(target)):
+                raise ValueError("target: a-z 0-9 _ - (1-41 characters)")
             body = {"quelle": q["id"], "pfad": path, "sammlung": text_pruefen(collection, "collection", 60), "sichtbarkeit": visibility,
-                    "karten": bool(cards), "dateien": dateien}
+                    "karten": bool(cards), "dateien": dateien, **({"ziel": target} if target else {})}
             body["sammlung"] = rufen(api._sammlung, mandant, body)
             for rel in dateien:
                 voll = rufen(api._sicher, q["pfad"], rel)
@@ -400,6 +405,7 @@ def bauen(mandant=None, client=None):
         details = "\n".join([
             "Action: into knowledge (markdown twins in Trove's knowledge folder%s; originals are not changed)" % (", knowledge cards in the wiki" if cards else ""),
             "Folder: %s" % wurzel, "Collection: %s, visibility: %s" % (body["sammlung"], visibility),
+            *(["Card target: " + target] if target else []),
             ("Files (%d): %s" % (len(dateien), ", ".join(dateien))) if dateien else "Files: every file in the folder",
             grund_zeile(reason)])
         return antrag(ctx, "wissen", body, titel, details)

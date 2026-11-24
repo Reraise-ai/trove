@@ -36,8 +36,11 @@ STANDARD = {"docuseal_url": "", "erpnext_url": "", "erpnext_host_header": "", "i
             "erkennung_modus": "off", "erkennung_endpoint": "http://127.0.0.1:11434", "erkennung_modell": "", "erkennung_provider": "",
             "erkennung_fallback": "rules", "erkennung_halten": "0", "erkennung_extern_erlaubt": False,
             "erkennung_ocr_modell": "", "erkennung_ocr_einsatz": "scans", "erkennung_ocr_dateien": "", "erkennung_ocr_sha256": "",
-            "erkennung_ocr_prompt": "<image>\nFree OCR.", "erkennung_ocr_seiten": 5}
-DATEI_SCHLUESSEL = "erkennung_"  # settings that are also read from Hermes' config.yaml when Trove runs outside Hermes (MCP server)
+            "erkennung_ocr_prompt": "<image>\nFree OCR.", "erkennung_ocr_seiten": 5,
+            # switches and the card command (konfig.einstellung): None/"" = not set here, then trove.json, then konfig's default
+            "neue_ordner_nur_lesen": None, "arbeitsordner_pruefen": None, "mcp_mengenbremse": None, "karten_befehl": ""}
+# settings that are also read from Hermes' config.yaml when Trove runs outside Hermes (MCP server, wissen.py subprocess)
+DATEI_SCHLUESSEL = ("erkennung_", "neue_ordner_nur_lesen", "arbeitsordner_pruefen", "mcp_mengenbremse", "karten_befehl")
 
 # test seams: the self-tests replace these with mocks (never real services)
 geheimnis_quelle = None      # callable(name) -> str | None

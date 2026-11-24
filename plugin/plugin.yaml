@@ -28,6 +28,12 @@ config_schema:
   gmail_client_id: {type: secret, env: TROVE_GMAIL_CLIENT_ID, label: "Gmail OAuth client ID", description: "Your own Google Cloud OAuth client (Desktop app). Then sign in once: hermes auth add reraise-trove:gmail"}
   gmail_client_secret: {type: secret, env: TROVE_GMAIL_CLIENT_SECRET, label: "Gmail OAuth client secret"}
   gmail_query: {type: str, default: "", label: "Gmail search", description: "Optional Gmail search, e.g. has:attachment newer_than:30d. Empty = new mail since the last run."}
+  # Switches (read on every request; the same names in trove.json count when they are not set here; Hermes wins). Trove warns,
+  # it does not hold work up unless you switch that on.
+  neue_ordner_nur_lesen: {type: bool, default: true, label: "New folders read-only", description: "On (default) = a folder added without an explicit choice is read-only. Off = new folders are writable (the tab ticks Writable for you)."}
+  arbeitsordner_pruefen: {type: bool, default: false, label: "Check the agent working folder", description: "On = an agent task starts only if its working folder (TROVE_ARBEITSORDNER, or the one stored with the card) lies inside a folder marked writable. Off (default) = no check."}
+  mcp_mengenbremse: {type: bool, default: false, label: "Limit MCP requests", description: "On = at most 20 open MCP requests per client and 50 in total (an agent task counts for 30 min after it ends). Off (default) = no limit."}
+  karten_befehl: {type: str, default: "", label: "Card command", description: "Empty (default) = knowledge cards go into the wiki folder. Set = Trove hands each card to this command instead: <command> --ziel <target> --datei <card.md>; it prints one JSON line {\"id\": ..., \"pfad\": ...}. See the README."}
   reraise_key: {type: secret, env: TROVE_RERAISE_KEY, label: "Reraise key", description: "Only for publishing public knowledge cards to reraise.ai. Without a key Trove only links to reraise.ai."}
   # Recognition model (optional; off = today's rule reading). Pins: press "Test model" / "Pin" under Integrations in the Trove tab.
   erkennung_ocr_modell: {type: str, default: "", label: "OCR model (local)", description: "Exact Ollama model id of a vision OCR model that reads page images, e.g. unlimited-ocr-3b:latest. Empty = local rapidocr as today."}

@@ -6,6 +6,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **What holds work up is a setting** (Trove warns; it holds work up only where you switch that on). Three new switches, read on every request, set in Hermes
+  (Settings → Plugins → Trove, `config_schema` in `plugin/plugin.yaml`) or in `trove.json` (Hermes wins); `/status` and the MCP tool `status` show them:
+  `neue_ordner_nur_lesen` (default **on**: as before; off: a new source without `nur_lesen` is writable and the tab ticks *Writable*),
+  `arbeitsordner_pruefen` (default **off**: the working-folder check of agent tasks runs only when it is on), `mcp_mengenbremse` (default **off**: the
+  limits of 20 open MCP requests per client and 50 in total apply only when it is on). Unclear values and an unreadable `trove.json` count as on.
+- **Trove's own folders: a warning instead of a lock.** The data root, a folder with `trove.json`, Trove's install folder and Hermes' folder (and folders inside
+  or above them, also through a link or a bind mount) are no longer refused: marking them writable gives 200, an older `quellen.json` that lists them as writable
+  stays writable, and file actions run there. Such a source carries the field `warnung` (`GET /quellen`, MCP `list_sources`, answers of `POST /quellen` and
+  `/schreibbar`), and the tab shows the warning at the source.
+
+### Added
+- **`karten_befehl`: knowledge cards through your own command.** Empty (default): cards go into the wiki folder as before. Set: "Into knowledge" writes each card
+  (Markdown with head data) to a temporary file and runs `<command> --ziel <target> --datei <file>`; the command answers with one JSON line `{"id", "pfad"}`.
+  Exit code ≠ 0: no card, no card line in the twin. The twin's `karte:` line prevents a second card. Target: `belege` from the tab; over MCP the agent sets it
+  with the new parameter `target` of `request_into_knowledge`. One receipt-log line per card with its id.
+- Roadmap: share button (open a folder or cards for Reraise, or exchange them privately) and keeping cards shared on Reraise up to date.
+
 ## [0.5.0] - 2026-11-23
 
 ### Changed

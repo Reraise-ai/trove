@@ -6,15 +6,22 @@ code block; appended if there is no code block. Never a double card: file exists
 Setting: wiki_wurzel in trove.json / TROVE_WIKI (default <data root>/knowledge/wiki, created on demand; a custom path must exist).
 Author (new cards only): head lines created_by (which agent wrote the card: TROVE_AGENT, default "trove") and source (original file).
 A Trove card is never a statement or decision of the human.
+Setting karten_befehl (Hermes or trove.json, konfig.einstellung): instead of the wiki, every card goes to that outside command
+(karte_ablegen); the twin's head line karte: then holds the id the command returned.
 """
+import json
 import os
 import re
+import shlex
+import subprocess
+import tempfile
 import time
 import unicodedata
 
 import gemeinsam as gm
 import konfig
 
+KARTEN_BEFEHL_S = 300  # an outside card command (e.g. a board behind a lock) may take this long per card
 STATUS_NEU = os.environ.get("TROVE_CARD_STATUS", "to-review")  # status line of a new card; a human changes it after review
 GEAENDERT = []  # Wiki-Seiten, die dieser Lauf neu geschrieben oder markiert hat (log_lauf schreibt daraus eine Zeile)
 
@@ -47,6 +54,38 @@ def raw_rel(sammlung, md):
 
 def urheber():
     return (os.environ.get("TROVE_AGENT") or "trove").strip() or "trove"
+
+
+def karten_befehl():
+    return str(konfig.einstellung("karten_befehl") or "").strip()
+
+
+def karte_ablegen(befehl, ziel, kopf, rumpf):
+    """Hand one card to the outside command karten_befehl instead of writing it: the card (Markdown, head data from the dict kopf
+    written with gm.yaml_wert, read back with gm.kopf_lesen or any YAML parser) goes into a temp file, then
+    `<befehl> --ziel <ziel> --datei <file>` runs without a shell. The last stdout line must be JSON
+    {"id": "...", "pfad": "..."}. Exit code != 0, no id or a timeout raise: the card counts as not created. Returns the id."""
+    seite = "---\n%s---\n\n%s" % ("".join("%s: %s\n" % (k, gm.yaml_wert(v)) for k, v in kopf.items()), rumpf)
+    teile = shlex.split(befehl, posix=os.name != "nt")
+    if os.name == "nt":  # shortcut: Windows paths keep their backslashes; quotes only around whole words, upgrade if that is not enough
+        teile = [t.strip('"') for t in teile]
+    fd, tmp = tempfile.mkstemp(prefix="trove-karte-", suffix=".md")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+            f.write(seite)
+        r = subprocess.run(teile + ["--ziel", ziel, "--datei", tmp], capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           timeout=KARTEN_BEFEHL_S, env=konfig.kind_env(PYTHONUTF8="1"))
+    finally:
+        os.remove(tmp)
+    if r.returncode:
+        raise ValueError("karten_befehl ended with exit code %d: %s" % (r.returncode, (r.stderr or r.stdout).strip()[-300:]))
+    try:
+        kid = json.loads((r.stdout.strip().splitlines() or ["{}"])[-1])["id"]
+    except (ValueError, KeyError, TypeError):
+        kid = None
+    if not isinstance(kid, str) or not kid.strip() or len(kid) > 200 or any(c in kid for c in "\r\n"):
+        raise ValueError("karten_befehl: the last line of its output is not JSON with an id: %r" % r.stdout.strip()[-200:])
+    return kid.strip()
 
 
 def karte_schreiben(sammlung, md, sha, titel, inhalt, quelle=None, zugehoerigkeit=None):

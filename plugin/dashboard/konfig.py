@@ -114,7 +114,7 @@ def geschuetzte_orte():
     root dirname(dirname(HIER)) (the repo, the Claude plugin root or <HERMES_HOME>/plugins), with desktop/, skills/ and
     .claude-plugin/, and Hermes' folder hermes_home() with config.yaml, .env and desktop-plugins/ (the tab code of an installer
     install). In a layout that is not <root>/<plugin>/dashboard the first entry reaches further: it fails towards protection.
-    File actions never reach them (plugin_api._geschuetzt)."""
+    A source there gets a warning (plugin_api._geschuetzt); it is not locked."""
     return {os.path.abspath(p) for p in (_START, datenwurzel(), konfig_pfad(), _KONFIG_START,
                                          os.path.join(os.path.expanduser("~"), "Trove", "trove.json"),
                                          os.path.dirname(os.path.dirname(HIER)), hermes_home())}
@@ -135,6 +135,36 @@ def _schalter(wert):
     if t in _AUS:
         return False, False
     return True, True
+
+
+SCHALTER = {"neue_ordner_nur_lesen": True, "arbeitsordner_pruefen": False, "mcp_mengenbremse": False}  # switch -> default
+
+
+def einstellung(name, standard=None):
+    """A plain setting, read on every call: Hermes (Settings -> Plugins -> Trove, config_schema in plugin.yaml) > trove.json >
+    standard; None and "" count as not set. A trove.json that cannot be read or is no JSON object raises OSError/ValueError."""
+    import zugang
+    wert = zugang.einstellungen().get(name)
+    if wert in (None, ""):
+        k = lesen()
+        if not isinstance(k, dict):
+            raise ValueError("trove.json is not a JSON object")
+        wert = k.get(name)
+    return standard if wert in (None, "") else wert
+
+
+def schalter(name):
+    """One of SCHALTER (Hermes > trove.json > default, read on every call). A value not in the table or an unreadable trove.json:
+    ON with a warning (fail closed, as freigabe_pflicht)."""
+    try:
+        wert = einstellung(name, SCHALTER[name])
+    except (OSError, ValueError, RecursionError) as e:
+        wert = "unreadable trove.json (%s)" % e
+    an, unklar = _schalter(wert)
+    if unklar and name + str(wert) not in _gewarnt:
+        _gewarnt.add(name + str(wert))
+        logging.getLogger("trove").warning("%s=%r is not a known value; treated as ON", name, wert)
+    return an
 
 
 def freigabe_pflicht_stand():
@@ -373,7 +403,39 @@ def _selbsttest_freigabe():
                     os.environ[n] = v
 
 
+def _selbsttest_schalter():
+    import tempfile
+    import zugang
+    alt = os.environ.get("TROVE_KONFIG")
+    hermes = {}
+    zugang.einstellungen_quelle = lambda: hermes  # Hermes' settings (Settings -> Plugins -> Trove), mocked
+    with tempfile.TemporaryDirectory() as w:
+        p = os.path.join(w, "trove.json")
+        os.environ["TROVE_KONFIG"] = p
+        try:
+            assert {n: schalter(n) for n in SCHALTER} == SCHALTER  # no trove.json, nothing in Hermes: the defaults
+            assert einstellung("karten_befehl", "") == ""
+            with open(p, "w", encoding="utf-8") as f:
+                json.dump({"neue_ordner_nur_lesen": False, "arbeitsordner_pruefen": "an", "mcp_mengenbremse": "vielleicht", "karten_befehl": "x"}, f)
+            assert (schalter("neue_ordner_nur_lesen"), schalter("arbeitsordner_pruefen"), schalter("mcp_mengenbremse")) == (False, True, True)
+            hermes.update(neue_ordner_nur_lesen=True, mcp_mengenbremse=False, karten_befehl="y")  # Hermes wins over trove.json
+            assert (schalter("neue_ordner_nur_lesen"), schalter("mcp_mengenbremse"), einstellung("karten_befehl")) == (True, False, "y")
+            hermes.update(neue_ordner_nur_lesen="off", karten_befehl="")  # "off" (config.yaml without PyYAML) = OFF; "" = not set
+            assert (schalter("neue_ordner_nur_lesen"), einstellung("karten_befehl")) == (False, "x")
+            hermes.clear()
+            with open(p, "w", encoding="utf-8") as f:
+                f.write("{kaputt")
+            assert all(schalter(n) for n in SCHALTER)  # unreadable trove.json: every switch ON (fail closed)
+        finally:
+            zugang.einstellungen_quelle = None
+            if alt is None:
+                os.environ.pop("TROVE_KONFIG", None)
+            else:
+                os.environ["TROVE_KONFIG"] = alt
+
+
 if __name__ == "__main__":
+    _selbsttest_schalter()
     _selbsttest_geheim()
     _selbsttest_freigabe()
     assert datenwurzel() and mandant()

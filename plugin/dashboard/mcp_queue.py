@@ -24,6 +24,7 @@ import threading
 import time
 
 import belegprotokoll as bp
+import konfig
 
 PREFIX = "mcp-"
 RE_ID = re.compile(r"mcp-[0-9a-f]{10}")
@@ -56,6 +57,7 @@ AUSFUEHRUNG = {
     "ordner_neu": ("ordner_neu", "new folder", 0),  # active once the backend has POST /ordner-neu
     "agent_auftrag": (_agent_auftrag, "agent task", KARTE_MAX_RUNTIME_S * (KARTE_MAX_RETRIES + 1)),
 }
+# Limits only with the switch mcp_mengenbremse ON (default OFF, konfig.schalter)
 MAX_OFFEN_JE_CLIENT = 20  # open requests per MCP client name: blocked, running, or an agent task within its after-run
 MAX_OFFEN_GESAMT = 50  # open requests of all clients together (client names are self-reported)
 OFFEN_TEXT = "waiting, running, or an agent task finished less than %d min ago; archiving does not free it" % (AUSFUEHRUNG["agent_auftrag"][2] // 60)
@@ -114,7 +116,8 @@ def _offen(e, jetzt):
 def anlegen(mandant, client, art, body, titel, details):
     """New request, status blocked (the MCP server starts it right away when the switch is off, see freigeben(direkt=True)).
     details: the complete text shown in the tab (all names, exact paths, full text).
-    Returns the entry. Called by the MCP server. Raises ValueError when the client already has too many open requests."""
+    Returns the entry. Called by the MCP server. Raises ValueError when the client already has too many open requests
+    (only with the switch mcp_mengenbremse ON)."""
     if art not in AUSFUEHRUNG:
         raise ValueError("unknown kind: %s" % art)
     kid = PREFIX + secrets.token_hex(5)
@@ -125,9 +128,10 @@ def anlegen(mandant, client, art, body, titel, details):
         jetzt = time.time()
         offen = [x for x in alle if _offen(x, jetzt)]
         n = sum(1 for x in offen if x.get("client") == client)
-        if n >= MAX_OFFEN_JE_CLIENT:
+        bremse = konfig.schalter("mcp_mengenbremse")
+        if bremse and n >= MAX_OFFEN_JE_CLIENT:
             raise ValueError("%d requests from this client are still open (%s); try again later" % (n, OFFEN_TEXT))
-        if len(offen) >= MAX_OFFEN_GESAMT:
+        if bremse and len(offen) >= MAX_OFFEN_GESAMT:
             raise ValueError("%d requests are still open (%s); try again later" % (len(offen), OFFEN_TEXT))
         # log first: no queue entry without its log line. Lock holders never wait longer than lock waiters (WarteSperre, 20 s):
         # a long copy run holds the receipt log, and waiting 30 s here would make the end of a running request lose its result.
